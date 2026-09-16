@@ -309,6 +309,28 @@ def test_psf_photometry_process_reports_fit_diagnostics_when_requested():
     assert any("chi" in line.lower() for line in result.log_lines)
 
 
+def test_psf_photometry_process_uses_moffat_profile_when_requested():
+    process = _get("photometry.psf")
+    alpha, beta = 3.0, 2.5
+    true_flux = 30000.0
+    from astrophysics_suite.photometry.psf import MoffatPSF
+
+    psf = MoffatPSF(alpha=alpha, beta=beta)
+    yy, xx = np.mgrid[0:61, 0:61]
+    profile = psf.evaluate((xx - 30.0).astype(float), (yy - 30.0).astype(float))
+    data = 100.0 + true_flux * profile
+
+    params = _default_params(process)
+    params["_picked_points"] = [(30.0, 30.0)]
+    params["use_moffat_psf"] = True
+    params["moffat_alpha_px"] = alpha
+    params["moffat_beta"] = beta
+    result = process.run(data, params)
+
+    logged_flux = float(result.log_lines[0].split("flujo=")[1].split(" ")[0])
+    assert logged_flux == pytest.approx(true_flux, rel=0.05)
+
+
 def test_psf_photometry_process_always_returns_measurement_table():
     process = _get("photometry.psf")
     data = np.full((61, 61), 100.0)

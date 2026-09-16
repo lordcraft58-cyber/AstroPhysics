@@ -21,6 +21,7 @@ from astrophysics_suite.photometry.aperture import aperture_photometry, fit_curv
 from astrophysics_suite.photometry.calibration import fit_zeropoint
 from astrophysics_suite.photometry.psf import (
     GaussianPSF,
+    MoffatPSF,
     compute_psf_fit_diagnostics,
     fit_group_psf_photometry,
     fit_group_psf_photometry_with_position_refinement,
@@ -207,7 +208,13 @@ def _run_psf_photometry(data: np.ndarray, params: dict) -> ProcessResult:
         raise ValueError("no se marcó ninguna posición -- haz clic sobre al menos una fuente antes de terminar la selección (clic derecho)")
 
     uncertainty = np.sqrt(np.clip(data, 1.0, None))  # modelo de ruido Poisson aproximado -- misma nota que fotometría de apertura
-    psf_model = GaussianPSF(sigma_x=params["sigma_px"])
+    if params.get("use_moffat_psf"):
+        # colas más pesadas que una Gaussiana -- el modelo analítico
+        # preferido para *seeing* atmosférico real (Moffat 1969); motor
+        # ya existía desde la Fase 9.3, sin selector en la GUI hasta ahora.
+        psf_model = MoffatPSF(alpha=params["moffat_alpha_px"], beta=params["moffat_beta"])
+    else:
+        psf_model = GaussianPSF(sigma_x=params["sigma_px"])
     fit_half_size = int(params["fit_half_size"])
 
     if params.get("refine_positions"):
@@ -437,8 +444,14 @@ def build_process_registry() -> list[ProcessDefinition]:
             category="Fotometría",
             description="Ajuste simultáneo de PSF (Gaussiana) para desmezclar fuentes superpuestas -- equivalente a nstar/allstar. Al pulsar Aplicar, marca cada fuente con clic izquierdo sobre la imagen y termina con clic derecho (o activa 'Detectar automáticamente' para una selección de estrellas de referencia tipo pstselect: aislamiento + redondez + señal/ruido).",
             parameters=(
-                ParameterSpec("sigma_px", "Sigma de la PSF (px)", "float", 2.0, minimum=0.3, maximum=30.0),
+                ParameterSpec("sigma_px", "Sigma de la PSF gaussiana (px)", "float", 2.0, minimum=0.3, maximum=30.0),
                 ParameterSpec("fit_half_size", "Semiancho de la caja de ajuste (px)", "int", 7, minimum=2, maximum=100),
+                ParameterSpec(
+                    "use_moffat_psf", "Usar perfil de Moffat (colas realistas)", "bool", False,
+                    help_text="En vez de la Gaussiana, usa un perfil de Moffat -- colas más pesadas, el modelo preferido para seeing atmosférico real.",
+                ),
+                ParameterSpec("moffat_alpha_px", "Escala radial de Moffat, alpha (px)", "float", 2.0, minimum=0.3, maximum=30.0),
+                ParameterSpec("moffat_beta", "Índice de colas de Moffat, beta", "float", 2.5, minimum=1.1, maximum=20.0),
                 ParameterSpec(
                     "refine_positions", "Refinar posición (allstar)", "bool", False,
                     help_text="Ajuste no lineal iterativo de posición además del flujo -- útil cuando las posiciones marcadas/detectadas son solo aproximadas.",
