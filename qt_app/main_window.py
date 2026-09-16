@@ -9,10 +9,13 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QColor
-from PySide6.QtWidgets import QDockWidget, QFileDialog, QMainWindow, QMdiArea, QMdiSubWindow
+from PySide6.QtWidgets import QDockWidget, QFileDialog, QMainWindow, QMdiArea, QMdiSubWindow, QProgressBar
 
+from qt_app.candidates.candidate_detail_widget import CandidateDetailWidget
+from qt_app.candidates.candidates_dock import CandidatesDock
+from qt_app.candidates.new_observation_dialog import NewObservationDialog
 from qt_app.docks.console_dock import ConsoleDock
 from qt_app.docks.process_explorer import ProcessExplorer
 from qt_app.docks.properties_dock import PropertiesDock
@@ -21,8 +24,12 @@ from qt_app.processes.base import ProcessDefinition
 from qt_app.processes.registry import build_process_registry
 from qt_app.theme import DARK, build_stylesheet
 from qt_app.workers import ProcessWorker
+from services.discovery_service import DiscoveryJob, DiscoveryParams
+from services.session_state import SessionState
 
 APP_TITLE = "AstroPhysics Suite -- Taller de Procesamiento"
+PIPELINE_VERSION = "0.5.0-dev"
+DISCOVERY_POLL_MS = 100
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +54,14 @@ class MainWindow(QMainWindow):
         self._process_by_id = {p.process_id: p for p in self._processes}
         self._active_worker: ProcessWorker | None = None
 
+        self.session_state = SessionState()
+        self._discovery_job: DiscoveryJob | None = None
+        self._discovery_timer: QTimer | None = None
+        self._candidate_detail_windows: dict[str, QMdiSubWindow] = {}
+
         self._build_docks()
         self._build_menu()
+        self._build_status_bar()
         self.statusBar().showMessage("Listo")
 
     # ---------------------------------------------------------------- docks
@@ -73,6 +86,21 @@ class MainWindow(QMainWindow):
         console_dock.setWidget(self.console)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, console_dock)
 
+        self.candidates_dock_widget = CandidatesDock(self.session_state, DARK, self)
+        self.candidates_dock_widget.candidate_activated.connect(self._open_candidate_detail)
+        candidates_dock = QDockWidget("CANDIDATOS", self)
+        candidates_dock.setObjectName("CandidatesDock")
+        candidates_dock.setWidget(self.candidates_dock_widget)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, candidates_dock)
+        self.tabifyDockWidget(properties_dock, candidates_dock)
+        properties_dock.raise_()
+
+    def _build_status_bar(self) -> None:
+        self.discovery_progress = QProgressBar(self)
+        self.discovery_progress.setMaximumWidth(220)
+        self.discovery_progress.setVisible(False)
+        self.statusBar().addPermanentWidget(self.discovery_progress)
+
     # ---------------------------------------------------------------- menú
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("&Archivo")
@@ -91,6 +119,16 @@ class MainWindow(QMainWindow):
         stf_action.setShortcut("Ctrl+T")
         stf_action.triggered.connect(self._toggle_active_stf)
         view_menu.addAction(stf_action)
+
+        discovery_menu = self.menuBar().addMenu("&Descubrimiento")
+        new_observation_action = QAction("&Nueva observación...", self)
+        new_observation_action.setShortcut("Ctrl+N")
+        new_observation_action.triggered.connect(self._open_new_observation_dialog)
+        discovery_menu.addAction(new_observation_action)
+        self.cancel_discovery_action = QAction("&Cancelar análisis", self)
+        self.cancel_discovery_action.setEnabled(False)
+        self.cancel_discovery_action.triggered.connect(self._cancel_discovery)
+        discovery_menu.addAction(self.cancel_discovery_action)
 
     # ---------------------------------------------------------------- imágenes
     def open_fits_dialog(self) -> None:
@@ -176,3 +214,89 @@ class MainWindow(QMainWindow):
         self.properties.apply_button.setEnabled(True)
         self.statusBar().showMessage("Error al ejecutar el proceso", 5000)
         logger.error("%s", message)
+
+    # ---------------------------------------------------------------- descubrimiento
+    def _open_new_observation_dialog(self) -> None:
+        if self._discovery_job is not None:
+            self.statusBar().showMessage("Ya hay un análisis en curso; espera a que termine.", 5000)
+            return
+        dialog = NewObservationDialog(self)
+        if dialog.exec() != NewObservationDialog.DialogCode.Accepted:
+            return
+        self._start_discovery(dialog.result_target_name(), dialog.result_images())
+
+    def _start_discovery(self, target_name: str, images: list[tuple[str, str]]) -> None:
+        self._discovery_job = DiscoveryJob(
+            target_name=target_name, images=images, params=DiscoveryParams(), pipeline_version=PIPELINE_VERSION
+        )
+        self._discovery_job.start()
+        self.discovery_progress.setVisible(True)
+        self.discovery_progress.setValue(0)
+        self.cancel_discovery_action.setEnabled(True)
+        self.statusBar().showMessage(f"Analizando {target_name}...")
+
+        self._discovery_timer = QTimer(self)
+        self._discovery_timer.timeout.connect(self._poll_discovery)
+        self._discovery_timer.start(DISCOVERY_POLL_MS)
+
+    def _poll_discovery(self) -> None:
+        job = self._discovery_job
+        if job is None:
+            if self._discovery_timer is not None:
+                self._discovery_timer.stop()
+            return
+
+        for event in job.poll():
+            if event.kind == "progress":
+                self.discovery_progress.setValue(int(event.fraction * 100))
+                self.statusBar().showMessage(event.message)
+            elif event.kind == "done":
+                self.session_state.add_observation(event.observation, event.loaded_images)
+                self.session_state.add_candidates(list(event.candidates))
+                logger.info(
+                    "Descubrimiento completado: %d candidatos de %d detecciones (%d rechazados como artefacto)",
+                    event.summary.n_candidates, event.summary.n_detected, event.summary.n_artifact_rejected,
+                )
+                self.statusBar().showMessage(f"Completado: {event.summary.n_candidates} candidatos de {event.summary.n_detected} detecciones.", 8000)
+                self._finish_discovery()
+                return
+            elif event.kind == "cancelled":
+                self.statusBar().showMessage(event.message or "Análisis cancelado.", 5000)
+                self._finish_discovery()
+                return
+            elif event.kind == "error":
+                logger.error("Descubrimiento falló: %s", event.message)
+                self.statusBar().showMessage(f"Error en el análisis: {event.message}", 8000)
+                self._finish_discovery()
+                return
+
+    def _finish_discovery(self) -> None:
+        if self._discovery_timer is not None:
+            self._discovery_timer.stop()
+            self._discovery_timer = None
+        self._discovery_job = None
+        self.discovery_progress.setVisible(False)
+        self.cancel_discovery_action.setEnabled(False)
+
+    def _cancel_discovery(self) -> None:
+        if self._discovery_job is not None:
+            self._discovery_job.cancel()
+
+    # ---------------------------------------------------------------- candidatos
+    def _open_candidate_detail(self, candidate_id: str) -> None:
+        existing = self._candidate_detail_windows.get(candidate_id)
+        if existing is not None:
+            self.mdi.setActiveSubWindow(existing)
+            return
+
+        widget = CandidateDetailWidget(candidate_id, self.session_state, DARK, self)
+        sub_window = QMdiSubWindow()
+        sub_window.setWidget(widget)
+        sub_window.setWindowTitle(f"Candidato: {candidate_id}")
+        sub_window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.mdi.addSubWindow(sub_window)
+        sub_window.resize(560, 680)
+        sub_window.show()
+
+        self._candidate_detail_windows[candidate_id] = sub_window
+        sub_window.destroyed.connect(lambda: self._candidate_detail_windows.pop(candidate_id, None))

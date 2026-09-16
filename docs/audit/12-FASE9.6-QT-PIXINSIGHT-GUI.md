@@ -107,12 +107,43 @@ lanza excepción). Además, 28 tests nuevos de lógica pura sin Qt
 (`tests/unit/qt_app/`: `test_stf.py`, `test_registry.py`) que corren en cualquier
 entorno con numpy/scipy, sin necesitar PySide6 ni display.
 
-## 5. Qué queda (alcance explícito para una fase posterior)
+## 5. Migración del flujo de candidatos (`qt_app/candidates/`, continuación de esta oleada)
 
-- Migrar el flujo de revisión de candidatos (Fase 8: lista filtrable, detalle con
-  cadena de evidencia completa, Conservar/Descartar/Marcar) a este mismo shell como
-  un proceso/vista más -- es el paso que de verdad completa "un solo framework de
-  interfaz" para el producto comercial final.
+Completa el paso que de verdad unifica "un solo framework de interfaz" para el
+producto: el flujo de revisión de candidatos de la Fase 8 (lista filtrable, detalle
+con cadena de evidencia completa, Conservar/Descartar/Marcar) vive ahora dentro del
+propio taller Qt, no en una aplicación aparte.
+
+- `qt_app/candidates/mappings.py`: el mismo vocabulario -> color semántico que
+  `gui/theme.py` usaba en Tkinter, traducido a `qt_app.theme.Palette`.
+- `qt_app/candidates/badge.py`: insignia de estado -- mucho más simple en Qt
+  (`border-radius` nativo de `QLabel`) que el `Canvas` dibujado a mano que Tkinter
+  necesitaba.
+- `qt_app/candidates/candidates_dock.py`: panel acoplable (pestaña junto a
+  Propiedades) con la lista filtrable por estado de identificación y de revisión.
+- `qt_app/candidates/candidate_detail_widget.py`: el detalle completo -- se abre
+  como ventana MDI (reutilizada si ya está abierta para ese candidato, nunca
+  duplicada), con las mismas secciones que la Fase 8 (identificación,
+  caracterización, cadena de evidencia, física, anomalía, temporal/movimiento,
+  catálogos, calidad/artefactos, historial de revisión, procedencia).
+- `qt_app/candidates/new_observation_dialog.py`: asistente de carga de imágenes +
+  nombre de objetivo, en un `QDialog` en vez de una vista de la barra lateral.
+- `qt_app/main_window.py`: instancia un único `SessionState` compartido; menú
+  "Descubrimiento" (Nueva observación..., Cancelar análisis); `DiscoveryJob`
+  (`services/discovery_service.py`, sin ningún cambio -- ya era agnóstico de
+  framework de GUI) sondeado por `QTimer` en vez de `root.after`, con una barra de
+  progreso permanente en la barra de estado.
+
+Verificado con un análisis de Descubrimiento real de principio a fin sobre FITS
+sintéticos escritos a disco (no simulados): detección real con DAOStarFinder,
+candidatos reales añadidos al `SessionState`, panel acoplable poblado, detalle
+abierto y reutilizado (no duplicado) al reabrir el mismo candidato, y el flujo de
+revisión humana completo (nota + `mark_reviewed` + botones deshabilitados tras
+revisar). 5 tests de humo nuevos en
+`tests/gui_smoke/test_qt_app_candidates_smoke.py`.
+
+## 6. Qué queda (alcance explícito para una fase posterior)
+
 - Vista de conjunto de fotogramas (múltiples imágenes a la vez) para bias/dark/flat
   maestros y aritmética de dos imágenes.
 - Interacción de selección de posiciones sobre la imagen (clic para centroide) para
@@ -122,3 +153,6 @@ entorno con numpy/scipy, sin necesitar PySide6 ni display.
   propiedades está abierto).
 - Conectar `services/hardware_service.py` (diagnóstico de equipo, Fase 8) al taller
   nuevo -- hoy solo vive en la GUI en Tkinter conservada como referencia.
+- `services/logging_bridge.py` (Fase 8, puente de logging para Tkinter) queda sin
+  usar por el taller Qt, que tiene su propio puente (`qt_app/docks/console_dock.py`)
+  -- candidato a retirarse si la GUI en Tkinter deja de mantenerse activamente.
