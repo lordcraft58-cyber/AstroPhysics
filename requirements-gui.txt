@@ -1,0 +1,4 @@
+# Dependencia adicional del taller de procesamiento (qt_app/, Fase 9.6) --
+# se suma a requirements-test.txt, no lo sustituye. Tkinter (GUI heredada
+# de la Fase 8, gui/) es de la biblioteca estándar y no necesita nada aquí.
+PySide6>=6.5
