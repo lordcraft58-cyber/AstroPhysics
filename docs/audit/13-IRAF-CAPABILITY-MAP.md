@@ -63,9 +63,9 @@ capacidad sin implementar en absoluto).
 | Centroidado (momento de segundo orden), FWHM, elipticidad, nitidez | Real, `_legacy_enrich_star_rows` vía `detection/point_sources.py` | ídem | ídem | **DISPONIBLE** (como motor) |
 | Máscara de cobertura de apertura subpíxel (interior/exterior analítico, borde sobremuestreado) | Real, `photometry/aperture.py:17` (`aperture_coverage_mask`) | `tests/unit/photometry/test_aperture.py` | Proceso `photometry.aperture`, cableado | **DISPONIBLE** |
 | Estimación de cielo en anillo con rechazo iterativo sigma-clip (MAD) | Real, `aperture.py:73` (`estimate_local_sky`) | ídem | ídem | **DISPONIBLE** |
-| Fotometría multi-radio (curva de crecimiento cruda), flujo neto, error propagado, magnitud instrumental | Real, `aperture.py:145` (`aperture_photometry`) | ídem | ídem, pero **fijo en el centro de la imagen**, sin selección de fuente por clic ni por detección automática | **EXPERIMENTAL** (motor real, interacción de la GUI recortada) |
+| Fotometría multi-radio (curva de crecimiento cruda), flujo neto, error propagado, magnitud instrumental | Real, `aperture.py:145` (`aperture_photometry`) | ídem | Proceso `photometry.aperture`, **ahora con selección de fuente a clic** (`requires_picking=1`) -- ver Fase 12 | **DISPONIBLE** |
 | Ajuste real de curva de crecimiento / radio óptimo | No implementado (se devuelven las medidas por radio, sin ajuste ni recomendación de radio óptimo) | — | — | **PENDIENTE** |
-| Calibración fotométrica (punto cero resuelto contra estrellas estándar/catálogo) | No implementada -- el punto cero es una constante fija que introduce el usuario, nunca ajustada contra datos | — | — | **PENDIENTE** (ver honestidad epistémica: el proceso lo declara así en su propia descripción, no se presenta como calibración validada) |
+| Calibración fotométrica (punto cero resuelto contra estrellas estándar/catálogo) | No implementada -- el punto cero era una constante fija que introducía el usuario, nunca ajustada contra datos | `astrophysics_suite/photometry/calibration.py` (`fit_zeropoint`, mediana robusta con rechazo sigma-clip de outliers) -- ver Fase 12 | `tests/unit/photometry/test_photometric_calibration.py` | Proceso `photometry.zeropoint`, cableado: clic en varias estrellas de referencia -> fotometría instrumental real -> WCS real de la imagen activa -> consulta Gaia DR3 real -> ajuste de punto cero robusto | **DISPONIBLE** |
 
 ---
 
@@ -149,7 +149,7 @@ en la Fase 10.1 (que se centra en cerrar `ccdred`), pero debe abordarse antes de
 |---|---|---|---|---|
 | `ccdred` | 13 | 0 | 0 | **Cerrado.** Sesión real de LIGHTS, píxeles defectuosos, franjas, iluminación, cielo, clasificación por cabecera y perfiles de instrumento, todos con motor real y camino de uso en la GUI (Fases 10.1-10.2) |
 | Análisis de imagen | 6 | 0 | 0 | **Cerrado.** Aritmética entre dos imágenes, estadísticas+histograma, recorte por clic y normalización por percentiles, todos con motor real y camino de uso en la GUI (Fase 11.1) |
-| `apphot` | 3 | 2 | 2 | Motor sólido; selección de fuente en la GUI sigue fija al centro |
+| `apphot` | 5 | 1 | 1 | **Núcleo cerrado en Fase 12**: selección de fuente a clic y calibración de punto cero real contra Gaia. Quedan pendientes solo el ajuste de curva de crecimiento/radio óptimo y conectar la detección automática como paso previo interactivo |
 | `daophot` | 2 | 2 | 4 | Núcleo real (deblending simultáneo, tres modelos PSF); falta selección/refinamiento/diagnóstico automáticos |
 | Astrometría | 4 | 0 | 4 | Motores sólidos y honestos ante fallos de WCS; **ninguno wireado en la GUI todavía** |
 | Tablas/catálogos | 2 | 0 | 3 | Solo Gaia; sin contrato `Table`/`Source` compartido -- brecha de arquitectura real |
@@ -170,7 +170,12 @@ queda completo -- las 13 capacidades de la tabla anterior en `DISPONIBLE`, ningu
 el bloque de análisis de imagen -- las cuatro capacidades que quedaban `PENDIENTE`
 (aritmética entre imágenes, estadística/histograma genérico, máscaras/regiones/
 recortes independientes, normalización genérica), todas con motor real y camino de
-uso en la GUI. El siguiente bloque a abrir, según el orden acordado, es `apphot`:
-selección de fuente en la GUI sigue fija al centro de la imagen en vez de un clic o
-una detección automática, y no hay calibración fotométrica (punto cero) resuelta
-contra un catálogo.
+uso en la GUI. La Fase 12 (ver `17-FASE12-APPHOT.md`) cierra el núcleo de `apphot`:
+selección de fuente a clic (en vez de fija al centro) y calibración fotométrica real
+-- punto cero resuelto contra Gaia DR3, no una constante introducida a mano. Quedan
+documentados como pendientes, sin bloquear el siguiente bloque, el ajuste de curva de
+crecimiento/radio óptimo y conectar la detección automática de fuentes como paso
+previo interactivo (motor ya real, solo le falta esa conexión). El siguiente bloque a
+abrir, según el orden acordado, es astrometría: los cuatro motores (`wcs_fit`,
+`registration`, proyección/separación angular, reproyección) son sólidos y honestos
+ante fallos de WCS, pero **ninguno tiene todavía un camino de uso desde la GUI**.

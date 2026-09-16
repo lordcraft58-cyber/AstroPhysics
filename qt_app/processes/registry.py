@@ -7,13 +7,18 @@ sin fingir una ejecución que todavía no existe.
 """
 from __future__ import annotations
 
-import numpy as np
+import math
 
+import numpy as np
+from legacy.AstroPhysicsSuite_v57_3_COMMERCIAL import angular_separation_arcsec
+
+from astrophysics_suite.catalogs.gaia import query_gaia_neighbors
 from astrophysics_suite.imtools.cosmic_rays import detect_cosmic_rays
 from astrophysics_suite.imtools.normalize import normalize_percentile
 from astrophysics_suite.imtools.regions import crop
 from astrophysics_suite.imtools.statistics import compute_histogram, compute_image_statistics
 from astrophysics_suite.photometry.aperture import aperture_photometry
+from astrophysics_suite.photometry.calibration import fit_zeropoint
 from astrophysics_suite.photometry.psf import GaussianPSF, fit_group_psf_photometry
 from astrophysics_suite.reduction.overscan import subtract_overscan
 from astrophysics_suite.spectroscopy.continuum import fit_continuum
@@ -51,8 +56,10 @@ def _run_overscan_subtraction(data: np.ndarray, params: dict) -> ProcessResult:
 
 
 def _run_aperture_photometry_center(data: np.ndarray, params: dict) -> ProcessResult:
-    height, width = data.shape
-    x0, y0 = width / 2.0, height / 2.0
+    points = params.get("_picked_points") or []
+    if not points:
+        raise ValueError("no se marcó ninguna posición -- haz clic sobre la fuente antes de medir")
+    x0, y0 = points[0]
     uncertainty = np.sqrt(np.clip(data, 1.0, None))  # modelo de ruido Poisson aproximado -- ver nota en la ayuda del proceso
 
     measurements = aperture_photometry(
@@ -67,10 +74,77 @@ def _run_aperture_photometry_center(data: np.ndarray, params: dict) -> ProcessRe
     snr_text = f"{m.snr:.1f}" if m.snr is not None else "N/D"
     summary = f"Flujo neto: {m.net_flux:.1f} ± {m.net_flux_uncertainty:.1f} ADU  ·  mag={mag_text}  ·  S/N={snr_text}"
     log_lines = (
-        f"Centro de apertura: x={x0:.1f}, y={y0:.1f} (centro de la imagen)",
+        f"Centro de apertura: x={x0:.1f}, y={y0:.1f} (marcado a clic)",
         f"Cielo local: {m.sky_per_pixel:.2f} ± {m.sky_sigma_per_pixel:.2f} ADU/px ({m.n_pixels:.1f} px efectivos de apertura)",
     )
     return ProcessResult(output_data=None, summary=summary, log_lines=log_lines)
+
+
+def _pixel_to_sky(wcs, x: float, y: float) -> tuple[float, float] | tuple[None, None]:
+    if wcs is None:
+        return None, None
+    try:
+        ra, dec = wcs.celestial.all_pix2world(x, y, 0)
+        ra, dec = float(ra), float(dec)
+    except Exception:  # noqa: BLE001 -- un WCS mal formado no debe tirar todo el proceso, solo esa posición
+        return None, None
+    if not (math.isfinite(ra) and math.isfinite(dec)):
+        return None, None
+    return ra, dec
+
+
+def _run_photometric_zeropoint(data: np.ndarray, params: dict) -> ProcessResult:
+    points = params.get("_picked_points") or []
+    if not points:
+        raise ValueError("no se marcó ninguna posición -- haz clic sobre al menos una estrella de referencia (clic derecho para terminar)")
+    wcs = params.get("_wcs")
+    if wcs is None:
+        raise ValueError("la imagen activa no tiene WCS -- no se puede resolver un punto cero contra un catálogo sin coordenadas celestes reales")
+
+    uncertainty = np.sqrt(np.clip(data, 1.0, None))  # modelo de ruido Poisson aproximado -- misma nota que fotometría de apertura
+    radius_px, sky_r_in, sky_r_out = params["radius_px"], params["sky_r_in"], params["sky_r_out"]
+    match_radius_arcsec = params["match_radius_arcsec"]
+
+    instrumental_mags: list[float] = []
+    catalog_mags: list[float] = []
+    log_lines: list[str] = []
+    for x, y in points:
+        measurement = aperture_photometry(
+            data, uncertainty, x, y, radii=[radius_px], sky_r_in=sky_r_in, sky_r_out=sky_r_out, zeropoint_mag=0.0
+        )[0]
+        if measurement.magnitude is None:
+            log_lines.append(f"({x:.1f}, {y:.1f}): flujo neto <= 0 -- descartada.")
+            continue
+        ra, dec = _pixel_to_sky(wcs, x, y)
+        if ra is None:
+            log_lines.append(f"({x:.1f}, {y:.1f}): sin coordenadas celestes válidas -- descartada.")
+            continue
+        gaia_rows = query_gaia_neighbors(ra, dec, radius_arcsec=match_radius_arcsec)
+        if not gaia_rows:
+            log_lines.append(f"({x:.1f}, {y:.1f}) [RA={ra:.5f}, Dec={dec:.5f}]: sin fuentes Gaia en el radio de búsqueda -- descartada.")
+            continue
+        best = min(gaia_rows, key=lambda row: angular_separation_arcsec(ra, dec, row["ra_deg"], row["dec_deg"]))
+        separation = angular_separation_arcsec(ra, dec, best["ra_deg"], best["dec_deg"])
+        if separation > match_radius_arcsec:
+            log_lines.append(f"({x:.1f}, {y:.1f}): fuente Gaia más cercana a {separation:.2f}\", fuera del radio -- descartada.")
+            continue
+        catalog_mag = best.get("mag_g")
+        if catalog_mag is None or not math.isfinite(float(catalog_mag)):
+            log_lines.append(f"({x:.1f}, {y:.1f}): la fuente Gaia emparejada no tiene magnitud G -- descartada.")
+            continue
+        instrumental_mags.append(measurement.magnitude)
+        catalog_mags.append(float(catalog_mag))
+        log_lines.append(f"({x:.1f}, {y:.1f}): mag_instr={measurement.magnitude:.3f}  Gaia G={float(catalog_mag):.3f}  sep={separation:.2f}\"")
+
+    if not instrumental_mags:
+        raise ValueError("ninguna de las posiciones marcadas pudo emparejarse con Gaia -- revisa el WCS de la imagen o el radio de búsqueda")
+
+    fit = fit_zeropoint(instrumental_mags, catalog_mags)
+    summary = (
+        f"Punto cero = {fit.zeropoint_mag:.3f} ± {fit.zeropoint_uncertainty_mag:.3f} mag  ·  "
+        f"{fit.n_stars_used} estrella(s) usadas, {fit.n_stars_rejected} rechazada(s)  ·  RMS={fit.rms_residual_mag:.3f} mag"
+    )
+    return ProcessResult(output_data=None, summary=summary, log_lines=tuple(log_lines))
 
 
 def _run_psf_photometry(data: np.ndarray, params: dict) -> ProcessResult:
@@ -237,9 +311,9 @@ def build_process_registry() -> list[ProcessDefinition]:
         ),
         ProcessDefinition(
             process_id="photometry.aperture",
-            name="Fotometría de apertura (centro)",
+            name="Fotometría de apertura (clic)",
             category="Fotometría",
-            description="Apertura circular con cielo local por anillo, centrada en la imagen -- equivalente a phot. Nota: usa un modelo de ruido Poisson aproximado (sin ganancia/lectura reales) mientras el taller no importa la incertidumbre real de calibración.",
+            description="Apertura circular con cielo local por anillo -- equivalente a phot. Al pulsar Aplicar, marca la fuente con un clic. Nota: usa un modelo de ruido Poisson aproximado (sin ganancia/lectura reales) mientras el taller no importa la incertidumbre real de calibración.",
             parameters=(
                 ParameterSpec("radius_px", "Radio de apertura (px)", "float", 6.0, minimum=1.0, maximum=200.0),
                 ParameterSpec("sky_r_in", "Radio interior de cielo (px)", "float", 12.0, minimum=1.0, maximum=400.0),
@@ -247,6 +321,21 @@ def build_process_registry() -> list[ProcessDefinition]:
                 ParameterSpec("zeropoint_mag", "Punto cero (mag)", "float", 25.0, minimum=-10.0, maximum=40.0),
             ),
             run=_run_aperture_photometry_center,
+            requires_picking=1,
+        ),
+        ProcessDefinition(
+            process_id="photometry.zeropoint",
+            name="Calibración fotométrica (punto cero, Gaia)",
+            category="Fotometría",
+            description="Resuelve el punto cero fotométrico real contra Gaia DR3 -- equivalente a photcal/fitparams. Marca varias estrellas de referencia con clic izquierdo, termina con clic derecho. Requiere que la imagen activa tenga WCS real (cargada de un FITS con astrometría, no simulada).",
+            parameters=(
+                ParameterSpec("radius_px", "Radio de apertura (px)", "float", 6.0, minimum=1.0, maximum=200.0),
+                ParameterSpec("sky_r_in", "Radio interior de cielo (px)", "float", 12.0, minimum=1.0, maximum=400.0),
+                ParameterSpec("sky_r_out", "Radio exterior de cielo (px)", "float", 18.0, minimum=2.0, maximum=500.0),
+                ParameterSpec("match_radius_arcsec", "Radio de emparejamiento (arcsec)", "float", 3.0, minimum=0.1, maximum=30.0),
+            ),
+            run=_run_photometric_zeropoint,
+            requires_picking=0,
         ),
         ProcessDefinition(
             process_id="photometry.psf",

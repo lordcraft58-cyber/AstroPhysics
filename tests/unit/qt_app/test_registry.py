@@ -72,14 +72,132 @@ def test_overscan_subtraction_process_trims_and_subtracts():
     np.testing.assert_allclose(result.output_data, -400.0)
 
 
-def test_aperture_photometry_process_reports_positive_flux_for_central_star():
+def test_aperture_photometry_process_reports_positive_flux_for_picked_star():
     yy, xx = np.mgrid[0:61, 0:61]
     data = 100.0 + 20000.0 / (2 * math.pi * 3.0**2) * np.exp(-(((xx - 30) ** 2 + (yy - 30) ** 2)) / (2 * 3.0**2))
     process = _get("photometry.aperture")
+    assert process.requires_picking == 1
     params = _default_params(process)
+    params["_picked_points"] = [(30.0, 30.0)]
     result = process.run(data, params)
     assert result.output_data is None  # es un proceso de medición, no transforma la imagen
     assert "Flujo neto" in result.summary
+    assert "marcado a clic" in result.log_lines[0]
+
+
+def test_aperture_photometry_process_rejects_no_picked_points():
+    process = _get("photometry.aperture")
+    data = np.full((20, 20), 100.0)
+    params = _default_params(process)
+    try:
+        process.run(data, params)
+    except ValueError as exc:
+        assert "posición" in str(exc)
+    else:
+        raise AssertionError("se esperaba ValueError sin posición marcada")
+
+
+def test_zeropoint_process_requires_unlimited_picking():
+    process = _get("photometry.zeropoint")
+    assert process.requires_picking == 0
+
+
+def test_zeropoint_process_rejects_no_picked_points():
+    process = _get("photometry.zeropoint")
+    data = np.full((20, 20), 100.0)
+    params = _default_params(process)
+    params["_picked_points"] = []
+    params["_wcs"] = object()
+    try:
+        process.run(data, params)
+    except ValueError as exc:
+        assert "posición" in str(exc)
+    else:
+        raise AssertionError("se esperaba ValueError sin posiciones marcadas")
+
+
+def test_zeropoint_process_rejects_missing_wcs():
+    process = _get("photometry.zeropoint")
+    data = np.full((20, 20), 100.0)
+    params = _default_params(process)
+    params["_picked_points"] = [(10.0, 10.0)]
+    params["_wcs"] = None
+    try:
+        process.run(data, params)
+    except ValueError as exc:
+        assert "WCS" in str(exc)
+    else:
+        raise AssertionError("se esperaba ValueError sin WCS")
+
+
+def test_zeropoint_process_fits_real_zeropoint_against_mocked_gaia(monkeypatch):
+    from astropy.wcs import WCS
+
+    import qt_app.processes.registry as registry_module
+
+    shape = (61, 61)
+    star_positions = [(20.0, 20.0, 30000.0), (40.0, 35.0, 12000.0)]
+    yy, xx = np.mgrid[0 : shape[0], 0 : shape[1]]
+    data = np.full(shape, 100.0)
+    sigma = 2.0
+    for x0, y0, flux in star_positions:
+        data = data + flux / (2 * math.pi * sigma**2) * np.exp(-(((xx - x0) ** 2 + (yy - y0) ** 2)) / (2 * sigma**2))
+
+    wcs = WCS(naxis=2)
+    wcs.wcs.crpix = [30.0, 30.0]
+    wcs.wcs.cdelt = [-1.0 / 3600.0, 1.0 / 3600.0]
+    wcs.wcs.crval = [150.0, 2.0]
+    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+
+    true_zeropoint = 24.5
+    gaia_rows = []
+    for x0, y0, flux in star_positions:
+        ra, dec = wcs.celestial.all_pix2world(x0, y0, 0)
+        instrumental_mag = -2.5 * math.log10(flux)
+        catalog_mag = instrumental_mag + true_zeropoint
+        gaia_rows.append({"ra_deg": float(ra), "dec_deg": float(dec), "mag_g": catalog_mag, "source_id": f"{x0}-{y0}"})
+
+    monkeypatch.setattr(registry_module, "query_gaia_neighbors", lambda ra, dec, **kwargs: gaia_rows)
+
+    process = _get("photometry.zeropoint")
+    params = _default_params(process)
+    params["_picked_points"] = [(x0, y0) for x0, y0, _ in star_positions]
+    params["_wcs"] = wcs
+
+    result = process.run(data, params)
+
+    assert result.output_data is None
+    assert "Punto cero" in result.summary
+    recovered = float(result.summary.split("=")[1].split("±")[0].strip())
+    assert recovered == pytest.approx(true_zeropoint, abs=0.3)
+    assert len(result.log_lines) == 2
+
+
+def test_zeropoint_process_rejects_when_no_star_matches_gaia(monkeypatch):
+    from astropy.wcs import WCS
+
+    import qt_app.processes.registry as registry_module
+
+    wcs = WCS(naxis=2)
+    wcs.wcs.crpix = [15.0, 15.0]
+    wcs.wcs.cdelt = [-1.0 / 3600.0, 1.0 / 3600.0]
+    wcs.wcs.crval = [150.0, 2.0]
+    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+
+    monkeypatch.setattr(registry_module, "query_gaia_neighbors", lambda ra, dec, **kwargs: [])
+
+    process = _get("photometry.zeropoint")
+    data = np.full((30, 30), 100.0)
+    params = _default_params(process)
+    params["_picked_points"] = [(15.0, 15.0)]
+    params["_wcs"] = wcs
+
+    try:
+        process.run(data, params)
+    except ValueError as exc:
+        assert "Gaia" in str(exc)
+    else:
+        raise AssertionError("se esperaba ValueError sin ningún emparejamiento Gaia")
 
 
 def test_continuum_fit_process_runs_on_central_row():

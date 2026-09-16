@@ -17,6 +17,8 @@ import pytest
 
 PySide6 = pytest.importorskip("PySide6", reason="PySide6 no instalado en este entorno")
 
+from PySide6.QtCore import Qt, QPointF  # noqa: E402
+from PySide6.QtGui import QMouseEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 
@@ -107,10 +109,26 @@ def test_running_measurement_process_does_not_create_new_window(qapp, main_windo
     sub_window = main_window.add_image_window(data, "phot_test.fits")
     main_window.mdi.setActiveSubWindow(sub_window)
     qapp.processEvents()
+    view = sub_window.widget()
 
     windows_before = len(main_window.mdi.subWindowList())
     default_params = {p.name: p.default for p in main_window._process_by_id["photometry.aperture"].parameters}
-    _run_process_and_wait(qapp, main_window, "photometry.aperture", default_params)
+    main_window._run_process("photometry.aperture", default_params)
+    qapp.processEvents()
+    assert view._picking is True  # ahora pide marcar la fuente con un clic
+
+    view_point = view.mapFromScene(QPointF(40.0, 40.0))
+    event = QMouseEvent(
+        QMouseEvent.Type.MouseButtonPress, QPointF(view_point), Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier
+    )
+    view.mousePressEvent(event)  # un único clic: termina sola (requires_picking=1)
+    qapp.processEvents()
+
+    deadline = time.monotonic() + 5.0
+    while main_window._active_worker is not None and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    qapp.processEvents()
 
     assert len(main_window.mdi.subWindowList()) == windows_before
 

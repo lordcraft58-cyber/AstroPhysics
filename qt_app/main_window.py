@@ -172,10 +172,10 @@ class MainWindow(QMainWindow):
             logger.error("No se pudo abrir %s: %s", path, exc)
             QMessageBox.critical(self, "Abrir FITS", f"No se pudo abrir «{Path(path).name}»:\n\n{exc}")
             return None
-        return self.add_image_window(loaded.legacy_image.data, Path(path).name)
+        return self.add_image_window(loaded.legacy_image.data, Path(path).name, wcs=loaded.legacy_image.wcs)
 
-    def add_image_window(self, data, title: str) -> QMdiSubWindow:
-        view = ImageView(data, title, self)
+    def add_image_window(self, data, title: str, *, wcs=None) -> QMdiSubWindow:
+        view = ImageView(data, title, self, wcs=wcs)
         view.process_dropped.connect(lambda process_id, v=view: self._on_process_dropped(process_id, v))
 
         sub_window = QMdiSubWindow()
@@ -311,6 +311,9 @@ class MainWindow(QMainWindow):
     def _start_process_worker(self, process: ProcessDefinition, view: ImageView, params: dict) -> None:
         self.statusBar().showMessage(f"Ejecutando: {process.name}...")
         self.properties.apply_button.setEnabled(False)
+
+        params = dict(params)
+        params["_wcs"] = view.wcs
 
         worker = ProcessWorker(process.run, view.data, params, self)
         worker.finished_ok.connect(lambda result, p=process, v=view: self._on_process_finished(p, v, result))

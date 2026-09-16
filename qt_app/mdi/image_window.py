@@ -28,10 +28,15 @@ class ImageView(QGraphicsView):
     lista de puntos `(x_px, y_px)` marcados (posiblemente vacía si se
     canceló sin marcar ninguno)."""
 
-    def __init__(self, data: np.ndarray, title: str, parent=None):
+    def __init__(self, data: np.ndarray, title: str, parent=None, *, wcs=None):
         super().__init__(parent)
         self.data = data
         self.title = title
+        self.wcs = wcs
+        """El WCS real cargado del FITS (`astropy.wcs.WCS`, o `None` si el
+        archivo no tenía uno) -- disponible para cualquier proceso que
+        necesite coordenadas celestes reales (p. ej. calibración
+        fotométrica contra un catálogo), inyectado por `main_window`."""
         self.stf_params: STFParams = compute_stf_params(data)
         self.stf_enabled = True
 
