@@ -5,7 +5,6 @@ lógica científica (ver docs/audit/10-FASE8-GUI.md).
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import ttk
 
 from services.discovery_service import DiscoveryJob
 from services.logging_bridge import GuiLogBridge

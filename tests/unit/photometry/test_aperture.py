@@ -52,7 +52,6 @@ def test_estimate_local_sky_rejects_invalid_radii():
 
 
 def test_aperture_photometry_recovers_known_flux_for_isolated_gaussian_star():
-    shape = (81, 81)
     background_level = 200.0
     true_flux = 50000.0
     sigma = 2.5
@@ -71,7 +70,6 @@ def test_aperture_photometry_recovers_known_flux_for_isolated_gaussian_star():
 
 
 def test_aperture_photometry_curve_of_growth_is_monotonically_increasing():
-    shape = (61, 61)
     yy, xx = np.mgrid[0:61, 0:61]
     star = 20000.0 / (2 * math.pi * 3.0**2) * np.exp(-(((xx - 30) ** 2 + (yy - 30) ** 2)) / (2 * 3.0**2))
     data = 150.0 + star

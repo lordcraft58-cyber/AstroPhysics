@@ -13,14 +13,13 @@ prueba.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest import mock
 
 import pytest
 
 tk = pytest.importorskip("tkinter")
 
 from astrophysics_suite.core.enums import (  # noqa: E402
-    ArtifactKind, IdentificationState, MorphologyClass, QualityLevel, ReviewState, ValueKind,
+    IdentificationState, MorphologyClass, QualityLevel, ReviewState, ValueKind,
 )
 from astrophysics_suite.core.provenance import Provenance  # noqa: E402
 from astrophysics_suite.core.quantity import Quantity  # noqa: E402

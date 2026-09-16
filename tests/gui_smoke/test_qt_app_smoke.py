@@ -17,7 +17,7 @@ import pytest
 
 PySide6 = pytest.importorskip("PySide6", reason="PySide6 no instalado en este entorno")
 
-from PySide6.QtWidgets import QApplication, QMdiSubWindow  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
 
 
 def _display_available() -> bool:

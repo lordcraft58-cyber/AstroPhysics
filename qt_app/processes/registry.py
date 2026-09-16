@@ -7,8 +7,6 @@ sin fingir una ejecución que todavía no existe.
 """
 from __future__ import annotations
 
-import math
-
 import numpy as np
 
 from astrophysics_suite.imtools.cosmic_rays import detect_cosmic_rays

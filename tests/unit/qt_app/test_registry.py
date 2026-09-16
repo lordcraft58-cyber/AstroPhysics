@@ -6,7 +6,6 @@ from __future__ import annotations
 import math
 
 import numpy as np
-import pytest
 
 from qt_app.processes.registry import build_process_registry
 
@@ -73,7 +72,6 @@ def test_overscan_subtraction_process_trims_and_subtracts():
 
 
 def test_aperture_photometry_process_reports_positive_flux_for_central_star():
-    shape = (61, 61)
     yy, xx = np.mgrid[0:61, 0:61]
     data = 100.0 + 20000.0 / (2 * math.pi * 3.0**2) * np.exp(-(((xx - 30) ** 2 + (yy - 30) ** 2)) / (2 * 3.0**2))
     process = _get("photometry.aperture")

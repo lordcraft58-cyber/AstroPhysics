@@ -18,7 +18,6 @@ from astrophysics_suite.models.candidate import (
     AIAssessment,
     ArtifactCheck,
     Candidate,
-    CatalogMatch,
     CatalogQuery,
     QualityCheckItem,
     QualitySummary,
@@ -109,7 +108,6 @@ def test_mark_reviewed_rejects_returning_to_pending():
 def test_candidate_never_declares_discovery():
     """Ningún estado de Candidate significa "descubrimiento confirmado" --
     ni siquiera DISCOVERY_REVIEW, que pide explícitamente revisión humana."""
-    candidate = _sample_candidate()
     discovery_like_values = {s.value for s in IdentificationState}
     assert "DISCOVERY_CONFIRMED" not in discovery_like_values
     assert "NEW_OBJECT" not in discovery_like_values

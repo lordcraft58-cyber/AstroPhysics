@@ -8,7 +8,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
-from gui.theme import QUALITY_COLOR_KEY, REVIEW_COLOR_KEY, REVIEW_LABEL_ES, STATE_COLOR_KEY, STATE_LABEL_ES, color_for
+from gui.theme import REVIEW_COLOR_KEY, REVIEW_LABEL_ES, STATE_COLOR_KEY, STATE_LABEL_ES, color_for
 from gui.widgets.badge import Badge
 from gui.widgets.card import Card
 from gui.widgets.scrollable import ScrollableFrame

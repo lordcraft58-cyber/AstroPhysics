@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import tkinter as tk
 
-from gui.theme import Fonts, Palette
+from gui.theme import Fonts
 
 
 class Badge(tk.Canvas):

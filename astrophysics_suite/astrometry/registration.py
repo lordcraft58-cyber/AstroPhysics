@@ -138,8 +138,6 @@ def reproject_to_reference(
     offset_x = xx.ravel() - reference_wcs.crpix_px[0]
     offset_y = yy.ravel() - reference_wcs.crpix_px[1]
     xi_eta = reference_wcs.cd_matrix_deg_per_px @ np.vstack([offset_x, offset_y])
-    from astrophysics_suite.astrometry.wcs_fit import gnomonic_deproject, gnomonic_project
-
     ra_grid, dec_grid = gnomonic_deproject(xi_eta[0], xi_eta[1], reference_wcs.crval_deg[0], reference_wcs.crval_deg[1])
 
     xi_src, eta_src = gnomonic_project(np.asarray(ra_grid), np.asarray(dec_grid), source_wcs.crval_deg[0], source_wcs.crval_deg[1])

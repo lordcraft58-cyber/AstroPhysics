@@ -22,7 +22,7 @@ arriesgaría inventar un mapeo que luego haya que deshacer.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 from astrophysics_suite.core.enums import ArtifactKind, IdentificationState, MorphologyClass, QualityLevel

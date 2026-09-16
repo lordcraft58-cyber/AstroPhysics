@@ -18,7 +18,6 @@ import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
 
 from astrophysics_suite.discovery.pipeline import DiscoveryCancelled, DiscoveryRunSummary, run_generic_discovery
 from astrophysics_suite.io.fits_loader import LoadedImage, build_observation

@@ -6,7 +6,6 @@ from astrophysics_suite.core.enums import IdentificationState, MorphologyClass, 
 from astrophysics_suite.core.provenance import Provenance
 from astrophysics_suite.models.candidate import Candidate, QualitySummary
 from astrophysics_suite.models.detection import MorphologySummary, SkyPosition
-from astrophysics_suite.models.observation import Observation
 from services.session_state import SessionState
 
 

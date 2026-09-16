@@ -11,7 +11,7 @@ el vocabulario de identificación con las señales que lo alimentan).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from astrophysics_suite.core.quantity import Quantity

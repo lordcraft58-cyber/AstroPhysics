@@ -25,15 +25,11 @@ KNOWN_PREEXISTING_FAILURES = {
 
 
 def test_embedded_selftest_suite(aps, capsys):
-    checks = []
-
-    original_print = print
-
     # selftest() imprime "[OK ]"/"[FAIL] <name> <detail>" por cada check en
     # vez de devolver la lista estructurada; se captura vía stdout porque
     # cambiar su contrato de retorno es trabajo de la Fase 5 (portarla a
     # pytest de verdad), no de esta regresión puente.
-    ok = aps.selftest(verbose=True)
+    aps.selftest(verbose=True)
     captured = capsys.readouterr().out
 
     failures = []

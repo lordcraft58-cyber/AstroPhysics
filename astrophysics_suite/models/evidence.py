@@ -10,7 +10,7 @@ revisión humana siempre obligatoria.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from astrophysics_suite.core.quantity import Quantity
