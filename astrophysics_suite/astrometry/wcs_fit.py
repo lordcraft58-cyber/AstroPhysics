@@ -88,6 +88,36 @@ class WCSSolution:
         return float(offset[0] + self.crpix_px[0]), float(offset[1] + self.crpix_px[1])
 
 
+def wcs_solution_from_astropy(wcs, *, crpix_px: tuple[float, float] | None = None) -> WCSSolution:
+    """Convierte un WCS real ya cargado de un FITS (`astropy.wcs.WCS`,
+    p. ej. `ImageView.wcs`) al `WCSSolution` propio del proyecto, para
+    poder reutilizarlo con `registration.reproject_to_reference` sin
+    duplicar ninguna álgebra.
+
+    Es una lectura directa de la cabecera, no un ajuste -- por eso
+    `residuals_arcsec`/`rms_residual_arcsec`/`n_stars` quedan vacíos/cero:
+    no representan la calidad de ningún ajuste hecho aquí, a diferencia
+    de un `WCSSolution` que sí viene de `fit_wcs`.
+
+    `crpix_px`, si se omite, usa el `CRPIX` de la cabecera, convertido de
+    la convención FITS (1-indexada) a la 0-indexada que usa el resto del
+    proyecto (misma convención que las posiciones de píxel marcadas a
+    clic sobre `ImageView`).
+    """
+    if crpix_px is None:
+        crpix_px = (float(wcs.wcs.crpix[0]) - 1.0, float(wcs.wcs.crpix[1]) - 1.0)
+    crval_deg = (float(wcs.wcs.crval[0]), float(wcs.wcs.crval[1]))
+    cd_matrix = np.asarray(wcs.pixel_scale_matrix, dtype=np.float64)
+    return WCSSolution(
+        crval_deg=crval_deg,
+        crpix_px=crpix_px,
+        cd_matrix_deg_per_px=cd_matrix,
+        residuals_arcsec=(),
+        rms_residual_arcsec=0.0,
+        n_stars=0,
+    )
+
+
 def fit_wcs(
     pixel_xy: list[tuple[float, float]],
     sky_radec: list[tuple[float, float]],

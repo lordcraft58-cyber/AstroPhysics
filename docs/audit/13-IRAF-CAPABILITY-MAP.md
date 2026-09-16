@@ -90,12 +90,13 @@ capacidad sin implementar en absoluto).
 |---|---|---|---|---|
 | Proyección tangencial (TAN) pixel↔cielo, ambas direcciones | Real, `astrometry/wcs_fit.py:24/37` | `tests/unit/astrometry/test_wcs_fit.py` | — | **DISPONIBLE** (como motor) |
 | Separación angular (gran círculo, fórmula haversine) | Real, `wcs_fit.py:57` | ídem | — | **DISPONIBLE** |
-| Ajuste WCS lineal (matriz CD) desde pares pixel↔cielo, con residuo por estrella y RMS | Real, `wcs_fit.py:91` (`fit_wcs`) -- **deliberadamente sin términos SIP/TPV de orden superior**, documentado como límite de alcance | ídem | Proceso `astrometry.wcs_fit` listado, **sin `run=`** | **PENDIENTE** (motor real, sin camino de uso) |
-| Registro/alineación afín o de similitud entre dos imágenes desde estrellas emparejadas, con RMS de residuo | Real, `astrometry/registration.py:31` (`fit_affine_transform`) | `tests/unit/astrometry/test_registration.py` | Proceso `astrometry.registration` listado, **sin `run=`** | **PENDIENTE** (motor real, sin camino de uso) |
-| Remuestreo/reproyección de una imagen a la solución WCS de otra | Real, `registration.py:87/115` (`apply_affine_transform`, `reproject_to_reference`) | ídem | — | **DISPONIBLE** (como motor) |
-| Emparejamiento automático uno-a-uno contra catálogo de referencia (Gaia) | Real, pero vive en `catalogs/gaia.py`, no orquestado junto a `fit_wcs` -- no existe una función única "detectar -> consultar Gaia -> emparejar -> ajustar WCS" | ver §6 | Sin camino de uso desde `astrometry.wcs_fit` | **PENDIENTE** (como flujo integrado) |
-| Comunicación honesta de problemas de WCS (nunca inventa coordenadas) | Real y verificado: `detection/point_sources.py:78-81` deja `ra_deg`/`dec_deg` en `None` sin WCS válido; `catalogs/gaia.py:39-44` cae explícitamente a `DISCOVERY_REVIEW` con motivo `"sin coordenadas celestes (sin WCS válido)"` | `docs/audit/09-FASE7-DISCOVERY-ENGINE.md` (verificado end-to-end) | — | **DISPONIBLE** |
-| Exportación de posiciones con incertidumbre y métricas de calidad | Parcial: `WCSSolution` sí expone `residuals_arcsec`/`rms_residual_arcsec`; no hay una exportación tabular dedicada (ligado al vacío de "tablas", §6) | — | — | **PENDIENTE** (como exportación) |
+| Ajuste WCS lineal (matriz CD) desde pares pixel↔cielo, con residuo por estrella y RMS | Real, `wcs_fit.py:91` (`fit_wcs`) -- **deliberadamente sin términos SIP/TPV de orden superior**, documentado como límite de alcance | ídem | Menú Astrometría → "Ajustar WCS (clic + coordenadas)..." -- clic en N estrellas + tabla de RA/Dec introducida a mano (sin resolución automática/"blind solving", igual que `ccmap` interactivo) -- ver Fase 13 | **DISPONIBLE** |
+| Registro/alineación afín o de similitud entre dos imágenes desde estrellas emparejadas, con RMS de residuo | Real, `astrometry/registration.py:31` (`fit_affine_transform`) | `tests/unit/astrometry/test_registration.py` | **Sin camino de uso** -- necesitaría selección de pares de estrellas emparejadas entre dos ventanas MDI a la vez, interacción no construida en esta fase | **PENDIENTE** (motor real, sin camino de uso; ver registro por WCS compartido más abajo como alternativa ya cableada) |
+| Remuestreo/reproyección de una imagen a la solución WCS de otra | Real, `registration.py:87/115` (`apply_affine_transform`, `reproject_to_reference`) | ídem | Menú Astrometría → "Registrar por WCS compartido..." -- selector de dos ventanas, cada una con WCS real (cargado o recién ajustado) -- ver Fase 13 | **DISPONIBLE** |
+| Conversión de un WCS real cargado de FITS al `WCSSolution` propio (para reproyectar sin duplicar álgebra) | No existía | `wcs_fit.py` (`wcs_solution_from_astropy`) -- ver Fase 13 | `tests/unit/astrometry/test_wcs_fit.py` | Usado internamente por "Registrar por WCS compartido..." | **DISPONIBLE** |
+| Emparejamiento automático uno-a-uno contra catálogo de referencia (Gaia) | Real, pero vive en `catalogs/gaia.py`, no orquestado junto a `fit_wcs` -- no existe una función única "detectar -> consultar Gaia -> emparejar -> ajustar WCS" | ver §6 | Sin camino de uso desde "Ajustar WCS..." (que pide RA/Dec a mano, sin resolución automática) | **PENDIENTE** (como flujo integrado -- "blind solving" real queda fuera de alcance, ver Fase 13) |
+| Comunicación honesta de problemas de WCS (nunca inventa coordenadas) | Real y verificado: `detection/point_sources.py:78-81` deja `ra_deg`/`dec_deg` en `None` sin WCS válido; `catalogs/gaia.py:39-44` cae explícitamente a `DISCOVERY_REVIEW` con motivo `"sin coordenadas celestes (sin WCS válido)"` | `docs/audit/09-FASE7-DISCOVERY-ENGINE.md` (verificado end-to-end); también `photometry.zeropoint` (Fase 12) y "Registrar por WCS compartido..." (Fase 13), que fallan con un mensaje claro en vez de fingir un WCS | — | **DISPONIBLE** |
+| Exportación de posiciones con incertidumbre y métricas de calidad | Parcial: `WCSSolution` sí expone `residuals_arcsec`/`rms_residual_arcsec`, reportados en la consola tras "Ajustar WCS..."; no hay una exportación tabular a archivo (ligado al vacío de "tablas", §6) | — | — | **PENDIENTE** (como exportación a archivo) |
 
 ---
 
@@ -151,7 +152,7 @@ en la Fase 10.1 (que se centra en cerrar `ccdred`), pero debe abordarse antes de
 | Análisis de imagen | 6 | 0 | 0 | **Cerrado.** Aritmética entre dos imágenes, estadísticas+histograma, recorte por clic y normalización por percentiles, todos con motor real y camino de uso en la GUI (Fase 11.1) |
 | `apphot` | 5 | 1 | 1 | **Núcleo cerrado en Fase 12**: selección de fuente a clic y calibración de punto cero real contra Gaia. Quedan pendientes solo el ajuste de curva de crecimiento/radio óptimo y conectar la detección automática como paso previo interactivo |
 | `daophot` | 2 | 2 | 4 | Núcleo real (deblending simultáneo, tres modelos PSF); falta selección/refinamiento/diagnóstico automáticos |
-| Astrometría | 4 | 0 | 4 | Motores sólidos y honestos ante fallos de WCS; **ninguno wireado en la GUI todavía** |
+| Astrometría | 6 | 0 | 3 | **Núcleo cerrado en Fase 13**: ajuste de WCS real (clic + coordenadas a mano, sin "blind solving") y registro por WCS compartido, ambos cableados. Quedan pendientes: registro por pares de estrellas emparejadas entre dos ventanas (interacción no construida), resolución automática contra catálogo, y exportación de posiciones a archivo |
 | Tablas/catálogos | 2 | 0 | 3 | Solo Gaia; sin contrato `Table`/`Source` compartido -- brecha de arquitectura real |
 | Espectroscopía | 5 | 4 | 5 | Motor más completo de lo esperado (Horne, sensfunc, extinción); GUI puramente demostrativa en todo lo que expone |
 
@@ -175,7 +176,16 @@ selección de fuente a clic (en vez de fija al centro) y calibración fotométri
 -- punto cero resuelto contra Gaia DR3, no una constante introducida a mano. Quedan
 documentados como pendientes, sin bloquear el siguiente bloque, el ajuste de curva de
 crecimiento/radio óptimo y conectar la detección automática de fuentes como paso
-previo interactivo (motor ya real, solo le falta esa conexión). El siguiente bloque a
-abrir, según el orden acordado, es astrometría: los cuatro motores (`wcs_fit`,
-`registration`, proyección/separación angular, reproyección) son sólidos y honestos
-ante fallos de WCS, pero **ninguno tiene todavía un camino de uso desde la GUI**.
+previo interactivo (motor ya real, solo le falta esa conexión). La Fase 13 (ver
+`18-FASE13-ASTROMETRIA.md`) cierra el núcleo del bloque de astrometría: "Ajustar
+WCS..." (clic en estrellas + tabla de coordenadas a mano, sin resolución automática
+-- mismo alcance que el `ccmap` interactivo clásico) y "Registrar por WCS
+compartido..." (reproyección real entre dos imágenes que ya tienen WCS). Queda
+documentado como pendiente, sin bloquear el siguiente bloque, el registro por pares
+de estrellas emparejadas entre dos ventanas a la vez (necesitaría una interacción de
+selección cruzada entre dos vistas que no se construyó en esta fase) y la resolución
+automática contra catálogo ("blind solving", un problema bastante más difícil que
+cualquier otra capacidad cerrada hasta ahora). El siguiente bloque a abrir, según el
+orden acordado, es tablas/catálogos: hoy solo existe Gaia, acoplado directamente, sin
+ningún contrato `Table`/`Source` compartido entre motores -- la brecha de
+arquitectura real que señala `13-IRAF-CAPABILITY-MAP.md` §6.

@@ -10,6 +10,7 @@ from astrophysics_suite.astrometry.wcs_fit import (
     fit_wcs,
     gnomonic_deproject,
     gnomonic_project,
+    wcs_solution_from_astropy,
 )
 
 
@@ -86,3 +87,40 @@ def test_fit_wcs_requires_at_least_three_stars():
 def test_fit_wcs_rejects_length_mismatch():
     with pytest.raises(ValueError):
         fit_wcs([(0, 0), (1, 1), (2, 2)], [(150.0, 20.0), (150.1, 20.1)], crpix_px=(0, 0))
+
+
+def test_wcs_solution_from_astropy_matches_direct_pix2world():
+    from astropy.wcs import WCS
+
+    wcs = WCS(naxis=2)
+    wcs.wcs.crpix = [500.5, 400.5]  # convención FITS 1-indexada
+    wcs.wcs.cdelt = [-0.4 / 3600.0, 0.4 / 3600.0]
+    wcs.wcs.crval = [210.0, -15.0]
+    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+
+    solution = wcs_solution_from_astropy(wcs)
+
+    assert solution.crval_deg == pytest.approx((210.0, -15.0))
+    assert solution.crpix_px == pytest.approx((499.5, 399.5))  # convertido a 0-indexada
+    assert solution.n_stars == 0
+    assert solution.rms_residual_arcsec == pytest.approx(0.0)
+
+    for x0, y0 in [(499.5, 399.5), (300.0, 250.0), (700.0, 600.0)]:
+        expected_ra, expected_dec = wcs.celestial.all_pix2world(x0, y0, 0)
+        ra, dec = solution.pixel_to_sky(x0, y0)
+        assert ra == pytest.approx(float(expected_ra), abs=1e-6)
+        assert dec == pytest.approx(float(expected_dec), abs=1e-6)
+
+
+def test_wcs_solution_from_astropy_accepts_explicit_crpix():
+    from astropy.wcs import WCS
+
+    wcs = WCS(naxis=2)
+    wcs.wcs.crpix = [100.0, 100.0]
+    wcs.wcs.cdelt = [-1.0 / 3600.0, 1.0 / 3600.0]
+    wcs.wcs.crval = [10.0, 5.0]
+    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+
+    solution = wcs_solution_from_astropy(wcs, crpix_px=(50.0, 60.0))
+
+    assert solution.crpix_px == (50.0, 60.0)

@@ -37,6 +37,11 @@ class ImageView(QGraphicsView):
         archivo no tenía uno) -- disponible para cualquier proceso que
         necesite coordenadas celestes reales (p. ej. calibración
         fotométrica contra un catálogo), inyectado por `main_window`."""
+        self.fitted_wcs_solution = None
+        """`astrophysics_suite.astrometry.wcs_fit.WCSSolution` ajustado a
+        mano sobre esta ventana (ver "Ajustar WCS..."), distinto de
+        `self.wcs` (que viene de la cabecera del FITS, si la tenía) --
+        `None` hasta que el usuario ajuste uno."""
         self.stf_params: STFParams = compute_stf_params(data)
         self.stf_enabled = True
 

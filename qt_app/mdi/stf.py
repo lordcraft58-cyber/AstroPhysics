@@ -48,8 +48,20 @@ def _solve_midtones_balance(normalized_median: float, target_background: float) 
 
     # la MTF es monótona en m para x fijo en (0,1) -- brentq converge de
     # forma fiable en el intervalo abierto (evitando los extremos 0/1,
-    # donde la propia función está indefinida por construcción).
-    return brentq(objective, 1e-6, 1 - 1e-6, xtol=1e-10)
+    # donde la propia función está indefinida por construcción), salvo en
+    # un caso degenerado real: si la mediana normalizada está pegada a 0
+    # o a 1 (p. ej. un campo casi vacío con una única fuente brillante,
+    # donde la mediana robusta coincide casi exactamente con el mínimo),
+    # MTF(x, m) no puede alcanzar `target_background` para NINGÚN balance
+    # -- no hay raíz que buscar, y brentq lanzaría por no encontrar un
+    # cambio de signo. Se detecta ese caso explícitamente en vez de
+    # dejar que falle, y se usa el balance neutro (el punto de corte de
+    # sombras/luces ya domina el estiramiento cuando esto ocurre).
+    low, high = 1e-6, 1 - 1e-6
+    f_low, f_high = objective(low), objective(high)
+    if (f_low > 0) == (f_high > 0) and f_low != 0.0 and f_high != 0.0:
+        return 0.5
+    return brentq(objective, low, high, xtol=1e-10)
 
 
 @dataclass(frozen=True)

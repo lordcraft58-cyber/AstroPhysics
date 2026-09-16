@@ -13,6 +13,8 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import QDockWidget, QFileDialog, QMainWindow, QMdiArea, QMdiSubWindow, QMessageBox, QProgressBar
 
+from qt_app.astrometry.registration_dialog import RegistrationDialog
+from qt_app.astrometry.wcs_fit_dialog import WCSFitDialog
 from qt_app.candidates.candidate_detail_widget import CandidateDetailWidget
 from qt_app.candidates.candidates_dock import CandidatesDock
 from qt_app.candidates.new_observation_dialog import NewObservationDialog
@@ -141,6 +143,14 @@ class MainWindow(QMainWindow):
         reduce_session_action.triggered.connect(self._open_reduce_session_dialog)
         reduction_menu.addAction(reduce_session_action)
 
+        astrometry_menu = self.menuBar().addMenu("A&strometría")
+        wcs_fit_action = QAction("Ajustar &WCS (clic + coordenadas)...", self)
+        wcs_fit_action.triggered.connect(self._open_wcs_fit_flow)
+        astrometry_menu.addAction(wcs_fit_action)
+        registration_action = QAction("&Registrar por WCS compartido...", self)
+        registration_action.triggered.connect(self._open_registration_dialog)
+        astrometry_menu.addAction(registration_action)
+
         view_menu = self.menuBar().addMenu("&Vista")
         stf_action = QAction("Alternar STF en la imagen activa", self)
         stf_action.setShortcut("Ctrl+T")
@@ -217,6 +227,51 @@ class MainWindow(QMainWindow):
         dialog = ArithmeticDialog(windows, active_title, self)
         dialog.computed.connect(lambda data, title: self.add_image_window(data, title))
         dialog.exec()
+
+    def _image_views_by_title(self) -> dict[str, ImageView]:
+        views: dict[str, ImageView] = {}
+        for sub_window in self.mdi.subWindowList():
+            widget = sub_window.widget()
+            if isinstance(widget, ImageView):
+                views[sub_window.windowTitle()] = widget
+        return views
+
+    def _open_registration_dialog(self) -> None:
+        views = self._image_views_by_title()
+        if len(views) < 2:
+            self.statusBar().showMessage("Abre al menos dos imágenes antes de registrar una contra la otra.", 5000)
+            return
+        active = self._active_image_view()
+        active_title = active.title if active is not None else ""
+        dialog = RegistrationDialog(views, active_title, self)
+        dialog.computed.connect(lambda data, title: self.add_image_window(data, title))
+        dialog.exec()
+
+    def _open_wcs_fit_flow(self) -> None:
+        view = self._active_image_view()
+        if view is None:
+            self.statusBar().showMessage("Abre o selecciona una imagen antes de ajustar un WCS.", 5000)
+            return
+        self.statusBar().showMessage("Ajustar WCS: haz clic en cada estrella de referencia -- clic derecho para terminar.")
+
+        def on_picked(points: list[tuple[float, float]]) -> None:
+            view.picking_finished.disconnect(on_picked)
+            if len(points) < 3:
+                self.statusBar().showMessage("Se necesitan al menos 3 estrellas para ajustar un WCS.", 5000)
+                return
+            dialog = WCSFitDialog(points, view.data.shape, self)
+            dialog.fitted.connect(lambda solution, v=view: self._on_wcs_fitted(v, solution))
+            dialog.exec()
+
+        view.picking_finished.connect(on_picked)
+        view.start_picking()
+
+    def _on_wcs_fitted(self, view: ImageView, solution) -> None:
+        view.fitted_wcs_solution = solution
+        logger.info(
+            "WCS ajustado para %s: RMS=%.3f\" con %d estrella(s).", view.title, solution.rms_residual_arcsec, solution.n_stars
+        )
+        self.statusBar().showMessage(f"WCS ajustado para {view.title} (RMS={solution.rms_residual_arcsec:.3f}\").", 6000)
 
     def _open_build_master_frame_dialog(self) -> None:
         dialog = BuildMasterFrameDialog(self.master_frame_library, self)

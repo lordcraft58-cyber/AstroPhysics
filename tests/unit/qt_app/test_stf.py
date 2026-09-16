@@ -97,3 +97,21 @@ def test_compute_stf_params_constant_image_does_not_raise():
     assert isinstance(params, STFParams)
     result = apply_stf(data, params)
     assert np.all(np.isfinite(result))
+
+
+def test_compute_stf_params_mostly_flat_field_with_single_bright_source_does_not_raise():
+    """Bug real: un campo casi vacío con una única fuente brillante deja
+    la mediana robusta pegada casi exactamente al fondo (MAD ~ 0) --
+    la mediana normalizada queda tan cerca de 0 que la MTF no puede
+    alcanzar el fondo objetivo con ningún balance de tonos medios, y
+    `scipy.optimize.brentq` lanzaba `ValueError: f(a) and f(b) must have
+    different signs` en vez de que `compute_stf_params` lo manejara."""
+    shape = (50, 50)
+    yy, xx = np.mgrid[0 : shape[0], 0 : shape[1]]
+    data = 100.0 + 5000.0 * np.exp(-(((xx - 25) ** 2 + (yy - 25) ** 2)) / (2 * 3.0**2))
+
+    params = compute_stf_params(data)  # no debe lanzar
+
+    assert isinstance(params, STFParams)
+    result = apply_stf(data, params)
+    assert np.all(np.isfinite(result))
