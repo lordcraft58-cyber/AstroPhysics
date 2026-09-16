@@ -23,6 +23,7 @@ from astrophysics_suite.photometry.psf import GaussianPSF, fit_group_psf_photome
 from astrophysics_suite.reduction.overscan import subtract_overscan
 from astrophysics_suite.spectroscopy.continuum import fit_continuum
 from astrophysics_suite.spectroscopy.trace import extract_optimal, extract_sum, trace_spectrum
+from astrophysics_suite.tables.table import Table
 from qt_app.processes.base import ParameterSpec, ProcessDefinition, ProcessResult
 
 
@@ -108,6 +109,7 @@ def _run_photometric_zeropoint(data: np.ndarray, params: dict) -> ProcessResult:
     instrumental_mags: list[float] = []
     catalog_mags: list[float] = []
     log_lines: list[str] = []
+    table_rows: list[tuple] = []
     for x, y in points:
         measurement = aperture_photometry(
             data, uncertainty, x, y, radii=[radius_px], sky_r_in=sky_r_in, sky_r_out=sky_r_out, zeropoint_mag=0.0
@@ -135,6 +137,7 @@ def _run_photometric_zeropoint(data: np.ndarray, params: dict) -> ProcessResult:
         instrumental_mags.append(measurement.magnitude)
         catalog_mags.append(float(catalog_mag))
         log_lines.append(f"({x:.1f}, {y:.1f}): mag_instr={measurement.magnitude:.3f}  Gaia G={float(catalog_mag):.3f}  sep={separation:.2f}\"")
+        table_rows.append((len(table_rows) + 1, x, y, ra, dec, measurement.magnitude, float(catalog_mag), separation))
 
     if not instrumental_mags:
         raise ValueError("ninguna de las posiciones marcadas pudo emparejarse con Gaia -- revisa el WCS de la imagen o el radio de búsqueda")
@@ -144,7 +147,16 @@ def _run_photometric_zeropoint(data: np.ndarray, params: dict) -> ProcessResult:
         f"Punto cero = {fit.zeropoint_mag:.3f} ± {fit.zeropoint_uncertainty_mag:.3f} mag  ·  "
         f"{fit.n_stars_used} estrella(s) usadas, {fit.n_stars_rejected} rechazada(s)  ·  RMS={fit.rms_residual_mag:.3f} mag"
     )
-    return ProcessResult(output_data=None, summary=summary, log_lines=tuple(log_lines))
+    # tabla de las estrellas emparejadas con éxito contra Gaia (antes del
+    # rechazo robusto final de fit_zeropoint, que no expone qué índice
+    # original rechazó) -- sigue siendo un export real y útil: las
+    # medidas de entrada al ajuste, no un resultado inventado.
+    table = Table(
+        columns=("star", "x", "y", "ra", "dec", "instrumental_mag", "catalog_mag", "separation"),
+        units=("", "px", "px", "deg", "deg", "mag", "mag", "arcsec"),
+        rows=tuple(table_rows),
+    )
+    return ProcessResult(output_data=None, summary=summary, log_lines=tuple(log_lines), table=table)
 
 
 def _run_psf_photometry(data: np.ndarray, params: dict) -> ProcessResult:

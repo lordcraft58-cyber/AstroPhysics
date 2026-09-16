@@ -106,20 +106,28 @@ capacidad sin implementar en absoluto).
 |---|---|---|---|---|
 | Consulta seguraante red a Gaia (nunca lanza, degrada a lista vacía) | Real, `catalogs/gaia.py:19` (`query_gaia_neighbors`) | — | Usado por el Discovery Engine | **DISPONIBLE** |
 | Clasificación por vecino más cercano contra Gaia (`KNOWN`/`UNMATCHED`/`DISCOVERY_REVIEW`) | Real, `gaia.py:32` (`classify_against_gaia_neighbors`) | — | ídem | **DISPONIBLE** |
-| Abstracción de catálogo genérica (proveedor conectable: SIMBAD, 2MASS, PS1...) | No existe -- solo Gaia, acoplado directamente | — | — | **PENDIENTE** |
-| Tipo de dato `Table`/`SourceCatalog` compartido entre motores | No existe -- cada motor devuelve su propia lista de dataclasses local (`ApertureMeasurement`, `PSFFitResult`, `Detection`...), sin contrato común | — | — | **PENDIENTE** -- brecha de arquitectura real, no solo de funcionalidad (ver nota abajo) |
-| Exportación de tablas científicas reproducibles (CSV/FITS-table) | No implementada para ningún motor de fotometría/astrometría | — | — | **PENDIENTE** |
+| Tabla científica genérica (columnas + unidades + filas) exportable a CSV | No existía | `astrophysics_suite/tables/table.py` (`Table`, `to_csv`/`from_csv`) -- ver Fase 14 | `tests/unit/tables/test_table.py` | `ProcessResult.table` (nuevo campo opcional) + botón "Exportar última tabla a CSV..." en Herramientas | **DISPONIBLE** |
+| Exportación de tablas científicas reproducibles (CSV/FITS-table) | No implementada para ningún motor de fotometría/astrometría | `Table.to_csv` -- ver Fase 14 | `tests/unit/tables/test_table.py` | `photometry.zeropoint` y "Ajustar WCS..." ya producen `Table` real (una fila por estrella) exportable | **DISPONIBLE** (para los dos flujos que la producen; el resto de motores no construye una tabla todavía, ver nota) |
+| Abstracción de catálogo genérica (proveedor conectable: SIMBAD, 2MASS, PS1...) | No existe -- solo Gaia, acoplado directamente | — | — | **PENDIENTE** (deliberadamente no abordado: una abstracción con un solo proveedor real sería prematura -- YAGNI -- hasta que haya una necesidad concreta de un segundo catálogo) |
+| Tipo de dato `Table`/`SourceCatalog` compartido entre motores (unificación de `ApertureMeasurement`, `PSFFitResult`, `WCSSolution`, `ExtractedSpectrum`...) | No existe -- cada motor sigue devolviendo su propia lista de dataclasses local, sin heredar de un contrato común | — | — | **PENDIENTE** -- brecha de arquitectura real, deliberadamente NO resuelta en la Fase 14 (ver nota abajo) |
 
-**Nota de arquitectura**: el encargo pide contratos `Measurement`/`Source`/`PhotometryResult`/
-`AstrometricResult`/`Spectrum`/`Table` unificados. Hoy existen (Fase 4) `Quantity`,
-`Provenance`, `Observation`/`ImageRef`, `Detection`, `Candidate` y toda la cadena de
-evidencia del Discovery Engine -- pero reducción/fotometría/astrometría/espectroscopía
-cada una reinventa su propio dataclass de resultado local
-(`MasterFrame`, `ApertureMeasurement`, `PSFFitResult`, `WCSSolution`,
-`ExtractedSpectrum`...) sin heredar de un contrato común. Es una brecha real y
-deliberadamente señalada aquí para una fase de consolidación posterior -- no se toca
-en la Fase 10.1 (que se centra en cerrar `ccdred`), pero debe abordarse antes de que
-"tablas y catálogos" pueda considerarse `DISPONIBLE` en sentido pleno.
+**Nota de arquitectura (actualizada en la Fase 14)**: el encargo pide contratos
+`Measurement`/`Source`/`PhotometryResult`/`AstrometricResult`/`Spectrum`/`Table`
+unificados -- es decir, que cada motor científico DEVUELVA sus resultados ya
+tipados según un contrato común, no que cada uno reinvente su propio dataclass de
+resultado local. Esa unificación profunda (reescribir `ApertureMeasurement`,
+`PSFFitResult`, `WCSSolution`, `ExtractedSpectrum`... para que hereden o se ajusten
+a un contrato común) sigue sin abordarse -- es una refactorización de alto riesgo
+que tocaría cuatro bloques ya cerrados y probados (`ccdred`, fotometría,
+astrometría, espectroscopía), y se decidió deliberadamente no arriesgar esa
+estabilidad solo para cerrar esta fila de la tabla. En su lugar, la Fase 14 entrega
+una versión aditiva y de bajo riesgo que sí cierra la necesidad práctica señalada
+por el encargo -- **exportar mediciones reales a una tabla reproducible**: `Table`
+es un tipo de exportación genérico que el llamador arma explícitamente a partir del
+resultado real de cada motor (ver `photometry.zeropoint` y "Ajustar WCS..." como
+los dos primeros consumidores), sin tocar ni un solo tipo de resultado existente.
+La unificación completa queda documentada aquí, explícita, para una fase dedicada
+si se decide que hace falta.
 
 ---
 
@@ -153,7 +161,7 @@ en la Fase 10.1 (que se centra en cerrar `ccdred`), pero debe abordarse antes de
 | `apphot` | 5 | 1 | 1 | **Núcleo cerrado en Fase 12**: selección de fuente a clic y calibración de punto cero real contra Gaia. Quedan pendientes solo el ajuste de curva de crecimiento/radio óptimo y conectar la detección automática como paso previo interactivo |
 | `daophot` | 2 | 2 | 4 | Núcleo real (deblending simultáneo, tres modelos PSF); falta selección/refinamiento/diagnóstico automáticos |
 | Astrometría | 6 | 0 | 3 | **Núcleo cerrado en Fase 13**: ajuste de WCS real (clic + coordenadas a mano, sin "blind solving") y registro por WCS compartido, ambos cableados. Quedan pendientes: registro por pares de estrellas emparejadas entre dos ventanas (interacción no construida), resolución automática contra catálogo, y exportación de posiciones a archivo |
-| Tablas/catálogos | 2 | 0 | 3 | Solo Gaia; sin contrato `Table`/`Source` compartido -- brecha de arquitectura real |
+| Tablas/catálogos | 4 | 0 | 2 | **Exportación cerrada en Fase 14**: `Table` genérica real + CSV, consumida por punto cero y ajuste de WCS. Quedan pendientes, deliberadamente: unificación profunda de los tipos de resultado de cada motor (alto riesgo, no abordada) y abstracción de catálogo con más de un proveedor (YAGNI hasta que haga falta un segundo) |
 | Espectroscopía | 5 | 4 | 5 | Motor más completo de lo esperado (Horne, sensfunc, extinción); GUI puramente demostrativa en todo lo que expone |
 
 ## Prioridad de desarrollo (orden acordado explícitamente)
@@ -185,7 +193,18 @@ documentado como pendiente, sin bloquear el siguiente bloque, el registro por pa
 de estrellas emparejadas entre dos ventanas a la vez (necesitaría una interacción de
 selección cruzada entre dos vistas que no se construyó en esta fase) y la resolución
 automática contra catálogo ("blind solving", un problema bastante más difícil que
-cualquier otra capacidad cerrada hasta ahora). El siguiente bloque a abrir, según el
-orden acordado, es tablas/catálogos: hoy solo existe Gaia, acoplado directamente, sin
-ningún contrato `Table`/`Source` compartido entre motores -- la brecha de
-arquitectura real que señala `13-IRAF-CAPABILITY-MAP.md` §6.
+cualquier otra capacidad cerrada hasta ahora). La Fase 14 (ver
+`19-FASE14-TABLAS.md`) cierra la necesidad práctica del bloque de tablas/catálogos
+-- una `Table` genérica real, exportable a CSV, ya consumida por `photometry.
+zeropoint` y "Ajustar WCS..." -- con una decisión de alcance deliberada: NO
+reescribir los tipos de resultado de cada motor (`ApertureMeasurement`,
+`PSFFitResult`, `WCSSolution`, `ExtractedSpectrum`...) bajo un contrato común, por
+ser una refactorización de alto riesgo que tocaría cuatro bloques ya cerrados y
+probados sin necesidad funcional inmediata que lo justifique -- queda documentada
+como brecha de arquitectura real para una fase dedicada. El siguiente bloque a
+abrir, según el orden acordado, es espectroscopía: el motor es más completo de lo
+que sugería la Fase 9.6 (extracción óptima de Horne, función de sensibilidad,
+corrección de extinción), pero la GUI es puramente demostrativa en todo lo que
+expone (fila central tratada como espectro, tira repetida en vez de un espectro
+real) y `spectroscopy.wavelength`/`spectroscopy.fluxcal` siguen sin ningún camino
+de uso.

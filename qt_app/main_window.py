@@ -13,6 +13,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import QDockWidget, QFileDialog, QMainWindow, QMdiArea, QMdiSubWindow, QMessageBox, QProgressBar
 
+from astrophysics_suite.tables.table import Table
 from qt_app.astrometry.registration_dialog import RegistrationDialog
 from qt_app.astrometry.wcs_fit_dialog import WCSFitDialog
 from qt_app.candidates.candidate_detail_widget import CandidateDetailWidget
@@ -67,6 +68,10 @@ class MainWindow(QMainWindow):
         self._discovery_timer: QTimer | None = None
         self._candidate_detail_windows: dict[str, QMdiSubWindow] = {}
         self.master_frame_library = MasterFrameLibrary(self)
+        self._last_result_table: Table | None = None
+        """Última tabla producida por un proceso o por "Ajustar WCS..."
+        -- lista para "Exportar última tabla a CSV...", `None` si nada
+        con tabla se ha ejecutado todavía en esta sesión."""
 
         self._build_docks()
         self._build_menu()
@@ -130,6 +135,9 @@ class MainWindow(QMainWindow):
         arithmetic_action = QAction("&Aritmética entre imágenes...", self)
         arithmetic_action.triggered.connect(self._open_arithmetic_dialog)
         tools_menu.addAction(arithmetic_action)
+        export_table_action = QAction("&Exportar última tabla a CSV...", self)
+        export_table_action.triggered.connect(self._export_last_table)
+        tools_menu.addAction(export_table_action)
 
         reduction_menu = self.menuBar().addMenu("&Reducción")
         build_master_action = QAction("&Construir fotograma maestro...", self)
@@ -260,18 +268,30 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage("Se necesitan al menos 3 estrellas para ajustar un WCS.", 5000)
                 return
             dialog = WCSFitDialog(points, view.data.shape, self)
-            dialog.fitted.connect(lambda solution, v=view: self._on_wcs_fitted(v, solution))
+            dialog.fitted.connect(lambda solution, table, v=view: self._on_wcs_fitted(v, solution, table))
             dialog.exec()
 
         view.picking_finished.connect(on_picked)
         view.start_picking()
 
-    def _on_wcs_fitted(self, view: ImageView, solution) -> None:
+    def _on_wcs_fitted(self, view: ImageView, solution, table: Table) -> None:
         view.fitted_wcs_solution = solution
+        self._last_result_table = table
         logger.info(
-            "WCS ajustado para %s: RMS=%.3f\" con %d estrella(s).", view.title, solution.rms_residual_arcsec, solution.n_stars
+            "WCS ajustado para %s: RMS=%.3f\" con %d estrella(s). Tabla disponible -- Herramientas -> Exportar última tabla a CSV...",
+            view.title, solution.rms_residual_arcsec, solution.n_stars,
         )
         self.statusBar().showMessage(f"WCS ajustado para {view.title} (RMS={solution.rms_residual_arcsec:.3f}\").", 6000)
+
+    def _export_last_table(self) -> None:
+        if self._last_result_table is None:
+            self.statusBar().showMessage("No hay ninguna tabla que exportar todavía -- ejecuta un proceso que produzca una (p. ej. punto cero, ajuste de WCS).", 6000)
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Exportar tabla a CSV", "", "CSV (*.csv)")
+        if not path:
+            return
+        self._last_result_table.to_csv(path)
+        self.statusBar().showMessage(f"Tabla exportada a {path}", 5000)
 
     def _open_build_master_frame_dialog(self) -> None:
         dialog = BuildMasterFrameDialog(self.master_frame_library, self)
@@ -385,6 +405,9 @@ class MainWindow(QMainWindow):
             logger.info("    %s", line)
         if result.output_data is not None:
             self.add_image_window(result.output_data, f"{view.title} -> {process.name}")
+        if result.table is not None:
+            self._last_result_table = result.table
+            logger.info("    Tabla disponible (%d fila(s)) -- Herramientas -> Exportar última tabla a CSV...", len(result.table.rows))
 
     def _on_process_failed(self, message: str) -> None:
         self.properties.apply_button.setEnabled(True)

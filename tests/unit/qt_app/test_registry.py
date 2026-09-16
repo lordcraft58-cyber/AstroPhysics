@@ -172,6 +172,11 @@ def test_zeropoint_process_fits_real_zeropoint_against_mocked_gaia(monkeypatch):
     assert recovered == pytest.approx(true_zeropoint, abs=0.3)
     assert len(result.log_lines) == 2
 
+    assert result.table is not None
+    assert result.table.columns == ("star", "x", "y", "ra", "dec", "instrumental_mag", "catalog_mag", "separation")
+    assert len(result.table.rows) == 2
+    assert result.table.rows[0][0] == 1  # numeración de estrella desde 1
+
 
 def test_zeropoint_process_rejects_when_no_star_matches_gaia(monkeypatch):
     from astropy.wcs import WCS

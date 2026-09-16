@@ -20,11 +20,14 @@ from PySide6.QtWidgets import (
 )
 
 from astrophysics_suite.astrometry.wcs_fit import fit_wcs
+from astrophysics_suite.tables.table import Table
 
 
 class WCSFitDialog(QDialog):
-    fitted = Signal(object)
-    """Emite `WCSSolution` al ajustar con éxito."""
+    fitted = Signal(object, object)
+    """Emite `(WCSSolution, Table)` al ajustar con éxito -- la tabla trae
+    una fila por estrella (x, y, RA, Dec, residuo en arcosegundos) lista
+    para exportar."""
 
     def __init__(self, points: list[tuple[float, float]], image_shape: tuple[int, int], parent=None):
         super().__init__(parent)
@@ -92,5 +95,13 @@ class WCSFitDialog(QDialog):
             return
 
         self.status_label.setText(f"WCS ajustado: RMS={solution.rms_residual_arcsec:.3f}\" con {solution.n_stars} estrella(s).")
-        self.fitted.emit(solution)
+        table = Table(
+            columns=("star", "x", "y", "ra", "dec", "residual"),
+            units=("", "px", "px", "deg", "deg", "arcsec"),
+            rows=tuple(
+                (i + 1, x, y, ra, dec, residual)
+                for i, ((x, y), (ra, dec), residual) in enumerate(zip(self._points, sky_radec, solution.residuals_arcsec))
+            ),
+        )
+        self.fitted.emit(solution, table)
         self.accept()

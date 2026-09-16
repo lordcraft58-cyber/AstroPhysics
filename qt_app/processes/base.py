@@ -13,6 +13,8 @@ from typing import Any, Callable
 
 import numpy as np
 
+from astrophysics_suite.tables.table import Table
+
 
 @dataclass(frozen=True)
 class ParameterSpec:
@@ -38,6 +40,10 @@ class ProcessResult:
     (p. ej. fotometría) sin producir una imagen nueva."""
     summary: str
     log_lines: tuple[str, ...] = ()
+    table: Table | None = None
+    """Tabla con una fila por medición (p. ej. una por estrella), lista
+    para exportar a CSV -- `None` si el proceso no produce datos
+    tabulares (la mayoría no lo hacen)."""
 
 
 @dataclass(frozen=True)
