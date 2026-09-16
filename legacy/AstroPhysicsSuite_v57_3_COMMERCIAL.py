@@ -1611,6 +1611,18 @@ def load_fits(path, hdu=None, memmap=True, plane=None, allow_first_plane=False):
         con la forma del cubo en el mensaje para que el usuario indique el plano correcto."""
     path = str(path)
     if HAS_ASTROPY:
+        if memmap:
+            # astropy no puede mapear en memoria un HDU cuyo header declara
+            # BZERO/BSCALE/BLANK (muy común: así es como casi cualquier cámara CCD/
+            # CMOS de 16 bits guarda datos sin signo) -- lo descubre solo al acceder
+            # a `.data`, no al abrir el archivo, así que se revisa aquí antes de
+            # decidir memmap para no fallar a mitad de la carga con un FITS real.
+            try:
+                with _fits.open(path, memmap=False, lazy_load_hdus=True) as probe_hdul:
+                    if any(any(k in h.header for k in ("BZERO", "BSCALE", "BLANK")) for h in probe_hdul):
+                        memmap = False
+            except OSError:
+                pass
         with _fits.open(path, memmap=memmap, lazy_load_hdus=True) as hdul:
             idx = hdu
             if idx is None:

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QColor
-from PySide6.QtWidgets import QDockWidget, QFileDialog, QMainWindow, QMdiArea, QMdiSubWindow, QProgressBar
+from PySide6.QtWidgets import QDockWidget, QFileDialog, QMainWindow, QMdiArea, QMdiSubWindow, QMessageBox, QProgressBar
 
 from qt_app.candidates.candidate_detail_widget import CandidateDetailWidget
 from qt_app.candidates.candidates_dock import CandidatesDock
@@ -154,10 +154,15 @@ class MainWindow(QMainWindow):
         if path:
             self.open_fits(path)
 
-    def open_fits(self, path: str) -> QMdiSubWindow:
+    def open_fits(self, path: str) -> QMdiSubWindow | None:
         from astrophysics_suite.io.fits_loader import load_image
 
-        loaded = load_image(path, band="", role="science")
+        try:
+            loaded = load_image(path, band="", role="science")
+        except Exception as exc:  # noqa: BLE001 -- error de carga real: debe ser visible, nunca fallar en silencio
+            logger.error("No se pudo abrir %s: %s", path, exc)
+            QMessageBox.critical(self, "Abrir FITS", f"No se pudo abrir «{Path(path).name}»:\n\n{exc}")
+            return None
         return self.add_image_window(loaded.legacy_image.data, Path(path).name)
 
     def add_image_window(self, data, title: str) -> QMdiSubWindow:

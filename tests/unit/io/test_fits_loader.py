@@ -50,3 +50,22 @@ def test_build_observation_from_real_files(tmp_path):
 
     restored = Observation.from_dict(observation.to_dict())
     assert restored == observation
+
+
+def test_load_image_handles_bzero_bscale_fits_without_memmap_error(tmp_path):
+    """Bug real reportado en uso: astropy no puede memory-mapear un HDU cuyo
+    header declara BZERO/BSCALE/BLANK -- la convención estándar con la que
+    casi cualquier cámara CCD/CMOS de 16 bits guarda datos sin signo -- y solo
+    lo descubre al acceder a `.data`, no al abrir el archivo
+    ("Cannot load a memory-mapped image: BZERO/BSCALE/BLANK header keywords
+    present. Set memmap=False."). `load_fits` debe manejarlo de forma
+    transparente en vez de propagar el ValueError."""
+    from astropy.io import fits
+
+    raw_values = (np.arange(400, dtype=np.uint16).reshape(20, 20) + 1000)
+    path = tmp_path / "camera_16bit_OIII.fits"
+    fits.PrimaryHDU(raw_values).writeto(path)
+
+    loaded = load_image(str(path), band="OIII")  # no debe lanzar ValueError de memmap
+
+    np.testing.assert_array_equal(loaded.legacy_image.data.astype(np.uint16), raw_values)

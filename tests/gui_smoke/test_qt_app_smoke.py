@@ -152,6 +152,45 @@ def test_stf_toggle_does_not_raise(qapp, main_window):
     assert view.stf_enabled is True
 
 
+def test_open_fits_with_bzero_bscale_file_succeeds(qapp, main_window, tmp_path):
+    """Regresión: astropy no podía memory-mapear un HDU con BZERO/BSCALE (la
+    convención estándar de casi cualquier cámara CCD/CMOS de 16 bits) y
+    `open_fits` no capturaba el fallo -- ver el fix en
+    legacy...load_fits y tests/unit/io/test_fits_loader.py."""
+    from astropy.io import fits
+
+    raw_values = np.arange(400, dtype=np.uint16).reshape(20, 20) + 1000
+    path = tmp_path / "camera_16bit.fits"
+    fits.PrimaryHDU(raw_values).writeto(path)
+
+    sub_window = main_window.open_fits(str(path))
+    qapp.processEvents()
+
+    assert sub_window is not None
+    assert sub_window in main_window.mdi.subWindowList()
+    np.testing.assert_array_equal(sub_window.widget().data.astype(np.uint16), raw_values)
+
+
+def test_open_fits_shows_error_dialog_instead_of_failing_silently(qapp, main_window, tmp_path, monkeypatch):
+    from qt_app import main_window as main_window_module
+
+    bad_path = tmp_path / "not_a_real_fits.fits"
+    bad_path.write_bytes(b"not a fits file")
+
+    shown = {}
+    monkeypatch.setattr(
+        main_window_module.QMessageBox, "critical", lambda *args, **kwargs: shown.update(called=True)
+    )
+
+    windows_before = len(main_window.mdi.subWindowList())
+    result = main_window.open_fits(str(bad_path))
+    qapp.processEvents()
+
+    assert result is None
+    assert shown.get("called") is True
+    assert len(main_window.mdi.subWindowList()) == windows_before
+
+
 def test_diagnostics_dialog_runs_hardware_check_end_to_end(qapp, main_window):
     from qt_app.diagnostics_dialog import DiagnosticsDialog
 

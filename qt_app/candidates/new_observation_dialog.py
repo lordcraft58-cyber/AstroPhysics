@@ -48,6 +48,17 @@ class NewObservationDialog(QDialog):
         images_header.addWidget(add_button)
         layout.addLayout(images_header)
 
+        bulk_row = QHBoxLayout()
+        bulk_row.addWidget(QLabel("Banda para todas"))
+        self.bulk_band_combo = QComboBox()
+        self.bulk_band_combo.addItems(BAND_OPTIONS)
+        bulk_row.addWidget(self.bulk_band_combo)
+        apply_all_button = QPushButton("Aplicar a todas")
+        apply_all_button.clicked.connect(self._apply_band_to_all)
+        bulk_row.addWidget(apply_all_button)
+        bulk_row.addStretch(1)
+        layout.addLayout(bulk_row)
+
         self.image_list = QListWidget()
         layout.addWidget(self.image_list)
 
@@ -61,6 +72,16 @@ class NewObservationDialog(QDialog):
         paths, _ = QFileDialog.getOpenFileNames(self, "Seleccionar imágenes", "", "FITS (*.fits *.fit *.fts);;Todos los archivos (*.*)")
         for path in paths:
             self._add_row(path)
+        if paths:
+            # las imágenes nuevas nacen ya con la banda elegida arriba -- evita
+            # tener que ajustarlas una a una cuando todas comparten filtro,
+            # el caso más común al cargar una sesión completa de golpe.
+            self._apply_band_to_all()
+
+    def _apply_band_to_all(self) -> None:
+        band = self.bulk_band_combo.currentText()
+        for _, combo in self._rows:
+            combo.setCurrentText(band)
 
     def _add_row(self, path: str) -> None:
         row_widget = QWidget()

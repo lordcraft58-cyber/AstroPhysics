@@ -157,3 +157,34 @@ def test_new_observation_dialog_rejects_empty_target_name(qapp, main_window):
     with mock.patch("qt_app.candidates.new_observation_dialog.QMessageBox.warning") as warning:
         dialog._on_accept()
     warning.assert_called_once()
+
+
+def test_new_observation_dialog_bulk_band_applies_to_all_rows(qapp, main_window):
+    from qt_app.candidates.new_observation_dialog import NewObservationDialog
+
+    dialog = NewObservationDialog(main_window)
+    dialog._add_row("/tmp/a.fits")
+    dialog._add_row("/tmp/b.fits")
+    dialog._add_row("/tmp/c.fits")
+    assert [combo.currentText() for _, combo in dialog._rows] == ["OIII", "OIII", "OIII"]
+
+    dialog.bulk_band_combo.setCurrentText("HA")
+    dialog._apply_band_to_all()
+
+    assert [combo.currentText() for _, combo in dialog._rows] == ["HA", "HA", "HA"]
+    assert dialog.result_images() == [("/tmp/a.fits", "HA"), ("/tmp/b.fits", "HA"), ("/tmp/c.fits", "HA")]
+
+
+def test_new_observation_dialog_new_rows_inherit_bulk_band(qapp, main_window, tmp_path, monkeypatch):
+    from qt_app.candidates.new_observation_dialog import NewObservationDialog
+
+    dialog = NewObservationDialog(main_window)
+    dialog.bulk_band_combo.setCurrentText("SII")
+
+    paths = [str(tmp_path / "x.fits"), str(tmp_path / "y.fits")]
+    monkeypatch.setattr(
+        "qt_app.candidates.new_observation_dialog.QFileDialog.getOpenFileNames", lambda *a, **k: (paths, "")
+    )
+    dialog._add_images()
+
+    assert [combo.currentText() for _, combo in dialog._rows] == ["SII", "SII"]
