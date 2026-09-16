@@ -91,12 +91,12 @@ capacidad sin implementar en absoluto).
 | Proyección tangencial (TAN) pixel↔cielo, ambas direcciones | Real, `astrometry/wcs_fit.py:24/37` | `tests/unit/astrometry/test_wcs_fit.py` | — | **DISPONIBLE** (como motor) |
 | Separación angular (gran círculo, fórmula haversine) | Real, `wcs_fit.py:57` | ídem | — | **DISPONIBLE** |
 | Ajuste WCS lineal (matriz CD) desde pares pixel↔cielo, con residuo por estrella y RMS | Real, `wcs_fit.py:91` (`fit_wcs`) -- **deliberadamente sin términos SIP/TPV de orden superior**, documentado como límite de alcance | ídem | Menú Astrometría → "Ajustar WCS (clic + coordenadas)..." -- clic en N estrellas + tabla de RA/Dec introducida a mano (sin resolución automática/"blind solving", igual que `ccmap` interactivo) -- ver Fase 13 | **DISPONIBLE** |
-| Registro/alineación afín o de similitud entre dos imágenes desde estrellas emparejadas, con RMS de residuo | Real, `astrometry/registration.py:31` (`fit_affine_transform`) | `tests/unit/astrometry/test_registration.py` | **Sin camino de uso** -- necesitaría selección de pares de estrellas emparejadas entre dos ventanas MDI a la vez, interacción no construida en esta fase | **PENDIENTE** (motor real, sin camino de uso; ver registro por WCS compartido más abajo como alternativa ya cableada) |
+| Registro/alineación afín o de similitud entre dos imágenes desde estrellas emparejadas, con RMS de residuo | Real, `astrometry/registration.py:31` (`fit_affine_transform`) | `tests/unit/astrometry/test_registration.py` | Menú Astrometría → "Registrar por pares de estrellas (clic)..." -- dos sesiones de clic encadenadas (misma cantidad y orden en cada ventana), sin necesitar que ninguna de las dos tenga WCS -- ver Fase 18 | **DISPONIBLE** |
 | Remuestreo/reproyección de una imagen a la solución WCS de otra | Real, `registration.py:87/115` (`apply_affine_transform`, `reproject_to_reference`) | ídem | Menú Astrometría → "Registrar por WCS compartido..." -- selector de dos ventanas, cada una con WCS real (cargado o recién ajustado) -- ver Fase 13 | **DISPONIBLE** |
 | Conversión de un WCS real cargado de FITS al `WCSSolution` propio (para reproyectar sin duplicar álgebra) | No existía | `wcs_fit.py` (`wcs_solution_from_astropy`) -- ver Fase 13 | `tests/unit/astrometry/test_wcs_fit.py` | Usado internamente por "Registrar por WCS compartido..." | **DISPONIBLE** |
 | Emparejamiento automático uno-a-uno contra catálogo de referencia (Gaia) | Real, pero vive en `catalogs/gaia.py`, no orquestado junto a `fit_wcs` -- no existe una función única "detectar -> consultar Gaia -> emparejar -> ajustar WCS" | ver §6 | Sin camino de uso desde "Ajustar WCS..." (que pide RA/Dec a mano, sin resolución automática) | **PENDIENTE** (como flujo integrado -- "blind solving" real queda fuera de alcance, ver Fase 13) |
 | Comunicación honesta de problemas de WCS (nunca inventa coordenadas) | Real y verificado: `detection/point_sources.py:78-81` deja `ra_deg`/`dec_deg` en `None` sin WCS válido; `catalogs/gaia.py:39-44` cae explícitamente a `DISCOVERY_REVIEW` con motivo `"sin coordenadas celestes (sin WCS válido)"` | `docs/audit/09-FASE7-DISCOVERY-ENGINE.md` (verificado end-to-end); también `photometry.zeropoint` (Fase 12) y "Registrar por WCS compartido..." (Fase 13), que fallan con un mensaje claro en vez de fingir un WCS | — | **DISPONIBLE** |
-| Exportación de posiciones con incertidumbre y métricas de calidad | Parcial: `WCSSolution` sí expone `residuals_arcsec`/`rms_residual_arcsec`, reportados en la consola tras "Ajustar WCS..."; no hay una exportación tabular a archivo (ligado al vacío de "tablas", §6) | — | — | **PENDIENTE** (como exportación a archivo) |
+| Exportación de posiciones con incertidumbre y métricas de calidad | Real desde la Fase 14, fila no actualizada hasta esta auditoría -- brecha de documentación, no de código: `WCSFitDialog` ya construye una `Table` (estrella, x, y, ra, dec, residuo en arcsec) por cada ajuste | `tests/gui_smoke/test_qt_app_table_export_smoke.py` | "Ajustar WCS..." -> "Herramientas → Exportar última tabla a CSV..." (Fase 14) | **DISPONIBLE** |
 
 ---
 
@@ -160,7 +160,7 @@ si se decide que hace falta.
 | Análisis de imagen | 6 | 0 | 0 | **Cerrado.** Aritmética entre dos imágenes, estadísticas+histograma, recorte por clic y normalización por percentiles, todos con motor real y camino de uso en la GUI (Fase 11.1) |
 | `apphot` | 7 | 0 | 0 | **Cerrado en la Fase 16.** Selección de fuente a clic o por detección automática (DAOStarFinder real), calibración de punto cero real contra Gaia (también con detección automática), y ajuste real de curva de crecimiento con radio óptimo recomendado -- todos con motor real y camino de uso en la GUI |
 | `daophot` | 6 | 2 | 0 | **Cerrado en la Fase 17** (selección pstselect + refinamiento allstar + diagnóstico chi²/residuo). Quedan `EXPERIMENTAL`, sin bloquear el bloque, dos motores ya reales pero no seleccionables desde la GUI (Moffat, PSF empírica) -- la GUI sigue fija en Gaussiana |
-| Astrometría | 6 | 0 | 3 | **Núcleo cerrado en Fase 13**: ajuste de WCS real (clic + coordenadas a mano, sin "blind solving") y registro por WCS compartido, ambos cableados. Quedan pendientes: registro por pares de estrellas emparejadas entre dos ventanas (interacción no construida), resolución automática contra catálogo, y exportación de posiciones a archivo |
+| Astrometría | 8 | 0 | 1 | **Cerrado en la Fase 18** (registro por pares de estrellas emparejadas, sin necesitar WCS en ninguna imagen). Queda pendiente, deliberadamente fuera de alcance, solo la resolución automática contra catálogo ("blind solving") |
 | Tablas/catálogos | 4 | 0 | 2 | **Exportación cerrada en Fase 14**: `Table` genérica real + CSV, consumida por punto cero y ajuste de WCS. Quedan pendientes, deliberadamente: unificación profunda de los tipos de resultado de cada motor (alto riesgo, no abordada) y abstracción de catálogo con más de un proveedor (YAGNI hasta que haga falta un segundo) |
 | Espectroscopía | 6 | 4 | 4 | **Calibración en longitud de onda cerrada en Fase 15**: detección automática de líneas + tabla de longitudes conocidas, ajuste real. `spectroscopy.fluxcal` ahora al menos visible como pendiente (antes ni aparecía). Trazado/extracción/continuo siguen `EXPERIMENTAL` (recorte de alcance explícito: fila central, tira repetida); multi-apertura por lote, medición de líneas, combinación de espectros y el tipo `Spectrum` compartido siguen pendientes |
 
@@ -256,3 +256,25 @@ queda con sus 6 capacidades cableadas en `DISPONIBLE`; solo quedan
 reales pero no seleccionables desde la GUI (que sigue fija en Gaussiana) --
 huecos menores, documentados, no priorizados por no tener un caso de uso
 concreto que los reclame todavía.
+
+Con `apphot` y `daophot` cerrados, la Fase 18 (ver
+`23-FASE18-ASTROMETRIA-PARES.md`) retoma el hueco que quedaba en
+astrometría desde la Fase 13: el registro por pares de estrellas
+emparejadas entre dos ventanas (`fit_affine_transform`, motor real, sin
+camino de uso). El menú Astrometría gana "Registrar por pares de estrellas
+(clic)...", que encadena dos sesiones de clic independientes -- ya
+soportadas por cada `ImageView` desde la Fase 9.6, sin ninguna interacción
+nueva que construir, solo orquestar el orden -- exigiendo el mismo número de
+puntos en el mismo orden en ambas ventanas. A diferencia de "Registrar por
+WCS compartido..." (que exige que ambas imágenes ya tengan WCS), esta vía
+no necesita astrometría previa en ninguna de las dos -- el caso real que
+faltaba cubrir. Aprovechando esta ronda, se corrigió también una fila de la
+tabla de astrometría que había quedado desactualizada desde la Fase 14 (no
+un hueco de código: la exportación de posiciones de "Ajustar WCS..." con
+residuo por estrella ya era real desde entonces, solo la propia tabla de
+este documento no se había puesto al día). Con esto, astrometría queda con
+8 de sus 9 capacidades en `DISPONIBLE`; solo la resolución automática
+contra catálogo ("blind solving") sigue `PENDIENTE`, deliberadamente fuera
+de alcance por ser un problema algorítmico bastante más difícil que
+cualquier otra capacidad cerrada hasta ahora, sin un caso de uso concreto
+que lo reclame todavía.

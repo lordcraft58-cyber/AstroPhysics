@@ -13,11 +13,13 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import QDockWidget, QFileDialog, QMainWindow, QMdiArea, QMdiSubWindow, QMessageBox, QProgressBar
 
+from astrophysics_suite.astrometry.registration import apply_affine_transform, fit_affine_transform
 from astrophysics_suite.detection.point_sources import detect_point_sources_in_array, detect_psf_candidates
 from astrophysics_suite.photometry.psf import select_psf_reference_stars
 from astrophysics_suite.spectroscopy.wavelength import find_arc_lines
 from astrophysics_suite.tables.table import Table
 from qt_app.astrometry.registration_dialog import RegistrationDialog
+from qt_app.astrometry.star_pair_registration_dialog import StarPairConfigDialog
 from qt_app.astrometry.wcs_fit_dialog import WCSFitDialog
 from qt_app.candidates.candidate_detail_widget import CandidateDetailWidget
 from qt_app.candidates.candidates_dock import CandidatesDock
@@ -36,7 +38,7 @@ from qt_app.reduction.master_frame_library import MasterFrameLibrary
 from qt_app.reduction.reduce_session_dialog import ReduceSessionDialog, SessionReductionOutcome
 from qt_app.spectroscopy.wavelength_fit_dialog import WavelengthFitDialog
 from qt_app.theme import DARK, build_stylesheet
-from qt_app.workers import ProcessWorker
+from qt_app.workers import CallableWorker, ProcessWorker
 from services.discovery_service import DiscoveryJob, DiscoveryParams
 from services.session_state import SessionState
 
@@ -162,6 +164,9 @@ class MainWindow(QMainWindow):
         registration_action = QAction("&Registrar por WCS compartido...", self)
         registration_action.triggered.connect(self._open_registration_dialog)
         astrometry_menu.addAction(registration_action)
+        star_pair_action = QAction("Registrar por &pares de estrellas (clic)...", self)
+        star_pair_action.triggered.connect(self._open_star_pair_registration_dialog)
+        astrometry_menu.addAction(star_pair_action)
 
         spectroscopy_menu = self.menuBar().addMenu("Espectroscop&ía")
         wavelength_fit_action = QAction("&Calibrar longitud de onda (detectar líneas)...", self)
@@ -263,6 +268,105 @@ class MainWindow(QMainWindow):
         dialog = RegistrationDialog(views, active_title, self)
         dialog.computed.connect(lambda data, title: self.add_image_window(data, title))
         dialog.exec()
+
+    def _open_star_pair_registration_dialog(self) -> None:
+        views = self._image_views_by_title()
+        if len(views) < 2:
+            self.statusBar().showMessage("Abre al menos dos imágenes antes de registrar por pares de estrellas.", 5000)
+            return
+        active = self._active_image_view()
+        active_title = active.title if active is not None else ""
+        dialog = StarPairConfigDialog(list(views.keys()), active_title, self)
+        if dialog.exec() != StarPairConfigDialog.DialogCode.Accepted:
+            return
+
+        reference_title, target_title = dialog.reference_title(), dialog.target_title()
+        if reference_title == target_title:
+            self.statusBar().showMessage("Elige dos ventanas distintas.", 5000)
+            return
+        self._start_star_pair_picking(views[reference_title], views[target_title], reference_title, target_title, dialog.model(), dialog.n_pairs())
+
+    def _start_star_pair_picking(
+        self, reference_view: ImageView, target_view: ImageView, reference_title: str, target_title: str, model: str, n_pairs: int
+    ) -> None:
+        """Recoge `n_pairs` posiciones en `reference_view`, luego el mismo
+        número en `target_view` -- ambas ventanas ya soportan clic-para-
+        marcar de forma independiente (Fase 9.6 §8), así que encadenar dos
+        sesiones de selección en dos `ImageView` distintas no necesita
+        ninguna interacción nueva, solo orquestar el orden."""
+        self.statusBar().showMessage(
+            f"Registro por pares: marca {n_pairs} estrella(s) en «{reference_title}» (referencia) -- clic derecho para terminar antes de tiempo."
+        )
+
+        def on_reference_picked(reference_points: list[tuple[float, float]]) -> None:
+            reference_view.picking_finished.disconnect(on_reference_picked)
+            if len(reference_points) < 3:
+                self.statusBar().showMessage(f"Se necesitan al menos 3 pares -- solo se marcaron {len(reference_points)} en «{reference_title}».", 6000)
+                return
+
+            self.statusBar().showMessage(
+                f"Ahora marca las MISMAS {len(reference_points)} estrella(s), en el mismo orden, en «{target_title}» -- clic derecho para terminar."
+            )
+
+            def on_target_picked(target_points: list[tuple[float, float]]) -> None:
+                target_view.picking_finished.disconnect(on_target_picked)
+                if len(target_points) != len(reference_points):
+                    self.statusBar().showMessage(
+                        f"Se marcaron {len(target_points)} punto(s) en «{target_title}», pero {len(reference_points)} en «{reference_title}» -- deben coincidir en número y orden. Inténtalo de nuevo.",
+                        7000,
+                    )
+                    return
+                self._compute_star_pair_registration(reference_view, target_view, reference_title, target_title, reference_points, target_points, model)
+
+            target_view.picking_finished.connect(on_target_picked)
+            target_view.start_picking(max_points=n_pairs)
+
+        reference_view.picking_finished.connect(on_reference_picked)
+        reference_view.start_picking(max_points=n_pairs)
+
+    def _compute_star_pair_registration(
+        self,
+        reference_view: ImageView,
+        target_view: ImageView,
+        reference_title: str,
+        target_title: str,
+        reference_points: list[tuple[float, float]],
+        target_points: list[tuple[float, float]],
+        model: str,
+    ) -> None:
+        self.statusBar().showMessage("Ajustando transformación afín entre los pares marcados...")
+        target_data = target_view.data
+        output_shape = reference_view.data.shape
+
+        def run() -> tuple:
+            # `fit_affine_transform(reference_xy, target_xy)` da una
+            # transformación reference_xy -> target_xy; aquí queremos
+            # remuestrear los datos de `target_view` sobre la REJILLA de
+            # `reference_view`, así que el papel "reference" del ajuste lo
+            # ocupan los puntos de target_view (el sistema de origen de los
+            # datos a transformar) y el papel "target" lo ocupan los puntos
+            # de reference_view (la rejilla de salida deseada) -- ver
+            # docstring de `apply_affine_transform`.
+            transform = fit_affine_transform(target_points, reference_points, model=model)
+            resampled = apply_affine_transform(target_data, transform, output_shape=output_shape)
+            return transform, resampled, model
+
+        worker = CallableWorker(run, self)
+        worker.finished_ok.connect(lambda result: self._on_star_pair_registration_done(result, reference_title, target_title))
+        worker.failed.connect(self._on_process_failed)
+        self._active_worker = worker
+        worker.finished.connect(lambda: setattr(self, "_active_worker", None))
+        worker.start()
+
+    def _on_star_pair_registration_done(self, result: tuple, reference_title: str, target_title: str) -> None:
+        transform, resampled, model = result
+        title = f"{target_title} -> pares con {reference_title}"
+        self.add_image_window(resampled, title)
+        logger.info(
+            "Registro por pares de estrellas: %s -> %s, RMS=%.3f px con %d par(es), modelo=%s",
+            target_title, reference_title, transform.rms_residual_px, transform.n_points, model,
+        )
+        self.statusBar().showMessage(f"Registro por pares completado (RMS={transform.rms_residual_px:.2f} px, {transform.n_points} par(es)).", 6000)
 
     def _open_wcs_fit_flow(self) -> None:
         view = self._active_image_view()
