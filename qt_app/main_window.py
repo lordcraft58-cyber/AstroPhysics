@@ -26,6 +26,7 @@ from qt_app.processes.registry import build_process_registry
 from qt_app.reduction.apply_calibration_dialog import ApplyCalibrationDialog
 from qt_app.reduction.build_master_frame_dialog import BuildMasterFrameDialog
 from qt_app.reduction.master_frame_library import MasterFrameLibrary
+from qt_app.reduction.reduce_session_dialog import ReduceSessionDialog, SessionReductionOutcome
 from qt_app.theme import DARK, build_stylesheet
 from qt_app.workers import ProcessWorker
 from services.discovery_service import DiscoveryJob, DiscoveryParams
@@ -131,6 +132,10 @@ class MainWindow(QMainWindow):
         apply_calibration_action = QAction("&Aplicar calibración a la imagen activa...", self)
         apply_calibration_action.triggered.connect(self._open_apply_calibration_dialog)
         reduction_menu.addAction(apply_calibration_action)
+        reduction_menu.addSeparator()
+        reduce_session_action = QAction("Reducir &sesión de LIGHTS...", self)
+        reduce_session_action.triggered.connect(self._open_reduce_session_dialog)
+        reduction_menu.addAction(reduce_session_action)
 
         view_menu = self.menuBar().addMenu("&Vista")
         stf_action = QAction("Alternar STF en la imagen activa", self)
@@ -210,6 +215,22 @@ class MainWindow(QMainWindow):
     def _on_calibration_applied(self, view: ImageView, data, summary: str) -> None:
         logger.info("Calibración aplicada a %s: %s", view.title, summary)
         self.add_image_window(data, f"{view.title} -> calibrada")
+
+    def _open_reduce_session_dialog(self) -> None:
+        dialog = ReduceSessionDialog(self.master_frame_library, self)
+        dialog.session_reduced.connect(self._on_session_reduced)
+        dialog.exec()
+
+    def _on_session_reduced(self, outcome: SessionReductionOutcome) -> None:
+        logger.info(
+            "Sesión reducida: %d LIGHT(s) calibrado(s) y escrito(s) a disco%s",
+            outcome.n_frames,
+            f"; combinado en {outcome.combined_path}" if outcome.combined_path else "",
+        )
+        for path in outcome.output_paths:
+            logger.info("  -> %s", path)
+        if outcome.combined_data is not None and outcome.combined_path is not None:
+            self.add_image_window(outcome.combined_data, Path(outcome.combined_path).name)
 
     def _toggle_active_stf(self) -> None:
         view = self._active_image_view()
