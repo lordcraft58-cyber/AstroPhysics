@@ -1,0 +1,18 @@
+# Manifiesto de dependencias del PRODUCTO (a diferencia de
+# requirements-test.txt, que además incluye pytest para desarrollo). Esta
+# es la lista que se instala en el entorno que empaqueta el build
+# comercial de Windows (ver packaging/) -- Fase 9.
+#
+# Auditado contra imports reales en tiempo de ejecución: numpy/scipy/
+# astropy/photutils/astroquery/matplotlib/openpyxl se usan de verdad desde
+# legacy/AstroPhysicsSuite_v57_3_COMMERCIAL.py (importado transitivamente
+# por casi todo astrophysics_suite/), no solo desde tests/. PySide6 es la
+# GUI (qt_app/, la interfaz final del producto).
+numpy>=2.0
+scipy>=1.13
+astropy>=6.0
+photutils>=1.13
+matplotlib>=3.8
+openpyxl>=3.1
+astroquery>=0.4
+PySide6>=6.5

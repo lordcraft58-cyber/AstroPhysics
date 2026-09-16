@@ -66,3 +66,11 @@ python -m qt_app
 ```
 
 Ya no es cierto que este proyecto no compita en procesamiento: la Fase 9 integra deliberadamente las capacidades clásicas de reducción/análisis de IRAF bajo una interfaz inspirada en PixInsight. Lo que no cambia es el objetivo último: generar **candidatos científicos auditables para revisión humana** a partir de imágenes reales de telescopio, nunca descubrimientos automáticos.
+
+## Empaquetado comercial de Windows
+
+`packaging/` construye el ejecutable y el instalador de Windows del
+taller (`qt_app/`) -- ver [`packaging/README.md`](packaging/README.md)
+para el flujo completo, las decisiones de diseño (modo `onedir`, qué se
+excluye) y qué se verificó de verdad frente a lo que necesita una máquina
+Windows real.
