@@ -15,7 +15,9 @@ un candidato ya creado.
 """
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
+from typing import Callable
 
 from astrophysics_suite.artifacts.morphology_screen import classify_morphology
 from astrophysics_suite.catalogs.gaia import identify_detection
@@ -32,6 +34,12 @@ _QUALITY_LEVEL_FOR_STATE = {
     "REVIEW": QualityLevel.WARNING,
     "QUALITY_LIMITED": QualityLevel.WARNING,
 }
+
+
+class DiscoveryCancelled(Exception):
+    """El usuario canceló la ejecución -- ver `cancel` en
+    `run_generic_discovery`. Mismo patrón que `AnalysisCancelled` en el
+    código heredado (`legacy...analyze_pair_core`)."""
 
 
 @dataclass(frozen=True)
@@ -60,18 +68,36 @@ def run_generic_discovery(
     match_radius_arcsec: float = 3.0,
     gaia_mag_limit: float = 20.0,
     pipeline_version: str = "",
+    progress: Callable[[float, str], None] | None = None,
+    cancel: threading.Event | None = None,
 ) -> tuple[list[Candidate], DiscoveryRunSummary]:
     """Ejecuta el modo genérico sobre todas las imágenes de una
     `Observation` ya cargada (ver `io.fits_loader.build_observation`).
 
     `loaded_images` debe mapear `ImageRef.path` -> `LoadedImage`, tal como
     lo devuelve `build_observation`.
-    """
+
+    `progress(fraccion_0_a_1, mensaje)` y `cancel` (un `threading.Event`)
+    siguen la misma convención que `legacy...analyze_pair_core` -- pensado
+    para ejecutarse en un hilo de fondo desde una GUI, nunca en el hilo
+    principal (ver docs/audit/10-FASE8-GUI.md)."""
+
+    def report(fraction: float, message: str) -> None:
+        if progress is not None:
+            progress(fraction, message)
+
+    def check_cancelled() -> None:
+        if cancel is not None and cancel.is_set():
+            raise DiscoveryCancelled("Análisis cancelado por el usuario")
+
     candidates: list[Candidate] = []
     n_detected = 0
     n_rejected = 0
+    n_images = max(1, len(observation.images))
 
-    for image_ref in observation.images:
+    for image_index, image_ref in enumerate(observation.images):
+        check_cancelled()
+        report(image_index / n_images, f"Detectando fuentes en {image_ref.band} ({image_index + 1}/{n_images})")
         loaded = loaded_images[image_ref.path]
         detections = detect_point_sources(
             loaded,
@@ -84,7 +110,12 @@ def run_generic_discovery(
         )
         n_detected += len(detections)
 
-        for detection in detections:
+        for detection_index, detection in enumerate(detections):
+            check_cancelled()
+            if detections:
+                within_image = detection_index / len(detections)
+                report((image_index + within_image) / n_images, f"Caracterizando fuente {detection_index + 1}/{len(detections)}")
+
             state, reason = classify_morphology(detection)
             if state == "ARTIFACT_REJECTED":
                 n_rejected += 1
@@ -119,6 +150,7 @@ def run_generic_discovery(
                 )
             )
 
+    report(1.0, f"Completado: {len(candidates)} candidatos de {n_detected} detecciones")
     summary = DiscoveryRunSummary(
         observation_id=observation.observation_id,
         n_images=len(observation.images),
