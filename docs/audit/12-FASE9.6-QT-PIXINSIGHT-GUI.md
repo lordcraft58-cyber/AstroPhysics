@@ -142,10 +142,42 @@ revisión humana completo (nota + `mark_reviewed` + botones deshabilitados tras
 revisar). 5 tests de humo nuevos en
 `tests/gui_smoke/test_qt_app_candidates_smoke.py`.
 
-## 6. Qué queda (alcance explícito para una fase posterior)
+## 6. Vista de conjunto de fotogramas y calibración (`qt_app/reduction/`)
 
-- Vista de conjunto de fotogramas (múltiples imágenes a la vez) para bias/dark/flat
-  maestros y aritmética de dos imágenes.
+Bias/dark/flat maestros y "aplicar calibración" necesitan varios archivos de
+entrada y una pequeña biblioteca de maestros con estado propio en memoria -- no
+encajan en "un proceso transforma la imagen activa" (`ProcessDefinition.run`), así
+que se resuelven con diálogos dedicados en un nuevo menú "Reducción" del menú
+principal, en vez de forzarlos al marco genérico del explorador de procesos. Las
+tres entradas de catálogo que antes decían "(pendiente)" para esto
+(`reduction.master_bias`/`master_dark`/`master_flat`) se retiraron del explorador
+-- habrían sido información obsoleta y engañosa una vez que la capacidad existe,
+solo que accesible desde otro sitio.
+
+- `qt_app/reduction/master_frame_library.py`: `MasterFrameLibrary`, biblioteca en
+  memoria de fotogramas maestros construidos en la sesión, por nombre.
+- `qt_app/reduction/build_master_frame_dialog.py`: selector de tipo (Bias/Dark/
+  Flat), lista de archivos de entrada, campos que aparecen/desaparecen según el
+  tipo (tiempo de exposición, bias/dark a restar) -- llama a
+  `astrophysics_suite.reduction.master_frames.build_master_bias/dark/flat` sin
+  ningún cambio, en un hilo de fondo (`qt_app.workers.CallableWorker`, generalización
+  de `ProcessWorker` para operaciones que no encajan en la firma `(data, params)`).
+- `qt_app/reduction/apply_calibration_dialog.py`: elige bias/dark/flat maestros por
+  nombre de la biblioteca y los aplica a la imagen activa vía
+  `astrophysics_suite.reduction.calibration.calibrate_frame` sin ningún cambio;
+  produce una nueva ventana de imagen calibrada.
+
+Verificado con un flujo real de principio a fin: 4 fotogramas de bias sintéticos
+escritos a disco -> bias maestro combinado (mediana recuperada correctamente) ->
+aplicado a una imagen científica sintética -> resultado bias-restado verificado
+numéricamente -> nueva ventana de imagen calibrada creada en el área MDI. 3 tests
+de humo nuevos en `tests/gui_smoke/test_qt_app_reduction_smoke.py`.
+
+## 7. Qué queda (alcance explícito para una fase posterior)
+
+- Aritmética de dos imágenes (`imtools.arithmetic`) -- necesita una vista de
+  selección de dos imágenes, misma familia de problema que resolvió esta oleada
+  para bias/dark/flat; el patrón ya está establecido para replicarlo.
 - Interacción de selección de posiciones sobre la imagen (clic para centroide) para
   fotometría de PSF y trazado espectral.
 - Persistencia de "iconos de proceso" guardados con parámetros configurados,

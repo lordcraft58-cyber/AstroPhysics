@@ -36,3 +36,25 @@ class ProcessWorker(QThread):
             self.failed.emit(str(exc))
             return
         self.finished_ok.emit(result)
+
+
+class CallableWorker(QThread):
+    """Igual que `ProcessWorker` pero para operaciones que no encajan en
+    la firma `(data, params) -> ProcessResult` -- p. ej. construir un
+    fotograma maestro a partir de varios archivos, donde la propia carga
+    de FITS también debe ocurrir fuera del hilo de GUI."""
+
+    finished_ok = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, fn: Callable[[], Any], parent=None):
+        super().__init__(parent)
+        self._fn = fn
+
+    def run(self) -> None:
+        try:
+            result = self._fn()
+        except Exception as exc:  # noqa: BLE001 -- frontera hilo-de-fondo -> GUI: debe llegar como señal, nunca propagarse
+            self.failed.emit(str(exc))
+            return
+        self.finished_ok.emit(result)

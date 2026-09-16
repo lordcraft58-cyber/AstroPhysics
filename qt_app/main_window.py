@@ -23,6 +23,9 @@ from qt_app.docks.properties_dock import PropertiesDock
 from qt_app.mdi.image_window import ImageView
 from qt_app.processes.base import ProcessDefinition
 from qt_app.processes.registry import build_process_registry
+from qt_app.reduction.apply_calibration_dialog import ApplyCalibrationDialog
+from qt_app.reduction.build_master_frame_dialog import BuildMasterFrameDialog
+from qt_app.reduction.master_frame_library import MasterFrameLibrary
 from qt_app.theme import DARK, build_stylesheet
 from qt_app.workers import ProcessWorker
 from services.discovery_service import DiscoveryJob, DiscoveryParams
@@ -59,6 +62,7 @@ class MainWindow(QMainWindow):
         self._discovery_job: DiscoveryJob | None = None
         self._discovery_timer: QTimer | None = None
         self._candidate_detail_windows: dict[str, QMdiSubWindow] = {}
+        self.master_frame_library = MasterFrameLibrary(self)
 
         self._build_docks()
         self._build_menu()
@@ -120,6 +124,14 @@ class MainWindow(QMainWindow):
         diagnostics_action.triggered.connect(self._open_diagnostics_dialog)
         tools_menu.addAction(diagnostics_action)
 
+        reduction_menu = self.menuBar().addMenu("&Reducción")
+        build_master_action = QAction("&Construir fotograma maestro...", self)
+        build_master_action.triggered.connect(self._open_build_master_frame_dialog)
+        reduction_menu.addAction(build_master_action)
+        apply_calibration_action = QAction("&Aplicar calibración a la imagen activa...", self)
+        apply_calibration_action.triggered.connect(self._open_apply_calibration_dialog)
+        reduction_menu.addAction(apply_calibration_action)
+
         view_menu = self.menuBar().addMenu("&Vista")
         stf_action = QAction("Alternar STF en la imagen activa", self)
         stf_action.setShortcut("Ctrl+T")
@@ -172,6 +184,27 @@ class MainWindow(QMainWindow):
     def _open_diagnostics_dialog(self) -> None:
         dialog = DiagnosticsDialog(self)
         dialog.exec()
+
+    def _open_build_master_frame_dialog(self) -> None:
+        dialog = BuildMasterFrameDialog(self.master_frame_library, self)
+        if dialog.exec() == BuildMasterFrameDialog.DialogCode.Accepted:
+            logger.info("Fotograma maestro construido: %s", dialog.name_edit.text().strip())
+
+    def _open_apply_calibration_dialog(self) -> None:
+        view = self._active_image_view()
+        if view is None:
+            self.statusBar().showMessage("Abre o selecciona una imagen antes de calibrar.", 5000)
+            return
+        if len(self.master_frame_library) == 0:
+            self.statusBar().showMessage("Construye al menos un fotograma maestro antes de calibrar.", 5000)
+            return
+        dialog = ApplyCalibrationDialog(self.master_frame_library, view.data, self)
+        dialog.calibrated.connect(lambda data, summary, v=view: self._on_calibration_applied(v, data, summary))
+        dialog.exec()
+
+    def _on_calibration_applied(self, view: ImageView, data, summary: str) -> None:
+        logger.info("Calibración aplicada a %s: %s", view.title, summary)
+        self.add_image_window(data, f"{view.title} -> calibrada")
 
     def _toggle_active_stf(self) -> None:
         view = self._active_image_view()

@@ -91,24 +91,11 @@ def build_process_registry() -> list[ProcessDefinition]:
             ),
             run=_run_overscan_subtraction,
         ),
-        ProcessDefinition(
-            process_id="reduction.master_bias",
-            name="Bias maestro (zerocombine)",
-            category="Reducción CCD",
-            description="Combina varios fotogramas de bias con rechazo por sigma-clipping. Requiere cargar varias imágenes a la vez -- pendiente de una vista de conjunto de fotogramas en esta primera versión del taller.",
-        ),
-        ProcessDefinition(
-            process_id="reduction.master_dark",
-            name="Dark maestro (darkcombine)",
-            category="Reducción CCD",
-            description="Combina fotogramas de dark, restando el bias maestro. Misma pendiente que bias maestro.",
-        ),
-        ProcessDefinition(
-            process_id="reduction.master_flat",
-            name="Flat maestro (flatcombine)",
-            category="Reducción CCD",
-            description="Combina y normaliza planos de domo/cielo. Misma pendiente que bias maestro.",
-        ),
+        # Bias/dark/flat maestros y la aplicación de calibración necesitan varios
+        # fotogramas de entrada y una pequeña biblioteca con estado propio -- no
+        # encajan en "un proceso transforma la imagen activa" (ProcessDefinition.run),
+        # así que se resuelven con diálogos dedicados en el menú "Reducción" del
+        # propio menú principal (qt_app/reduction/), no como entradas de este árbol.
         ProcessDefinition(
             process_id="imtools.cosmic_rays",
             name="Rayos cósmicos (L.A.Cosmic)",
