@@ -89,6 +89,66 @@ def test_add_image_window_creates_mdi_subwindow(qapp, main_window):
     assert sub_window.widget().data is data
 
 
+def test_main_toolbar_exposes_the_most_frequent_actions_and_can_be_hidden(qapp, main_window):
+    """Reorganización estilo PixInsight (Fase 22): barra de iconos para
+    las acciones más frecuentes, con los mismos `QAction` de los menús
+    (nunca duplicados) -- y se puede ocultar/mostrar desde Vista, como
+    cualquier barra de herramientas real de Qt."""
+    assert main_window.main_toolbar is not None
+    toolbar_actions = set(main_window.main_toolbar.actions())
+    for action in (
+        main_window.open_action, main_window.new_observation_action, main_window.cancel_discovery_action,
+        main_window.plate_solve_action, main_window.build_master_action, main_window.apply_calibration_action,
+        main_window.stf_action,
+    ):
+        assert action in toolbar_actions
+        assert not action.icon().isNull()
+
+    main_window.show()
+    qapp.processEvents()
+    assert main_window.main_toolbar.isVisible()
+    main_window.toggle_toolbar_action.trigger()
+    assert not main_window.main_toolbar.isVisible()
+    main_window.toggle_toolbar_action.trigger()
+    assert main_window.main_toolbar.isVisible()
+
+
+def test_pixel_readout_updates_on_mouse_move_over_image_and_shows_dashes_outside_bounds(qapp, main_window):
+    """Lectura de píxel al estilo PixInsight ("Readout") en la barra de
+    estado: posición + valor ADU real bajo el cursor, actualizado en
+    tiempo real -- nunca un valor inventado fuera de los límites de la
+    imagen."""
+    yy, xx = np.mgrid[0:40, 0:40]
+    data = (yy * 100 + xx).astype(np.float64)  # cada píxel tiene un valor único y predecible
+    sub_window = main_window.add_image_window(data, "readout_test.fits")
+    main_window.mdi.setActiveSubWindow(sub_window)
+    qapp.processEvents()
+    view = sub_window.widget()
+
+    # `mapFromScene`/`mapToScene` recorren la transformación real de la
+    # vista (que puede no ser 1:1 según centrado/scroll de
+    # QGraphicsView) -- el valor esperado se deriva de la posición de
+    # escena REALMENTE resuelta, con la misma conversión a índice entero
+    # que usa la propia `ImageView.mouseMoveEvent`, en vez de asumir un
+    # redondeo concreto.
+    widget_pos = view.mapFromScene(10.0, 10.0)
+    scene_pos = view.mapToScene(widget_pos)
+    ix, iy = int(scene_pos.x()), int(scene_pos.y())
+    assert 0 <= ix < 40 and 0 <= iy < 40, "la posición de prueba debe caer dentro de la imagen"
+    expected_value = data[iy, ix]
+
+    inside_event = QMouseEvent(QMouseEvent.Type.MouseMove, QPointF(widget_pos), Qt.MouseButton.NoButton, Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
+    view.mouseMoveEvent(inside_event)
+    qapp.processEvents()
+    assert f"Valor: {expected_value:.2f}" in main_window.readout_label.text()
+
+    widget_pos_outside = view.mapFromScene(-100.0, -100.0)
+    outside_event = QMouseEvent(QMouseEvent.Type.MouseMove, QPointF(widget_pos_outside), Qt.MouseButton.NoButton, Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
+    view.mouseMoveEvent(outside_event)
+    qapp.processEvents()
+    assert "Valor: --" in main_window.readout_label.text()
+
+
 def test_running_cosmic_ray_process_creates_cleaned_output_window(qapp, main_window):
     data = _synthetic_field()
     sub_window = main_window.add_image_window(data, "cr_test.fits")

@@ -28,6 +28,13 @@ class ImageView(QGraphicsView):
     lista de puntos `(x_px, y_px)` marcados (posiblemente vacía si se
     canceló sin marcar ninguno)."""
 
+    pixel_hovered = Signal(float, float, float)
+    """Se emite al mover el ratón sobre la imagen, con `(x_px, y_px,
+    valor_adu)` bajo el cursor -- el "readout" de lectura de píxel al
+    estilo PixInsight, mostrado en la barra de estado por
+    `main_window.py`. `valor_adu` es `nan` si el cursor cae fuera de la
+    imagen."""
+
     def __init__(self, data: np.ndarray, title: str, parent=None, *, wcs=None, header: dict | None = None, source_path: str | None = None):
         super().__init__(parent)
         self.data = data
@@ -66,6 +73,7 @@ class ImageView(QGraphicsView):
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setRenderHint(self.renderHints())
         self.setAcceptDrops(True)
+        self.setMouseTracking(True)
 
         self._display_buffer: np.ndarray | None = None
         self.refresh_display()
@@ -154,6 +162,15 @@ class ImageView(QGraphicsView):
             self.finish_picking()
             return
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802 -- override de Qt
+        scene_pos = self.mapToScene(event.position().toPoint())
+        x, y = float(scene_pos.x()), float(scene_pos.y())
+        height, width = self.data.shape
+        ix, iy = int(x), int(y)
+        value = float(self.data[iy, ix]) if 0 <= ix < width and 0 <= iy < height else float("nan")
+        self.pixel_hovered.emit(x, y, value)
+        super().mouseMoveEvent(event)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasFormat(_PROCESS_MIME_TYPE):

@@ -12,7 +12,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QColor
-from PySide6.QtWidgets import QDockWidget, QFileDialog, QInputDialog, QMainWindow, QMdiArea, QMdiSubWindow, QMessageBox, QProgressBar
+from PySide6.QtWidgets import QDockWidget, QFileDialog, QInputDialog, QLabel, QMainWindow, QMdiArea, QMdiSubWindow, QMessageBox, QProgressBar
 
 from astrophysics_suite.astrometry.registration import apply_affine_transform, fit_affine_transform
 from astrophysics_suite.detection.point_sources import detect_point_sources_in_array, detect_psf_candidates
@@ -90,6 +90,7 @@ class MainWindow(QMainWindow):
 
         self._build_docks()
         self._build_menu()
+        self._build_toolbar()
         self._build_status_bar()
         self.statusBar().showMessage("Listo")
 
@@ -125,6 +126,15 @@ class MainWindow(QMainWindow):
         self.properties_dock.raise_()
 
     def _build_status_bar(self) -> None:
+        self.readout_label = QLabel("X: --  Y: --  Valor: --")
+        """Lectura de píxel bajo el cursor -- estilo PixInsight
+        ("Readout"): posición de imagen + valor ADU real, actualizada
+        por `_on_pixel_hovered` cada vez que una `ImageView` emite
+        `pixel_hovered`. Nunca un valor inventado: `nan` (mostrado como
+        "--") si el cursor cae fuera de los límites de la imagen."""
+        self.readout_label.setMinimumWidth(260)
+        self.statusBar().addPermanentWidget(self.readout_label)
+
         self.discovery_progress = QProgressBar(self)
         self.discovery_progress.setMaximumWidth(220)
         self.discovery_progress.setVisible(False)
@@ -133,10 +143,10 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------------- menú
     def _build_menu(self) -> None:
         self.file_menu = self.menuBar().addMenu("&Archivo")
-        open_action = QAction("&Abrir FITS...", self)
-        open_action.setShortcut("Ctrl+O")
-        open_action.triggered.connect(self.open_fits_dialog)
-        self.file_menu.addAction(open_action)
+        self.open_action = QAction("&Abrir FITS...", self)
+        self.open_action.setShortcut("Ctrl+O")
+        self.open_action.triggered.connect(self.open_fits_dialog)
+        self.file_menu.addAction(self.open_action)
         self.file_menu.addSeparator()
         exit_action = QAction("&Salir", self)
         exit_action.setShortcut("Ctrl+Q")
@@ -155,24 +165,24 @@ class MainWindow(QMainWindow):
         self.tools_menu.addAction(export_table_action)
 
         self.reduction_menu = self.menuBar().addMenu("&Reducción")
-        build_master_action = QAction("&Construir fotograma maestro...", self)
-        build_master_action.triggered.connect(self._open_build_master_frame_dialog)
-        self.reduction_menu.addAction(build_master_action)
+        self.build_master_action = QAction("&Construir fotograma maestro...", self)
+        self.build_master_action.triggered.connect(self._open_build_master_frame_dialog)
+        self.reduction_menu.addAction(self.build_master_action)
         load_master_action = QAction("Cargar fotograma &maestro...", self)
         load_master_action.triggered.connect(self._open_load_master_frame_dialog)
         self.reduction_menu.addAction(load_master_action)
-        apply_calibration_action = QAction("&Aplicar calibración a la imagen activa...", self)
-        apply_calibration_action.triggered.connect(self._open_apply_calibration_dialog)
-        self.reduction_menu.addAction(apply_calibration_action)
+        self.apply_calibration_action = QAction("&Aplicar calibración a la imagen activa...", self)
+        self.apply_calibration_action.triggered.connect(self._open_apply_calibration_dialog)
+        self.reduction_menu.addAction(self.apply_calibration_action)
         self.reduction_menu.addSeparator()
         reduce_session_action = QAction("Reducir &sesión de LIGHTS...", self)
         reduce_session_action.triggered.connect(self._open_reduce_session_dialog)
         self.reduction_menu.addAction(reduce_session_action)
 
         self.astrometry_menu = self.menuBar().addMenu("A&strometría")
-        plate_solve_action = QAction("&Resolver placa automáticamente...", self)
-        plate_solve_action.triggered.connect(self._open_plate_solve_dialog)
-        self.astrometry_menu.addAction(plate_solve_action)
+        self.plate_solve_action = QAction("&Resolver placa automáticamente...", self)
+        self.plate_solve_action.triggered.connect(self._open_plate_solve_dialog)
+        self.astrometry_menu.addAction(self.plate_solve_action)
         wcs_fit_action = QAction("Ajustar WCS &manualmente (clic + coordenadas)...", self)
         wcs_fit_action.triggered.connect(self._open_wcs_fit_flow)
         self.astrometry_menu.addAction(wcs_fit_action)
@@ -188,17 +198,17 @@ class MainWindow(QMainWindow):
         wavelength_fit_action.triggered.connect(self._open_wavelength_fit_flow)
         self.spectroscopy_menu.addAction(wavelength_fit_action)
 
-        view_menu = self.menuBar().addMenu("&Vista")
-        stf_action = QAction("Alternar STF en la imagen activa", self)
-        stf_action.setShortcut("Ctrl+T")
-        stf_action.triggered.connect(self._toggle_active_stf)
-        view_menu.addAction(stf_action)
+        self.view_menu = self.menuBar().addMenu("&Vista")
+        self.stf_action = QAction("Alternar STF en la imagen activa", self)
+        self.stf_action.setShortcut("Ctrl+T")
+        self.stf_action.triggered.connect(self._toggle_active_stf)
+        self.view_menu.addAction(self.stf_action)
 
         self.discovery_menu = self.menuBar().addMenu("&Descubrimiento")
-        new_observation_action = QAction("&Nueva observación...", self)
-        new_observation_action.setShortcut("Ctrl+N")
-        new_observation_action.triggered.connect(self._open_new_observation_dialog)
-        self.discovery_menu.addAction(new_observation_action)
+        self.new_observation_action = QAction("&Nueva observación...", self)
+        self.new_observation_action.setShortcut("Ctrl+N")
+        self.new_observation_action.triggered.connect(self._open_new_observation_dialog)
+        self.discovery_menu.addAction(self.new_observation_action)
         self.cancel_discovery_action = QAction("&Cancelar análisis", self)
         self.cancel_discovery_action.setEnabled(False)
         self.cancel_discovery_action.triggered.connect(self._cancel_discovery)
@@ -213,6 +223,46 @@ class MainWindow(QMainWindow):
         self.tutorial_on_startup_action.setChecked(self.preferences.get(_TUTORIAL_SHOW_ON_STARTUP_KEY, "true") == "true")
         self.tutorial_on_startup_action.toggled.connect(self._set_tutorial_show_on_startup)
         help_menu.addAction(self.tutorial_on_startup_action)
+
+    # ---------------------------------------------------------------- barra de herramientas
+    def _build_toolbar(self) -> None:
+        """Barra de iconos para las acciones más frecuentes -- estilo
+        PixInsight (flujo dirigido por barra de herramientas, no solo
+        menús). Reutiliza los mismos `QAction` ya creados en
+        `_build_menu` (un `QAction` puede estar en un menú y en una
+        barra a la vez) -- ningún atajo ni conexión duplicados. Los
+        iconos son los pictogramas estándar de Qt/del sistema (nunca un
+        diseño propio), y el estilo visual de la barra ya está definido
+        en `theme.py` -- este método no toca ni uno ni otro."""
+        self.main_toolbar = self.addToolBar("Barra de herramientas principal")
+        self.main_toolbar.setObjectName("MainToolbar")
+        self.main_toolbar.setMovable(False)
+        style = self.style()
+
+        self.open_action.setIcon(style.standardIcon(style.StandardPixmap.SP_DialogOpenButton))
+        self.main_toolbar.addAction(self.open_action)
+        self.main_toolbar.addSeparator()
+
+        self.new_observation_action.setIcon(style.standardIcon(style.StandardPixmap.SP_FileDialogNewFolder))
+        self.main_toolbar.addAction(self.new_observation_action)
+        self.cancel_discovery_action.setIcon(style.standardIcon(style.StandardPixmap.SP_DialogCancelButton))
+        self.main_toolbar.addAction(self.cancel_discovery_action)
+        self.main_toolbar.addSeparator()
+
+        self.plate_solve_action.setIcon(style.standardIcon(style.StandardPixmap.SP_BrowserReload))
+        self.main_toolbar.addAction(self.plate_solve_action)
+        self.build_master_action.setIcon(style.standardIcon(style.StandardPixmap.SP_DriveHDIcon))
+        self.main_toolbar.addAction(self.build_master_action)
+        self.apply_calibration_action.setIcon(style.standardIcon(style.StandardPixmap.SP_DialogApplyButton))
+        self.main_toolbar.addAction(self.apply_calibration_action)
+        self.main_toolbar.addSeparator()
+
+        self.stf_action.setIcon(style.standardIcon(style.StandardPixmap.SP_FileDialogDetailedView))
+        self.main_toolbar.addAction(self.stf_action)
+
+        self.toggle_toolbar_action = self.main_toolbar.toggleViewAction()
+        self.toggle_toolbar_action.setText("Barra de herramientas principal")
+        self.view_menu.addAction(self.toggle_toolbar_action)
 
     # ---------------------------------------------------------------- imágenes
     def open_fits_dialog(self) -> None:
@@ -261,6 +311,7 @@ class MainWindow(QMainWindow):
     def add_image_window(self, data, title: str, *, wcs=None, header: dict | None = None, source_path: str | None = None) -> QMdiSubWindow:
         view = ImageView(data, title, self, wcs=wcs, header=header, source_path=source_path)
         view.process_dropped.connect(lambda process_id, v=view: self._on_process_dropped(process_id, v))
+        view.pixel_hovered.connect(self._on_pixel_hovered)
 
         sub_window = QMdiSubWindow()
         sub_window.setWidget(view)
@@ -272,6 +323,10 @@ class MainWindow(QMainWindow):
 
         logger.info("Imagen cargada: %s (%d x %d)", title, data.shape[1], data.shape[0])
         return sub_window
+
+    def _on_pixel_hovered(self, x_px: float, y_px: float, value: float) -> None:
+        value_text = f"{value:.2f}" if value == value else "--"  # value == value es False solo para NaN
+        self.readout_label.setText(f"X: {x_px:.1f}  Y: {y_px:.1f}  Valor: {value_text}")
 
     def _active_image_view(self) -> ImageView | None:
         sub_window = self.mdi.activeSubWindow()
