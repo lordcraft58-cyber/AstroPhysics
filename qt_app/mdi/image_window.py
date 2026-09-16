@@ -28,7 +28,7 @@ class ImageView(QGraphicsView):
     lista de puntos `(x_px, y_px)` marcados (posiblemente vacía si se
     canceló sin marcar ninguno)."""
 
-    def __init__(self, data: np.ndarray, title: str, parent=None, *, wcs=None):
+    def __init__(self, data: np.ndarray, title: str, parent=None, *, wcs=None, header: dict | None = None, source_path: str | None = None):
         super().__init__(parent)
         self.data = data
         self.title = title
@@ -37,6 +37,16 @@ class ImageView(QGraphicsView):
         archivo no tenía uno) -- disponible para cualquier proceso que
         necesite coordenadas celestes reales (p. ej. calibración
         fotométrica contra un catálogo), inyectado por `main_window`."""
+        self.header = header
+        """Header real del FITS de origen (`dict`, o `None` si la imagen
+        no viene de un archivo -- p. ej. un resultado intermedio de un
+        proceso) -- usado por "Resolver placa automáticamente..." para
+        estimar RA/Dec/escala aproximadas (`FOCALLEN`, `XPIXSZ`, `RA`/
+        `DEC` u `OBJCTRA`/`OBJCTDEC`) antes de pedírselas al usuario."""
+        self.source_path = source_path
+        """Ruta del FITS de origen en disco, o `None` -- usada para
+        proponer un nombre de archivo real al guardar una copia con el
+        WCS resuelto."""
         self.fitted_wcs_solution = None
         """`astrophysics_suite.astrometry.wcs_fit.WCSSolution` ajustado a
         mano sobre esta ventana (ver "Ajustar WCS..."), distinto de

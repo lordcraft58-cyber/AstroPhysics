@@ -20,6 +20,7 @@ from astrophysics_suite.spectroscopy.wavelength import find_arc_lines
 from astrophysics_suite.tables.table import Table
 from qt_app.astrometry.registration_dialog import RegistrationDialog
 from qt_app.astrometry.star_pair_registration_dialog import StarPairConfigDialog
+from qt_app.astrometry.plate_solve_dialog import PlateSolveDialog
 from qt_app.astrometry.wcs_fit_dialog import WCSFitDialog
 from qt_app.candidates.candidate_detail_widget import CandidateDetailWidget
 from qt_app.candidates.candidates_dock import CandidatesDock
@@ -159,7 +160,10 @@ class MainWindow(QMainWindow):
         reduction_menu.addAction(reduce_session_action)
 
         astrometry_menu = self.menuBar().addMenu("A&strometría")
-        wcs_fit_action = QAction("Ajustar &WCS (clic + coordenadas)...", self)
+        plate_solve_action = QAction("&Resolver placa automáticamente...", self)
+        plate_solve_action.triggered.connect(self._open_plate_solve_dialog)
+        astrometry_menu.addAction(plate_solve_action)
+        wcs_fit_action = QAction("Ajustar WCS &manualmente (clic + coordenadas)...", self)
         wcs_fit_action.triggered.connect(self._open_wcs_fit_flow)
         astrometry_menu.addAction(wcs_fit_action)
         registration_action = QAction("&Registrar por WCS compartido...", self)
@@ -230,10 +234,12 @@ class MainWindow(QMainWindow):
         title = Path(path).name
         if loaded.legacy_image.selected_plane is not None:
             title = f"{title} [plano {loaded.legacy_image.selected_plane} de {loaded.legacy_image.original_shape}]"
-        return self.add_image_window(loaded.legacy_image.data, title, wcs=loaded.legacy_image.wcs)
+        return self.add_image_window(
+            loaded.legacy_image.data, title, wcs=loaded.legacy_image.wcs, header=loaded.legacy_image.header, source_path=str(Path(path).resolve())
+        )
 
-    def add_image_window(self, data, title: str, *, wcs=None) -> QMdiSubWindow:
-        view = ImageView(data, title, self, wcs=wcs)
+    def add_image_window(self, data, title: str, *, wcs=None, header: dict | None = None, source_path: str | None = None) -> QMdiSubWindow:
+        view = ImageView(data, title, self, wcs=wcs, header=header, source_path=source_path)
         view.process_dropped.connect(lambda process_id, v=view: self._on_process_dropped(process_id, v))
 
         sub_window = QMdiSubWindow()
@@ -393,6 +399,60 @@ class MainWindow(QMainWindow):
             target_title, reference_title, transform.rms_residual_px, transform.n_points, model,
         )
         self.statusBar().showMessage(f"Registro por pares completado (RMS={transform.rms_residual_px:.2f} px, {transform.n_points} par(es)).", 6000)
+
+    def _open_plate_solve_dialog(self) -> None:
+        view = self._active_image_view()
+        if view is None:
+            self.statusBar().showMessage("Abre o selecciona una imagen antes de resolver la placa.", 5000)
+            return
+        dialog = PlateSolveDialog(view.data, view.header, self)
+        if dialog.exec() != PlateSolveDialog.DialogCode.Accepted:
+            return
+        solution = dialog.result_solution()
+        if solution is None:
+            return
+        view.fitted_wcs_solution = solution
+        table = dialog.result_table()
+        if table is not None:
+            self._last_result_table = table
+        logger.info(
+            "Placa resuelta automáticamente para %s: RMS=%.3f\" con %d estrella(s).",
+            view.title, solution.rms_residual_arcsec, solution.n_stars,
+        )
+        self.statusBar().showMessage(f"WCS resuelto automáticamente para {view.title} (RMS={solution.rms_residual_arcsec:.3f}\").", 6000)
+        self._offer_to_save_wcs_fits_copy(view, solution)
+
+    def _offer_to_save_wcs_fits_copy(self, view: ImageView, solution) -> None:
+        reply = QMessageBox.question(
+            self, "Guardar copia con WCS",
+            "¿Guardar una copia del FITS con el WCS resuelto escrito en la cabecera?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        default_path = ""
+        if view.source_path:
+            source = Path(view.source_path)
+            default_path = str(source.with_name(f"{source.stem}_wcs{source.suffix}"))
+        path, _ = QFileDialog.getSaveFileName(self, "Guardar FITS con WCS", default_path, "FITS (*.fits *.fit *.fts)")
+        if not path:
+            return
+
+        from astrophysics_suite.astrometry.wcs_fit import wcs_solution_to_astropy
+        from astrophysics_suite.io.fits_writer import save_fits_image
+
+        astropy_wcs = wcs_solution_to_astropy(solution)
+        header = dict(view.header) if view.header else {}
+        header.update(dict(astropy_wcs.to_header()))
+        try:
+            save_fits_image(path, view.data, header=header)
+        except Exception as exc:  # noqa: BLE001 -- error real de escritura, debe ser visible
+            logger.error("No se pudo guardar %s: %s", path, exc)
+            QMessageBox.critical(self, "Guardar FITS con WCS", f"No se pudo guardar «{Path(path).name}»:\n\n{exc}")
+            return
+        logger.info("FITS con WCS guardado en %s", path)
+        self.statusBar().showMessage(f"FITS con WCS guardado en {path}", 6000)
 
     def _open_wcs_fit_flow(self) -> None:
         view = self._active_image_view()

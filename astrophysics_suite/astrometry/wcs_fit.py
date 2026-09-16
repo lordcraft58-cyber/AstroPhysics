@@ -118,6 +118,24 @@ def wcs_solution_from_astropy(wcs, *, crpix_px: tuple[float, float] | None = Non
     )
 
 
+def wcs_solution_to_astropy(solution: WCSSolution):
+    """Inversa de `wcs_solution_from_astropy`: convierte un `WCSSolution`
+    propio (de `fit_wcs`, manual o de `plate_solve.solve_plate`,
+    automático) a un `astropy.wcs.WCS` real, listo para escribir en un
+    header FITS real (`WCS.to_header()`) -- la forma de que una solución
+    resuelta en el taller sobreviva a guardar/reabrir el archivo."""
+    from astropy.wcs import WCS
+
+    wcs = WCS(naxis=2)
+    # `WCSSolution.crpix_px` usa la convención 0-indexada del resto del
+    # proyecto (posiciones de píxel marcadas a clic); FITS/WCS es 1-indexado.
+    wcs.wcs.crpix = [solution.crpix_px[0] + 1.0, solution.crpix_px[1] + 1.0]
+    wcs.wcs.crval = list(solution.crval_deg)
+    wcs.wcs.cd = solution.cd_matrix_deg_per_px.tolist()
+    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    return wcs
+
+
 def fit_wcs(
     pixel_xy: list[tuple[float, float]],
     sky_radec: list[tuple[float, float]],

@@ -11,6 +11,7 @@ from astrophysics_suite.astrometry.wcs_fit import (
     gnomonic_deproject,
     gnomonic_project,
     wcs_solution_from_astropy,
+    wcs_solution_to_astropy,
 )
 
 
@@ -110,6 +111,68 @@ def test_wcs_solution_from_astropy_matches_direct_pix2world():
         ra, dec = solution.pixel_to_sky(x0, y0)
         assert ra == pytest.approx(float(expected_ra), abs=1e-6)
         assert dec == pytest.approx(float(expected_dec), abs=1e-6)
+
+
+def test_wcs_solution_to_astropy_round_trips_through_wcs_solution_from_astropy():
+    """Inversa real de `wcs_solution_from_astropy`: un `WCSSolution` real
+    (de `fit_wcs`, no inventado) debe sobrevivir la conversión a
+    `astropy.wcs.WCS` y de vuelta sin perder precisión -- la forma en que
+    una solución resuelta en el taller (manual o `plate_solve`) se
+    guarda en un FITS real y se recupera al reabrirlo."""
+    rng = np.random.default_rng(3)
+    crpix_px = (256.0, 256.0)
+    n = 12
+    xs = rng.uniform(50, 460, n)
+    ys = rng.uniform(50, 460, n)
+    true_ra0, true_dec0 = 187.3, -5.7
+    true_cd = np.array([[-0.28 / 3600.0, 0.03 / 3600.0], [0.03 / 3600.0, 0.28 / 3600.0]])
+    dx, dy = xs - crpix_px[0], ys - crpix_px[1]
+    xi, eta = true_cd @ np.vstack([dx, dy])
+    ra, dec = gnomonic_deproject(xi, eta, true_ra0, true_dec0)
+
+    solution = fit_wcs(list(zip(xs, ys)), list(zip(ra, dec)), crpix_px=crpix_px)
+
+    astropy_wcs = wcs_solution_to_astropy(solution)
+    round_tripped = wcs_solution_from_astropy(astropy_wcs)
+
+    assert round_tripped.crval_deg == pytest.approx(solution.crval_deg, abs=1e-9)
+    assert round_tripped.crpix_px == pytest.approx(solution.crpix_px, abs=1e-6)
+    np.testing.assert_allclose(round_tripped.cd_matrix_deg_per_px, solution.cd_matrix_deg_per_px, atol=1e-12)
+
+    for x0, y0 in [(100.0, 120.0), (400.0, 300.0)]:
+        original_ra, original_dec = solution.pixel_to_sky(x0, y0)
+        restored_ra, restored_dec = round_tripped.pixel_to_sky(x0, y0)
+        assert restored_ra == pytest.approx(original_ra, abs=1e-8)
+        assert restored_dec == pytest.approx(original_dec, abs=1e-8)
+
+
+def test_wcs_solution_to_astropy_writes_a_real_fits_header(tmp_path):
+    """El propósito real de la conversión: producir un header FITS que un
+    lector externo (astropy) interprete como el WCS correcto -- no solo
+    que los números del objeto Python coincidan."""
+    from astropy.io import fits
+    from astropy.wcs import WCS as AstropyWCS
+
+    solution = fit_wcs(
+        [(10.0, 10.0), (90.0, 10.0), (10.0, 90.0), (90.0, 90.0)],
+        [(100.01, 30.0), (99.99, 30.0), (100.01, 30.02), (99.99, 30.02)],
+        crpix_px=(50.0, 50.0),
+    )
+
+    astropy_wcs = wcs_solution_to_astropy(solution)
+    header = astropy_wcs.to_header()
+
+    path = tmp_path / "solved.fits"
+    fits.PrimaryHDU(data=np.zeros((100, 100), dtype=np.float32), header=header).writeto(path)
+
+    with fits.open(path) as hdul:
+        reloaded_wcs = AstropyWCS(hdul[0].header)
+        assert reloaded_wcs.has_celestial
+        for x0, y0 in [(50.0, 50.0), (10.0, 10.0)]:
+            expected_ra, expected_dec = solution.pixel_to_sky(x0, y0)
+            got_ra, got_dec = reloaded_wcs.all_pix2world(x0, y0, 0)
+            assert float(got_ra) == pytest.approx(expected_ra, abs=1e-6)
+            assert float(got_dec) == pytest.approx(expected_dec, abs=1e-6)
 
 
 def test_wcs_solution_from_astropy_accepts_explicit_crpix():
