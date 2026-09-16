@@ -13,6 +13,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import QDockWidget, QFileDialog, QMainWindow, QMdiArea, QMdiSubWindow, QMessageBox, QProgressBar
 
+from astrophysics_suite.spectroscopy.wavelength import find_arc_lines
 from astrophysics_suite.tables.table import Table
 from qt_app.astrometry.registration_dialog import RegistrationDialog
 from qt_app.astrometry.wcs_fit_dialog import WCSFitDialog
@@ -31,6 +32,7 @@ from qt_app.reduction.apply_calibration_dialog import ApplyCalibrationDialog
 from qt_app.reduction.build_master_frame_dialog import BuildMasterFrameDialog
 from qt_app.reduction.master_frame_library import MasterFrameLibrary
 from qt_app.reduction.reduce_session_dialog import ReduceSessionDialog, SessionReductionOutcome
+from qt_app.spectroscopy.wavelength_fit_dialog import WavelengthFitDialog
 from qt_app.theme import DARK, build_stylesheet
 from qt_app.workers import ProcessWorker
 from services.discovery_service import DiscoveryJob, DiscoveryParams
@@ -158,6 +160,11 @@ class MainWindow(QMainWindow):
         registration_action = QAction("&Registrar por WCS compartido...", self)
         registration_action.triggered.connect(self._open_registration_dialog)
         astrometry_menu.addAction(registration_action)
+
+        spectroscopy_menu = self.menuBar().addMenu("Espectroscop&ía")
+        wavelength_fit_action = QAction("&Calibrar longitud de onda (detectar líneas)...", self)
+        wavelength_fit_action.triggered.connect(self._open_wavelength_fit_flow)
+        spectroscopy_menu.addAction(wavelength_fit_action)
 
         view_menu = self.menuBar().addMenu("&Vista")
         stf_action = QAction("Alternar STF en la imagen activa", self)
@@ -292,6 +299,35 @@ class MainWindow(QMainWindow):
             return
         self._last_result_table.to_csv(path)
         self.statusBar().showMessage(f"Tabla exportada a {path}", 5000)
+
+    def _open_wavelength_fit_flow(self) -> None:
+        view = self._active_image_view()
+        if view is None:
+            self.statusBar().showMessage("Abre o selecciona una imagen antes de calibrar longitud de onda.", 5000)
+            return
+
+        # misma convención que spectroscopy.continuum: la fila central de
+        # la imagen tratada como espectro 1D de arco, mientras el taller
+        # no tiene un flujo dedicado de extracción de arco.
+        row_index = view.data.shape[0] // 2
+        spectrum = view.data[row_index, :].astype(float)
+        lines = find_arc_lines(spectrum)
+        if len(lines) < 2:
+            self.statusBar().showMessage(f"Solo se detectaron {len(lines)} línea(s) de arco en la fila central -- se necesitan más para un ajuste.", 6000)
+            return
+
+        dialog = WavelengthFitDialog(lines, self)
+        dialog.fitted.connect(lambda solution, table, v=view: self._on_wavelength_fitted(v, solution, table))
+        dialog.exec()
+
+    def _on_wavelength_fitted(self, view: ImageView, solution, table: Table) -> None:
+        view.fitted_wavelength_solution = solution
+        self._last_result_table = table
+        logger.info(
+            "Longitud de onda calibrada para %s: RMS=%.4f (grado %d, %d línea(s)). Tabla disponible -- Herramientas -> Exportar última tabla a CSV...",
+            view.title, solution.rms_residual, solution.degree, len(table.rows),
+        )
+        self.statusBar().showMessage(f"Longitud de onda calibrada para {view.title} (RMS={solution.rms_residual:.4f}).", 6000)
 
     def _open_build_master_frame_dialog(self) -> None:
         dialog = BuildMasterFrameDialog(self.master_frame_library, self)

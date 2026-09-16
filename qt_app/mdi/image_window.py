@@ -42,6 +42,10 @@ class ImageView(QGraphicsView):
         mano sobre esta ventana (ver "Ajustar WCS..."), distinto de
         `self.wcs` (que viene de la cabecera del FITS, si la tenía) --
         `None` hasta que el usuario ajuste uno."""
+        self.fitted_wavelength_solution = None
+        """`astrophysics_suite.spectroscopy.wavelength.WavelengthSolution`
+        ajustada sobre esta ventana (ver "Calibrar longitud de onda...")
+        -- `None` hasta que el usuario ajuste una."""
         self.stf_params: STFParams = compute_stf_params(data)
         self.stf_enabled = True
 

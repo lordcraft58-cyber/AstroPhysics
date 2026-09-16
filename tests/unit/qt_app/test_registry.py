@@ -29,9 +29,14 @@ def test_registry_has_no_duplicate_process_ids():
 
 
 def test_registry_covers_all_expected_categories():
+    # "Astrometría" ya no aparece en el árbol de procesos: sus dos
+    # capacidades (ajuste de WCS, registro por WCS compartido) viven en
+    # diálogos dedicados del menú "Astrometría" (Fase 13), retiradas de
+    # aquí por el mismo motivo que imtools.arithmetic y los fotogramas
+    # maestros de ccdred.
     registry = build_process_registry()
     categories = {p.category for p in registry}
-    assert categories == {"Reducción CCD", "Utilidades de imagen", "Fotometría", "Espectroscopía", "Astrometría"}
+    assert categories == {"Reducción CCD", "Utilidades de imagen", "Fotometría", "Espectroscopía"}
 
 
 def test_unwired_processes_have_no_run_and_are_flagged():

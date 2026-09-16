@@ -138,11 +138,11 @@ si se decide que hace falta.
 | Trazado de apertura (centroide ponderado por flujo columna a columna + ajuste polinómico sigma-clip) | Real, `spectroscopy/trace.py:29` (`trace_spectrum`) | `tests/unit/spectroscopy/test_trace.py` | Proceso `spectroscopy.trace`, cableado (clic para el centro inicial) | **EXPERIMENTAL** (el resultado se visualiza como una franja repetida, no un espectro real -- documentado así explícitamente por falta de un widget de gráfico 1D) |
 | Extracción por suma simple con fondo de ventanas laterales | Real, `trace.py:117` (`extract_sum`) | ídem | Disponible como método del mismo proceso `spectroscopy.trace` | **EXPERIMENTAL** (mismo motivo que arriba) |
 | Extracción óptima ponderada por varianza (Horne 1986) | Real, `trace.py:147` (`extract_optimal`) | ídem | ídem | **EXPERIMENTAL** (mismo motivo) |
-| Detección de líneas de arco (fondo local robusto + umbral + centroide subpíxel parabólico) | Real, `spectroscopy/wavelength.py:22` (`find_arc_lines`) | `tests/unit/spectroscopy/test_wavelength.py` | — | **DISPONIBLE** (como motor) |
-| Solución de longitud de onda (ajuste polinómico, RMS + residuo por línea) | Real, `wavelength.py:70` (`fit_wavelength_solution`) | ídem | Proceso `spectroscopy.wavelength` listado, **sin `run=`** (necesita una lista de líneas de referencia que la GUI no ofrece aún) | **PENDIENTE** (motor real, sin camino de uso) |
+| Detección de líneas de arco (fondo local robusto + umbral + centroide subpíxel parabólico) | Real, `spectroscopy/wavelength.py:22` (`find_arc_lines`) | `tests/unit/spectroscopy/test_wavelength.py` | Automática dentro de "Calibrar longitud de onda..." (menú Espectroscopía) -- ver Fase 15 | **DISPONIBLE** |
+| Solución de longitud de onda (ajuste polinómico, RMS + residuo por línea) | Real, `wavelength.py:70` (`fit_wavelength_solution`) | ídem | "Calibrar longitud de onda...": tabla con una fila por línea detectada, el usuario introduce la longitud de onda conocida de cada una (sin resolución automática, igual que `identify` interactivo) -- ver Fase 15 | **DISPONIBLE** |
 | Transferencia de solución por correlación cruzada (`reidentify`, solo traslación) | Real, `wavelength.py:92` (`reidentify_wavelength_solution`) | ídem | — | **DISPONIBLE** (como motor) |
 | Corrección de extinción atmosférica + dos fórmulas de masa de aire | Real, `spectroscopy/fluxcal.py:14/29/38` | `tests/unit/spectroscopy/test_fluxcal.py` | — | **DISPONIBLE** (como motor) |
-| Función de sensibilidad desde estrella estándar (`sensfunc`) + calibración de flujo (`calibrate`) | Real, `fluxcal.py:67/110` | ídem | **Sin ningún `ProcessDefinition`** -- no aparece ni como pendiente en el árbol | **PENDIENTE** (motor real, ni siquiera listado) |
+| Función de sensibilidad desde estrella estándar (`sensfunc`) + calibración de flujo (`calibrate`) | Real, `fluxcal.py:67/110` | ídem | Proceso `spectroscopy.fluxcal` ahora **listado explícitamente como pendiente** en el árbol (antes ni aparecía) -- necesita un espectro ya extraído y calibrado en longitud de onda más un catálogo de flujos estándar, interacción no construida -- ver Fase 15 | **PENDIENTE** (motor real, ahora visible en el árbol en vez de oculto) |
 | Ajuste de continuo sigma-clip con rechazo asimétrico (emisión/absorción) | Real, `spectroscopy/continuum.py:29` (`fit_continuum`) | `tests/unit/spectroscopy/test_continuum.py` | Proceso `spectroscopy.continuum`, cableado, pero **fijo en la fila central de la imagen**, no en un espectro ya extraído | **EXPERIMENTAL** (recorte de alcance explícito, documentado) |
 | Normalización por continuo | Real, `continuum.py:93` | ídem | mismo proceso | **EXPERIMENTAL** (mismo motivo) |
 | Extracción multi-apertura por lote desde un único 2D (`apall` real, varias trazas a la vez) | No implementada -- se extrae una traza a la vez | — | — | **PENDIENTE** |
@@ -162,7 +162,7 @@ si se decide que hace falta.
 | `daophot` | 2 | 2 | 4 | Núcleo real (deblending simultáneo, tres modelos PSF); falta selección/refinamiento/diagnóstico automáticos |
 | Astrometría | 6 | 0 | 3 | **Núcleo cerrado en Fase 13**: ajuste de WCS real (clic + coordenadas a mano, sin "blind solving") y registro por WCS compartido, ambos cableados. Quedan pendientes: registro por pares de estrellas emparejadas entre dos ventanas (interacción no construida), resolución automática contra catálogo, y exportación de posiciones a archivo |
 | Tablas/catálogos | 4 | 0 | 2 | **Exportación cerrada en Fase 14**: `Table` genérica real + CSV, consumida por punto cero y ajuste de WCS. Quedan pendientes, deliberadamente: unificación profunda de los tipos de resultado de cada motor (alto riesgo, no abordada) y abstracción de catálogo con más de un proveedor (YAGNI hasta que haga falta un segundo) |
-| Espectroscopía | 5 | 4 | 5 | Motor más completo de lo esperado (Horne, sensfunc, extinción); GUI puramente demostrativa en todo lo que expone |
+| Espectroscopía | 6 | 4 | 4 | **Calibración en longitud de onda cerrada en Fase 15**: detección automática de líneas + tabla de longitudes conocidas, ajuste real. `spectroscopy.fluxcal` ahora al menos visible como pendiente (antes ni aparecía). Trazado/extracción/continuo siguen `EXPERIMENTAL` (recorte de alcance explícito: fila central, tira repetida); multi-apertura por lote, medición de líneas, combinación de espectros y el tipo `Spectrum` compartido siguen pendientes |
 
 ## Prioridad de desarrollo (orden acordado explícitamente)
 
@@ -201,10 +201,18 @@ reescribir los tipos de resultado de cada motor (`ApertureMeasurement`,
 `PSFFitResult`, `WCSSolution`, `ExtractedSpectrum`...) bajo un contrato común, por
 ser una refactorización de alto riesgo que tocaría cuatro bloques ya cerrados y
 probados sin necesidad funcional inmediata que lo justifique -- queda documentada
-como brecha de arquitectura real para una fase dedicada. El siguiente bloque a
-abrir, según el orden acordado, es espectroscopía: el motor es más completo de lo
-que sugería la Fase 9.6 (extracción óptima de Horne, función de sensibilidad,
-corrección de extinción), pero la GUI es puramente demostrativa en todo lo que
-expone (fila central tratada como espectro, tira repetida en vez de un espectro
-real) y `spectroscopy.wavelength`/`spectroscopy.fluxcal` siguen sin ningún camino
-de uso.
+como brecha de arquitectura real para una fase dedicada. La Fase 15 (ver
+`20-FASE15-ESPECTROSCOPIA.md`) cierra el último bloque del orden acordado:
+`spectroscopy.wavelength` gana un camino de uso real -- "Calibrar longitud de
+onda..." detecta las líneas de arco automáticamente (`find_arc_lines`, sin clic
+manual, a diferencia del ajuste de WCS) y solo pide al usuario la longitud de onda
+conocida de cada una en una tabla, mismo alcance que `identify` interactivo.
+`spectroscopy.fluxcal` sigue sin camino de uso -- necesitaría un espectro ya
+extraído y calibrado en longitud de onda más un catálogo de flujos estándar,
+interacción no construida en esta fase -- pero al menos queda visible como
+pendiente en el árbol de procesos en vez de invisible, cerrando la brecha de
+"ni siquiera listado" que señalaba la auditoría original. Con esto se completa el
+recorrido por los seis bloques del orden de prioridad acordado
+(`CCDRED → análisis de imagen → fotometría → astrometría → tablas/catálogos →
+espectroscopía`); los huecos que quedan en cada uno están documentados
+explícitamente arriba, ninguno oculto.

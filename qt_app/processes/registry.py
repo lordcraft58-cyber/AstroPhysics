@@ -385,22 +385,28 @@ def build_process_registry() -> list[ProcessDefinition]:
             run=_run_spectral_trace,
             requires_picking=1,
         ),
+        # La calibración en longitud de onda necesita que el usuario
+        # empareje cada línea de arco detectada con una longitud de onda
+        # conocida (una tabla, no un formulario de parámetros) -- se
+        # resuelve con un diálogo dedicado en el menú "Espectroscopía"
+        # (qt_app/spectroscopy/wavelength_fit_dialog.py), mismo patrón que
+        # el ajuste de WCS en Astrometría.
         ProcessDefinition(
-            process_id="spectroscopy.wavelength",
-            name="Calibración en longitud de onda (identify)",
+            process_id="spectroscopy.fluxcal",
+            name="Calibración de flujo (sensfunc/calibrate)",
             category="Espectroscopía",
-            description="Identificación de líneas de arco + ajuste polinómico píxel->longitud de onda. Requiere un catálogo de líneas de referencia -- pendiente de esa interacción.",
+            description="Función de sensibilidad desde un espectro de estrella estándar + corrección de extinción atmosférica -- motor real (astrophysics_suite.spectroscopy.fluxcal), pero necesita un espectro ya extraído y calibrado en longitud de onda más un catálogo de flujos estándar -- pendiente de esa interacción.",
         ),
-        ProcessDefinition(
-            process_id="astrometry.wcs_fit",
-            name="Ajuste de WCS (ccmap)",
-            category="Astrometría",
-            description="Ajuste de proyección TAN desde pares píxel<->cielo. Requiere resolver identificaciones contra un catálogo -- pendiente de esa interacción.",
-        ),
-        ProcessDefinition(
-            process_id="astrometry.registration",
-            name="Registro entre imágenes (geomap/geotran)",
-            category="Astrometría",
-            description="Alineación por estrellas emparejadas o por WCS compartido. Requiere una segunda imagen de referencia -- pendiente de una vista de dos imágenes.",
-        ),
+        # El ajuste de WCS y el registro entre imágenes también necesitan
+        # interacción que no encaja en un formulario de parámetros (tabla
+        # de coordenadas a mano; selección de una segunda ventana) -- se
+        # resuelven con diálogos dedicados en el menú "Astrometría"
+        # (qt_app/astrometry/), retirados de aquí por el mismo motivo que
+        # imtools.arithmetic y los fotogramas maestros de ccdred: dejarlos
+        # listados como "(pendiente)" sería información obsoleta y
+        # engañosa una vez que la capacidad existe, solo que accesible
+        # desde otro sitio. El registro por PARES de estrellas emparejadas
+        # entre dos ventanas (a diferencia del registro por WCS compartido,
+        # que sí está cableado) sigue sin camino de uso -- ver
+        # docs/audit/18-FASE13-ASTROMETRIA.md §7.
     ]
