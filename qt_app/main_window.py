@@ -13,7 +13,8 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import QDockWidget, QFileDialog, QMainWindow, QMdiArea, QMdiSubWindow, QMessageBox, QProgressBar
 
-from astrophysics_suite.detection.point_sources import detect_point_sources_in_array
+from astrophysics_suite.detection.point_sources import detect_point_sources_in_array, detect_psf_candidates
+from astrophysics_suite.photometry.psf import select_psf_reference_stars
 from astrophysics_suite.spectroscopy.wavelength import find_arc_lines
 from astrophysics_suite.tables.table import Table
 from qt_app.astrometry.registration_dialog import RegistrationDialog
@@ -411,23 +412,44 @@ class MainWindow(QMainWindow):
         (DAOStarFinder) en la imagen activa y las usa directamente como
         `_picked_points`, sin exigir clics manuales -- un radio de
         `requires_picking=1` usa solo la más brillante; `0` (ilimitado)
-        usa hasta 20, de más a menos brillante."""
+        usa hasta 20, de más a menos brillante. `photometry.psf` usa en su
+        lugar la selección tipo `pstselect` (aislamiento + redondez +
+        señal/ruido), no solo brillo -- una estrella de referencia para
+        PSF necesita estar aislada, no simplemente ser brillante."""
         fwhm_px = float(params.get("detect_fwhm_px", 3.0))
         threshold_sigma = float(params.get("detect_threshold_sigma", 5.0))
-        sources = detect_point_sources_in_array(view.data, fwhm_px=fwhm_px, threshold_sigma=threshold_sigma)
-        if not sources:
-            self.statusBar().showMessage(
-                "Detección automática: no se encontró ninguna fuente por encima del umbral -- baja el umbral o marca la posición a mano.", 6000
-            )
-            return
 
-        max_points = process.requires_picking if process.requires_picking else 20
-        points = [(x, y) for x, y, _flux in sources[:max_points]]
+        if process.process_id == "photometry.psf":
+            candidates = detect_psf_candidates(view.data, fwhm_px=fwhm_px, threshold_sigma=threshold_sigma)
+            selected = select_psf_reference_stars(
+                candidates,
+                min_separation_px=float(params.get("psf_min_separation_px", 15.0)),
+                max_ellipticity=float(params.get("psf_max_ellipticity", 0.3)),
+                min_snr=float(params.get("psf_min_snr", 15.0)),
+                max_stars=int(params.get("psf_max_stars", 12)),
+            )
+            if not selected:
+                self.statusBar().showMessage(
+                    "Selección automática (pstselect): ninguna fuente detectada cumple los criterios de aislamiento/redondez/S-N -- ajústalos o marca las posiciones a mano.",
+                    7000,
+                )
+                return
+            points = [(c.x, c.y) for c in selected]
+            message = f"Selección automática (pstselect): {len(points)} estrella(s) de referencia (de {len(candidates)} detectada(s))."
+        else:
+            sources = detect_point_sources_in_array(view.data, fwhm_px=fwhm_px, threshold_sigma=threshold_sigma)
+            if not sources:
+                self.statusBar().showMessage(
+                    "Detección automática: no se encontró ninguna fuente por encima del umbral -- baja el umbral o marca la posición a mano.", 6000
+                )
+                return
+            max_points = process.requires_picking if process.requires_picking else 20
+            points = [(x, y) for x, y, _flux in sources[:max_points]]
+            message = f"Detección automática: {len(points)} fuente(s) usada(s) (de {len(sources)} detectada(s) en total)."
+
         picked_params = dict(params)
         picked_params["_picked_points"] = points
-        self.statusBar().showMessage(
-            f"Detección automática: {len(points)} fuente(s) usada(s) (de {len(sources)} detectada(s) en total).", 5000
-        )
+        self.statusBar().showMessage(message, 5000)
         self._start_process_worker(process, view, picked_params)
 
     def _start_picking_then_run(self, process: ProcessDefinition, view: ImageView, params: dict) -> None:

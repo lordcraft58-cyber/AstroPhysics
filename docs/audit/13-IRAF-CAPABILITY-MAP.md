@@ -76,11 +76,11 @@ capacidad sin implementar en absoluto).
 | Modelo PSF Gaussiano elíptico | Real, `photometry/psf.py:31` (`GaussianPSF`) | `tests/unit/photometry/test_psf.py` | Expuesto en `photometry.psf` | **DISPONIBLE** |
 | Modelo PSF Moffat (colas realistas) | Real, `psf.py:56` (`MoffatPSF`) | ídem | Motor listo, **GUI fija en Gaussiano** (`registry.py:79`) | **EXPERIMENTAL** (motor disponible, no seleccionable desde la GUI) |
 | PSF empírica (apilado de estrellas de referencia, recentrado subpíxel, sobremuestreo) | Real, `psf.py:83/102` (`build_empirical_psf`) | ídem | Motor listo, **no expuesto en la GUI** | **EXPERIMENTAL** (motor disponible, no seleccionable desde la GUI) |
-| Selección automática de estrellas PSF (equivalente a `pstselect`: aislamiento/redondez/nitidez) | No implementada -- las posiciones de referencia las da el llamador | — | — | **PENDIENTE** |
-| Detección automática de fuentes previa a PSF (equivalente a `daofind`) | Reutiliza el mismo `detect_point_sources` genérico de apphot -- no hay ningún criterio afinado para candidatura PSF (redondez/nitidez) | `tests/unit/detection/test_point_sources.py` | No conectado a `photometry.psf` (la selección hoy es 100% manual por clic) | **PENDIENTE** (como paso `daofind`-específico) |
+| Selección automática de estrellas PSF (equivalente a `pstselect`: aislamiento/redondez/nitidez) | No implementada hasta esta ronda -- las posiciones de referencia las daba siempre el llamador | `astrophysics_suite/photometry/psf.py` (`select_psf_reference_stars`: aislamiento real contra todos los candidatos, elipticidad, S/N mínima) -- ver Fase 17 | `tests/unit/photometry/test_psf.py` | Casilla "Detectar automáticamente (pstselect)" en `photometry.psf` | **DISPONIBLE** |
+| Detección automática de fuentes previa a PSF (equivalente a `daofind`) | Reutilizaba `detect_point_sources` genérico de apphot sin ningún criterio afinado para candidatura PSF | `astrophysics_suite/detection/point_sources.py` (`detect_psf_candidates`, mismo motor DAOStarFinder enriquecido con FWHM/elipticidad/nitidez vía `enrich_star_rows`) -- ver Fase 17 | `tests/unit/detection/test_point_sources.py` | Conectado a `photometry.psf` (junto con `select_psf_reference_stars`, arriba) | **DISPONIBLE** |
 | Ajuste PSF simultáneo multi-fuente con desmezclado (`group`+`psf`+`nstar` real) | Real, `psf.py:164` (`fit_group_psf_photometry`) -- matriz de diseño con una columna por fuente + término de cielo, ponderado por sigma inverso, incertidumbre por covarianza | ídem | Proceso `photometry.psf`, cableado, selección de posiciones a clic (Fase 9.6 §8) | **DISPONIBLE** |
-| Refinamiento no lineal de posición iterativo (`allstar`) | No implementado -- posiciones fijas, documentado explícitamente como límite de alcance en el propio código (`psf.py:189-192`) | — | — | **PENDIENTE** |
-| Diagnóstico de calidad de ajuste (chi, residuos, imagen de residuo por `nstar`) | No implementado -- `PSFFitResult` solo devuelve flujo + incertidumbre | — | — | **PENDIENTE** |
+| Refinamiento no lineal de posición iterativo (`allstar`) | No implementado hasta esta ronda -- posiciones fijas, documentado explícitamente como límite de alcance en el propio código | `astrophysics_suite/photometry/psf.py` (`fit_group_psf_photometry_with_position_refinement`, proyección variable: `scipy.optimize.least_squares` sobre los desplazamientos de posición, con el flujo resuelto como subproblema lineal en cada evaluación) -- ver Fase 17 | `tests/unit/photometry/test_psf.py` | Casilla "Refinar posición (allstar)" en `photometry.psf` | **DISPONIBLE** |
+| Diagnóstico de calidad de ajuste (chi, residuos, imagen de residuo por `nstar`) | No implementado hasta esta ronda -- `PSFFitResult` solo devolvía flujo + incertidumbre | `astrophysics_suite/photometry/psf.py` (`compute_psf_fit_diagnostics`: chi² reducido + imagen de residuo, calculados sobre un ajuste ya resuelto) -- ver Fase 17 | `tests/unit/photometry/test_psf.py` | Casilla "Diagnóstico de ajuste (chi², residuo)" en `photometry.psf` -- abre la imagen de residuo en una ventana nueva | **DISPONIBLE** |
 
 ---
 
@@ -159,7 +159,7 @@ si se decide que hace falta.
 | `ccdred` | 13 | 0 | 0 | **Cerrado.** Sesión real de LIGHTS, píxeles defectuosos, franjas, iluminación, cielo, clasificación por cabecera y perfiles de instrumento, todos con motor real y camino de uso en la GUI (Fases 10.1-10.2) |
 | Análisis de imagen | 6 | 0 | 0 | **Cerrado.** Aritmética entre dos imágenes, estadísticas+histograma, recorte por clic y normalización por percentiles, todos con motor real y camino de uso en la GUI (Fase 11.1) |
 | `apphot` | 7 | 0 | 0 | **Cerrado en la Fase 16.** Selección de fuente a clic o por detección automática (DAOStarFinder real), calibración de punto cero real contra Gaia (también con detección automática), y ajuste real de curva de crecimiento con radio óptimo recomendado -- todos con motor real y camino de uso en la GUI |
-| `daophot` | 2 | 2 | 4 | Núcleo real (deblending simultáneo, tres modelos PSF); falta selección/refinamiento/diagnóstico automáticos |
+| `daophot` | 6 | 2 | 0 | **Cerrado en la Fase 17** (selección pstselect + refinamiento allstar + diagnóstico chi²/residuo). Quedan `EXPERIMENTAL`, sin bloquear el bloque, dos motores ya reales pero no seleccionables desde la GUI (Moffat, PSF empírica) -- la GUI sigue fija en Gaussiana |
 | Astrometría | 6 | 0 | 3 | **Núcleo cerrado en Fase 13**: ajuste de WCS real (clic + coordenadas a mano, sin "blind solving") y registro por WCS compartido, ambos cableados. Quedan pendientes: registro por pares de estrellas emparejadas entre dos ventanas (interacción no construida), resolución automática contra catálogo, y exportación de posiciones a archivo |
 | Tablas/catálogos | 4 | 0 | 2 | **Exportación cerrada en Fase 14**: `Table` genérica real + CSV, consumida por punto cero y ajuste de WCS. Quedan pendientes, deliberadamente: unificación profunda de los tipos de resultado de cada motor (alto riesgo, no abordada) y abstracción de catálogo con más de un proveedor (YAGNI hasta que haga falta un segundo) |
 | Espectroscopía | 6 | 4 | 4 | **Calibración en longitud de onda cerrada en Fase 15**: detección automática de líneas + tabla de longitudes conocidas, ajuste real. `spectroscopy.fluxcal` ahora al menos visible como pendiente (antes ni aparecía). Trazado/extracción/continuo siguen `EXPERIMENTAL` (recorte de alcance explícito: fila central, tira repetida); multi-apertura por lote, medición de líneas, combinación de espectros y el tipo `Spectrum` compartido siguen pendientes |
@@ -233,3 +233,26 @@ point_sources.py`) conecta el mismo motor DAOStarFinder ya usado por el
 Discovery Engine como alternativa real al clic manual en `photometry.
 aperture` y `photometry.zeropoint` ("Detectar automáticamente"). Con esto,
 `apphot` queda con sus 7 capacidades en `DISPONIBLE`, ninguna `PENDIENTE`.
+
+Con `apphot` cerrado, la Fase 17 (ver `22-FASE17-DAOPHOT-CIERRE.md`) cierra
+los cuatro huecos que quedaban en `daophot`: `select_psf_reference_stars`
+(`astrophysics_suite/photometry/psf.py`) implementa la selección automática
+de estrellas de referencia tipo `pstselect` (aislamiento real contra todos
+los candidatos detectados, no solo los seleccionados; redondez; señal/ruido
+mínima); `detect_psf_candidates` (`astrophysics_suite/detection/
+point_sources.py`) conecta la detección automática -- el equivalente
+`daofind` -- enriquecida con las métricas que esa selección necesita;
+`fit_group_psf_photometry_with_position_refinement` implementa el
+refinamiento no lineal de posición de `allstar` por proyección variable
+(Golub-Pereyra: `scipy.optimize.least_squares` optimiza solo los
+desplazamientos de posición, el flujo se resuelve como subproblema lineal
+exacto en cada evaluación); y `compute_psf_fit_diagnostics` da el
+diagnóstico de calidad que faltaba (chi² reducido + imagen de residuo)
+sobre un ajuste ya resuelto, sin volver a ajustar nada. Las cuatro se
+exponen como casillas opcionales en `photometry.psf`, sin cambiar el
+comportamiento por defecto ya probado desde la Fase 9.6. Con esto, `daophot`
+queda con sus 6 capacidades cableadas en `DISPONIBLE`; solo quedan
+`EXPERIMENTAL` (sin bloquear el bloque) los modelos Moffat y PSF empírica,
+reales pero no seleccionables desde la GUI (que sigue fija en Gaussiana) --
+huecos menores, documentados, no priorizados por no tener un caso de uso
+concreto que los reclame todavía.

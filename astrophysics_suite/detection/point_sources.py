@@ -17,6 +17,7 @@ que motivó esta reingeniería (ver docs/audit/01-..., seccion 3.3).
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -25,6 +26,7 @@ from legacy.AstroPhysicsSuite_v57_3_COMMERCIAL import (
 )
 from legacy.AstroPhysicsSuite_v57_3_COMMERCIAL import enrich_star_rows as _legacy_enrich_star_rows
 from legacy.AstroPhysicsSuite_v57_3_COMMERCIAL import estimate_background as _legacy_estimate_background
+from legacy.AstroPhysicsSuite_v57_3_COMMERCIAL import FitsImage as _LegacyFitsImage
 
 from astrophysics_suite.core.enums import MorphologyClass
 from astrophysics_suite.core.provenance import Provenance
@@ -133,3 +135,62 @@ def detect_point_sources_in_array(
         array, bkg, fwhm_px=fwhm_px, threshold_sigma=threshold_sigma, max_sources=max_sources
     )
     return [(float(x), float(y), float(flux)) for x, y, flux in raw_sources]
+
+
+@dataclass(frozen=True)
+class PSFCandidate:
+    """Fuente detectada con las métricas locales (FWHM, elipticidad,
+    nitidez, S/N de pico) que necesita una selección de estrellas de
+    referencia para PSF (`pstselect`) -- a diferencia de
+    `detect_point_sources_in_array`, que solo da posición y flujo bruto
+    (suficiente para "haz clic por mí", no para juzgar si una fuente es
+    una buena referencia)."""
+
+    x: float
+    y: float
+    flux: float
+    fwhm_px: float
+    ellipticity: float
+    """Convención de `enrich_star_rows`: 0 = circular, -> 1 = muy
+    alargada."""
+    sharpness: float
+    snr: float
+
+
+def detect_psf_candidates(
+    data: np.ndarray,
+    *,
+    fwhm_px: float = 3.0,
+    threshold_sigma: float = 5.0,
+    max_sources: int = 200,
+) -> list[PSFCandidate]:
+    """Detección automática enriquecida -- mismo motor que
+    `detect_point_sources_in_array` (DAOStarFinder), pero con las métricas
+    locales reales de `enrich_star_rows` (momentos de segundo orden, no un
+    placeholder) que necesita `photometry.psf.select_psf_reference_stars`
+    para aplicar los criterios de `pstselect` (aislamiento, redondez,
+    señal/ruido). Sin cabecera FITS real disponible en este camino (array
+    en memoria, no un archivo cargado), la detección de saturación de
+    `enrich_star_rows` queda inactiva -- no se dispone del valor `SATURATE`
+    real, así que no se inventa uno."""
+    array = np.asarray(data, dtype=np.float64)
+    bkg = _legacy_estimate_background(array)
+    raw_sources = _legacy_detect_point_sources(
+        array, bkg, fwhm_px=fwhm_px, threshold_sigma=threshold_sigma, max_sources=max_sources
+    )
+    if raw_sources.size == 0:
+        return []
+    fits_image = _LegacyFitsImage(path="", data=array, header={}, pixel_scale_arcsec=None)
+    enriched_rows = _legacy_enrich_star_rows(fits_image, raw_sources, bkg)
+    return [
+        PSFCandidate(
+            x=float(row["x_px"]),
+            y=float(row["y_px"]),
+            flux=_finite_or(row["flux_adu"], 0.0),
+            fwhm_px=_finite_or(row["fwhm_px"], fwhm_px),
+            ellipticity=_finite_or(row["ellipticity"], 0.0),
+            sharpness=_finite_or(row["sharpness_index"], 0.0),
+            snr=_finite_or(row["snr_peak"], 0.0),
+        )
+        for row in enriched_rows
+    ]

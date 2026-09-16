@@ -20,6 +20,8 @@ from typing import Protocol
 import numpy as np
 from scipy import ndimage
 
+from astrophysics_suite.detection.point_sources import PSFCandidate
+
 
 class PSFModel(Protocol):
     def evaluate(self, dx: np.ndarray, dy: np.ndarray) -> np.ndarray:
@@ -235,3 +237,213 @@ def fit_group_psf_photometry(
         PSFFitResult(x=x0, y=y0, flux=float(solution[j]), flux_uncertainty=float(fluxes_uncertainty[j]))
         for j, (x0, y0) in enumerate(positions)
     ]
+
+
+def select_psf_reference_stars(
+    candidates: list[PSFCandidate],
+    *,
+    min_separation_px: float = 15.0,
+    max_ellipticity: float = 0.3,
+    min_snr: float = 15.0,
+    max_stars: int = 12,
+) -> list[PSFCandidate]:
+    """Selección automática de estrellas de referencia para construir una
+    PSF -- equivalente a `pstselect`: **aislamiento** (ningún otro
+    candidato detectado, pase o no el resto de criterios, a menos de
+    `min_separation_px`; un vecino aunque sea débil contamina la PSF
+    apilada/el ajuste simultáneo), **redondez** (elipticidad baja -- una
+    fuente alargada es más probable que sea un blend o un objeto
+    extendido que una estrella real), y **señal/ruido** suficiente para
+    que el centroide/perfil no esté dominado por ruido. Devuelve como
+    máximo `max_stars`, de más a menos brillante entre las que cumplen
+    todos los criterios -- nunca inventa una selección cuando ninguna
+    cumple (lista vacía)."""
+    isolated: list[PSFCandidate] = []
+    for candidate in candidates:
+        has_close_neighbor = any(
+            other is not candidate and math.hypot(other.x - candidate.x, other.y - candidate.y) < min_separation_px
+            for other in candidates
+        )
+        if not has_close_neighbor:
+            isolated.append(candidate)
+
+    selected = [c for c in isolated if c.ellipticity <= max_ellipticity and c.snr >= min_snr]
+    selected.sort(key=lambda c: c.flux, reverse=True)
+    return selected[:max_stars]
+
+
+def fit_group_psf_photometry_with_position_refinement(
+    data: np.ndarray,
+    uncertainty: np.ndarray,
+    psf_model: PSFModel,
+    positions: list[tuple[float, float]],
+    *,
+    fit_half_size: int = 7,
+    fit_sky: bool = True,
+    max_position_shift_px: float = 3.0,
+) -> list[PSFFitResult]:
+    """Refinamiento no lineal iterativo de posición -- equivalente a
+    `allstar`, a diferencia de `fit_group_psf_photometry` (posiciones
+    fijas, solo el flujo se ajusta). Se resuelve por proyección variable
+    (Golub-Pereyra): `scipy.optimize.least_squares` optimiza únicamente
+    los 2 desplazamientos `(dx, dy)` de cada fuente respecto a su
+    posición inicial; en cada evaluación, el flujo (y el cielo local) de
+    todas las fuentes se resuelve como el mismo subproblema lineal exacto
+    que usa `fit_group_psf_photometry` -- así el optimizador no lineal
+    nunca necesita más de 2 parámetros por fuente, y el ajuste lineal
+    interno sigue siendo el óptimo global para esa posición.
+
+    La caja de píxeles usada en el ajuste se fija una sola vez a partir de
+    las posiciones iniciales (más el margen de `max_position_shift_px`),
+    no en cada iteración -- de lo contrario el vector de residuos
+    cambiaría de tamaño con cada desplazamiento probado, lo que no encaja
+    en `least_squares`."""
+    from scipy.optimize import least_squares
+
+    if not positions:
+        raise ValueError("positions no puede estar vacío")
+    if data.shape != uncertainty.shape:
+        raise ValueError("data y uncertainty deben tener la misma forma")
+
+    height, width = data.shape
+    xs = np.array([p[0] for p in positions])
+    ys = np.array([p[1] for p in positions])
+    margin = fit_half_size + max_position_shift_px
+    y_min = max(0, int(math.floor(ys.min() - margin)))
+    y_max = min(height, int(math.ceil(ys.max() + margin)) + 1)
+    x_min = max(0, int(math.floor(xs.min() - margin)))
+    x_max = min(width, int(math.ceil(xs.max() + margin)) + 1)
+    if y_min >= y_max or x_min >= x_max:
+        raise ValueError("la caja de ajuste no cae dentro de la imagen")
+
+    yy, xx = np.mgrid[y_min:y_max, x_min:x_max]
+    pixel_values = data[y_min:y_max, x_min:x_max].ravel()
+    pixel_sigma = uncertainty[y_min:y_max, x_min:x_max].ravel()
+    weights = np.where(pixel_sigma > 0, 1.0 / pixel_sigma, 0.0)
+    weighted_values = pixel_values * weights
+
+    n_sources = len(positions)
+    n_columns = n_sources + 1 if fit_sky else n_sources
+
+    def solve_linear(current_positions: list[tuple[float, float]]):
+        design_matrix = np.empty((pixel_values.size, n_columns))
+        for j, (x0, y0) in enumerate(current_positions):
+            design_matrix[:, j] = psf_model.evaluate((xx - x0).ravel(), (yy - y0).ravel())
+        if fit_sky:
+            design_matrix[:, n_sources] = 1.0
+        weighted_design = design_matrix * weights[:, np.newaxis]
+        solution, _residuals, rank, _sv = np.linalg.lstsq(weighted_design, weighted_values, rcond=None)
+        return solution, weighted_design, rank
+
+    def residuals_for_offsets(offsets_flat: np.ndarray) -> np.ndarray:
+        offsets = offsets_flat.reshape(n_sources, 2)
+        current_positions = [(x0 + dx, y0 + dy) for (x0, y0), (dx, dy) in zip(positions, offsets)]
+        solution, weighted_design, _rank = solve_linear(current_positions)
+        return weighted_design @ solution - weighted_values
+
+    initial_offsets = np.zeros(2 * n_sources)
+    bounds = (np.full(2 * n_sources, -max_position_shift_px), np.full(2 * n_sources, max_position_shift_px))
+    result = least_squares(residuals_for_offsets, initial_offsets, bounds=bounds)
+
+    final_offsets = result.x.reshape(n_sources, 2)
+    refined_positions = [(x0 + dx, y0 + dy) for (x0, y0), (dx, dy) in zip(positions, final_offsets)]
+    solution, weighted_design, rank = solve_linear(refined_positions)
+
+    fluxes_uncertainty = np.full(n_sources, float("nan"))
+    if rank == n_columns:
+        try:
+            covariance = np.linalg.inv(weighted_design.T @ weighted_design)
+            fluxes_uncertainty = np.sqrt(np.clip(np.diag(covariance)[:n_sources], a_min=0.0, a_max=None))
+        except np.linalg.LinAlgError:
+            pass
+
+    return [
+        PSFFitResult(x=float(x), y=float(y), flux=float(solution[j]), flux_uncertainty=float(fluxes_uncertainty[j]))
+        for j, (x, y) in enumerate(refined_positions)
+    ]
+
+
+@dataclass(frozen=True)
+class PSFFitDiagnostics:
+    chi2: float
+    reduced_chi2: float
+    """Estadístico chi-cuadrado reducido -- equivalente al `CHI` que
+    reporta `nstar`/`allstar`: ~1 indica que el modelo de PSF explica los
+    residuos dentro del ruido esperado; sistemáticamente > 1 sugiere un
+    modelo de PSF insuficiente (p. ej. Gaussiana para un perfil con colas
+    más pesadas) o una incertidumbre subestimada."""
+    n_pixels_used: int
+    n_free_parameters: int
+    sky_level: float
+    residual_image: np.ndarray
+    """Imagen (datos - modelo) recortada a la caja de ajuste -- estructura
+    sistemática visible aquí (anillos, un pico residual) es la señal
+    clásica de un modelo de PSF que no describe bien la fuente real."""
+    bbox: tuple[int, int, int, int]
+    """(y_min, y_max, x_min, x_max) -- posición de `residual_image` dentro
+    de la imagen original."""
+
+
+def compute_psf_fit_diagnostics(
+    data: np.ndarray,
+    uncertainty: np.ndarray,
+    psf_model: PSFModel,
+    fit_results: list[PSFFitResult],
+    *,
+    fit_half_size: int = 7,
+    fit_sky: bool = True,
+) -> PSFFitDiagnostics:
+    """Diagnóstico de calidad para un ajuste PSF ya resuelto (posiciones y
+    flujos de `fit_group_psf_photometry` o su variante con refinamiento de
+    posición) -- equivalente al diagnóstico que reporta `nstar`/`allstar`
+    tras el ajuste, no durante él: no vuelve a resolver flujos ni
+    posiciones, solo reconstruye el modelo con los resultados dados y lo
+    compara con los datos reales.
+
+    El nivel de cielo no viaja en `PSFFitResult` (por diseño: mantiene ese
+    contrato estable) -- si `fit_sky=True`, se recupera aquí con un ajuste
+    lineal de 1 parámetro (media ponderada por varianza inversa del
+    residuo tras restar solo el modelo de fuentes), la misma cantidad que
+    ya resolvió el ajuste original como parte del mismo sistema lineal."""
+    if not fit_results:
+        raise ValueError("fit_results no puede estar vacío")
+    height, width = data.shape
+    xs = np.array([r.x for r in fit_results])
+    ys = np.array([r.y for r in fit_results])
+    y_min = max(0, int(math.floor(ys.min())) - fit_half_size)
+    y_max = min(height, int(math.ceil(ys.max())) + fit_half_size + 1)
+    x_min = max(0, int(math.floor(xs.min())) - fit_half_size)
+    x_max = min(width, int(math.ceil(xs.max())) + fit_half_size + 1)
+    if y_min >= y_max or x_min >= x_max:
+        raise ValueError("la caja de ajuste no cae dentro de la imagen")
+
+    yy, xx = np.mgrid[y_min:y_max, x_min:x_max]
+    source_model = np.zeros(xx.shape, dtype=np.float64)
+    for r in fit_results:
+        source_model += r.flux * psf_model.evaluate(xx - r.x, yy - r.y)
+
+    observed = data[y_min:y_max, x_min:x_max]
+    sigma = uncertainty[y_min:y_max, x_min:x_max]
+    valid = sigma > 0
+    residual_before_sky = observed - source_model
+
+    sky_level = 0.0
+    if fit_sky and np.any(valid):
+        inverse_variance = np.where(valid, 1.0 / np.clip(sigma, 1e-12, None) ** 2, 0.0)
+        sky_level = float(np.sum(residual_before_sky * inverse_variance) / np.sum(inverse_variance))
+
+    residual = residual_before_sky - sky_level
+    chi2 = float(np.sum((residual[valid] / sigma[valid]) ** 2))
+    n_pixels_used = int(np.sum(valid))
+    n_free_parameters = len(fit_results) + (1 if fit_sky else 0)
+    reduced_chi2 = chi2 / max(n_pixels_used - n_free_parameters, 1)
+
+    return PSFFitDiagnostics(
+        chi2=chi2,
+        reduced_chi2=reduced_chi2,
+        n_pixels_used=n_pixels_used,
+        n_free_parameters=n_free_parameters,
+        sky_level=sky_level,
+        residual_image=residual,
+        bbox=(y_min, y_max, x_min, x_max),
+    )

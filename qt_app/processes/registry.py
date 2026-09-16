@@ -19,7 +19,12 @@ from astrophysics_suite.imtools.regions import crop
 from astrophysics_suite.imtools.statistics import compute_histogram, compute_image_statistics
 from astrophysics_suite.photometry.aperture import aperture_photometry, fit_curve_of_growth
 from astrophysics_suite.photometry.calibration import fit_zeropoint
-from astrophysics_suite.photometry.psf import GaussianPSF, fit_group_psf_photometry
+from astrophysics_suite.photometry.psf import (
+    GaussianPSF,
+    compute_psf_fit_diagnostics,
+    fit_group_psf_photometry,
+    fit_group_psf_photometry_with_position_refinement,
+)
 from astrophysics_suite.reduction.overscan import subtract_overscan
 from astrophysics_suite.spectroscopy.continuum import fit_continuum
 from astrophysics_suite.spectroscopy.trace import extract_optimal, extract_sum, trace_spectrum
@@ -203,13 +208,43 @@ def _run_psf_photometry(data: np.ndarray, params: dict) -> ProcessResult:
 
     uncertainty = np.sqrt(np.clip(data, 1.0, None))  # modelo de ruido Poisson aproximado -- misma nota que fotometría de apertura
     psf_model = GaussianPSF(sigma_x=params["sigma_px"])
-    results = fit_group_psf_photometry(data, uncertainty, psf_model, points, fit_half_size=int(params["fit_half_size"]))
+    fit_half_size = int(params["fit_half_size"])
 
-    log_lines = tuple(
-        f"({x:.1f}, {y:.1f})  ->  flujo={r.flux:.1f} ± {r.flux_uncertainty:.1f} ADU" for (x, y), r in zip(points, results)
+    if params.get("refine_positions"):
+        results = fit_group_psf_photometry_with_position_refinement(
+            data, uncertainty, psf_model, points, fit_half_size=fit_half_size, max_position_shift_px=params["max_position_shift_px"]
+        )
+        log_lines = [
+            f"({x0:.1f}, {y0:.1f}) -> ({r.x:.2f}, {r.y:.2f})  flujo={r.flux:.1f} ± {r.flux_uncertainty:.1f} ADU  "
+            f"(desplazamiento={math.hypot(r.x - x0, r.y - y0):.2f} px)"
+            for (x0, y0), r in zip(points, results)
+        ]
+        summary = f"PSF ajustada con refinamiento de posición (allstar) para {len(results)} fuente(s)."
+    else:
+        results = fit_group_psf_photometry(data, uncertainty, psf_model, points, fit_half_size=fit_half_size)
+        log_lines = [f"({x:.1f}, {y:.1f})  ->  flujo={r.flux:.1f} ± {r.flux_uncertainty:.1f} ADU" for (x, y), r in zip(points, results)]
+        summary = f"PSF ajustada simultáneamente para {len(results)} fuente(s) (desmezclado incluido si se solapan)."
+
+    output_data = None
+    if params.get("report_fit_diagnostics"):
+        try:
+            diagnostics = compute_psf_fit_diagnostics(data, uncertainty, psf_model, results, fit_half_size=fit_half_size)
+        except ValueError as exc:
+            log_lines.append(f"Diagnóstico de ajuste: no se pudo calcular ({exc}).")
+        else:
+            log_lines.append(
+                f"Diagnóstico de ajuste: chi² reducido={diagnostics.reduced_chi2:.2f} "
+                f"({diagnostics.n_pixels_used} píxeles, {diagnostics.n_free_parameters} parámetros libres, "
+                f"cielo recuperado={diagnostics.sky_level:.2f} ADU). Imagen de residuo abierta en una ventana nueva."
+            )
+            output_data = diagnostics.residual_image
+
+    table = Table(
+        columns=("x", "y", "flux", "flux_uncertainty"),
+        units=("px", "px", "ADU", "ADU"),
+        rows=tuple((r.x, r.y, r.flux, r.flux_uncertainty) for r in results),
     )
-    summary = f"PSF ajustada simultáneamente para {len(results)} fuente(s) (desmezclado incluido si se solapan)."
-    return ProcessResult(output_data=None, summary=summary, log_lines=log_lines)
+    return ProcessResult(output_data=output_data, summary=summary, log_lines=tuple(log_lines), table=table)
 
 
 def _run_spectral_trace(data: np.ndarray, params: dict) -> ProcessResult:
@@ -400,10 +435,26 @@ def build_process_registry() -> list[ProcessDefinition]:
             process_id="photometry.psf",
             name="Fotometría de PSF (daophot)",
             category="Fotometría",
-            description="Ajuste simultáneo de PSF (Gaussiana) para desmezclar fuentes superpuestas -- equivalente a nstar/allstar. Al pulsar Aplicar, marca cada fuente con clic izquierdo sobre la imagen y termina con clic derecho.",
+            description="Ajuste simultáneo de PSF (Gaussiana) para desmezclar fuentes superpuestas -- equivalente a nstar/allstar. Al pulsar Aplicar, marca cada fuente con clic izquierdo sobre la imagen y termina con clic derecho (o activa 'Detectar automáticamente' para una selección de estrellas de referencia tipo pstselect: aislamiento + redondez + señal/ruido).",
             parameters=(
                 ParameterSpec("sigma_px", "Sigma de la PSF (px)", "float", 2.0, minimum=0.3, maximum=30.0),
                 ParameterSpec("fit_half_size", "Semiancho de la caja de ajuste (px)", "int", 7, minimum=2, maximum=100),
+                ParameterSpec(
+                    "refine_positions", "Refinar posición (allstar)", "bool", False,
+                    help_text="Ajuste no lineal iterativo de posición además del flujo -- útil cuando las posiciones marcadas/detectadas son solo aproximadas.",
+                ),
+                ParameterSpec("max_position_shift_px", "Desplazamiento máximo permitido (px)", "float", 3.0, minimum=0.1, maximum=20.0),
+                ParameterSpec(
+                    "report_fit_diagnostics", "Diagnóstico de ajuste (chi², residuo)", "bool", False,
+                    help_text="Reporta el chi² reducido y abre la imagen de residuo (datos - modelo) en una ventana nueva.",
+                ),
+                ParameterSpec("auto_detect", "Detectar automáticamente (pstselect)", "bool", False, help_text="Selecciona estrellas de referencia automáticamente (aislamiento + redondez + S/N) en vez de marcarlas a mano."),
+                ParameterSpec("detect_fwhm_px", "FWHM esperado para detección (px)", "float", 3.0, minimum=0.5, maximum=50.0),
+                ParameterSpec("detect_threshold_sigma", "Umbral de detección (σ)", "float", 5.0, minimum=1.0, maximum=50.0),
+                ParameterSpec("psf_min_separation_px", "Aislamiento mínimo (px)", "float", 15.0, minimum=1.0, maximum=200.0),
+                ParameterSpec("psf_max_ellipticity", "Elipticidad máxima (redondez)", "float", 0.3, minimum=0.0, maximum=1.0),
+                ParameterSpec("psf_min_snr", "S/N mínima de pico", "float", 15.0, minimum=1.0, maximum=1000.0),
+                ParameterSpec("psf_max_stars", "Máximo de estrellas de referencia", "int", 12, minimum=1, maximum=100),
             ),
             run=_run_psf_photometry,
             requires_picking=0,

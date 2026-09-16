@@ -272,6 +272,54 @@ def test_psf_photometry_process_requires_picking_and_recovers_flux():
     assert logged_flux == pytest.approx(true_flux, rel=0.05)
 
 
+def test_psf_photometry_process_refines_position_when_requested():
+    process = _get("photometry.psf")
+    sigma = 2.0
+    true_flux = 30000.0
+    true_x, true_y = 30.4, 29.6
+    yy, xx = np.mgrid[0:61, 0:61]
+    data = 100.0 + true_flux / (2 * math.pi * sigma**2) * np.exp(-(((xx - true_x) ** 2 + (yy - true_y) ** 2)) / (2 * sigma**2))
+
+    params = _default_params(process)
+    params["_picked_points"] = [(true_x + 1.4, true_y - 1.1)]  # clic deliberadamente descentrado
+    params["refine_positions"] = True
+    result = process.run(data, params)
+
+    assert "allstar" in result.summary
+    assert "desplazamiento" in result.log_lines[0]
+    assert result.table is not None
+    refined_x, refined_y = result.table.rows[0][0], result.table.rows[0][1]
+    assert refined_x == pytest.approx(true_x, abs=0.2)
+    assert refined_y == pytest.approx(true_y, abs=0.2)
+
+
+def test_psf_photometry_process_reports_fit_diagnostics_when_requested():
+    process = _get("photometry.psf")
+    sigma = 2.0
+    true_flux = 30000.0
+    yy, xx = np.mgrid[0:61, 0:61]
+    data = 100.0 + true_flux / (2 * math.pi * sigma**2) * np.exp(-(((xx - 30) ** 2 + (yy - 30) ** 2)) / (2 * sigma**2))
+
+    params = _default_params(process)
+    params["_picked_points"] = [(30.0, 30.0)]
+    params["report_fit_diagnostics"] = True
+    result = process.run(data, params)
+
+    assert result.output_data is not None  # imagen de residuo
+    assert any("chi" in line.lower() for line in result.log_lines)
+
+
+def test_psf_photometry_process_always_returns_measurement_table():
+    process = _get("photometry.psf")
+    data = np.full((61, 61), 100.0)
+    params = _default_params(process)
+    params["_picked_points"] = [(30.0, 30.0), (40.0, 40.0)]
+    result = process.run(data, params)
+    assert result.table is not None
+    assert result.table.columns == ("x", "y", "flux", "flux_uncertainty")
+    assert len(result.table.rows) == 2
+
+
 def test_psf_photometry_process_rejects_no_picked_points():
     process = _get("photometry.psf")
     data = np.full((20, 20), 100.0)

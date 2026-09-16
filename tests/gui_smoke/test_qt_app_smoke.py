@@ -10,6 +10,7 @@ prueba.
 """
 from __future__ import annotations
 
+import math
 import time
 
 import numpy as np
@@ -213,6 +214,83 @@ def test_zeropoint_auto_detect_measures_multiple_stars_without_clicks(qapp, main
     assert view._picking is False  # nunca entró en modo de clic manual
     assert main_window._last_result_table is not None
     assert len(main_window._last_result_table.rows) == len(star_positions)
+
+
+def test_psf_auto_detect_selects_isolated_stars_and_skips_close_pair(qapp, main_window):
+    shape = (150, 150)
+    yy, xx = np.mgrid[0 : shape[0], 0 : shape[1]]
+    sigma = 2.0
+    data = np.full(shape, 150.0)
+    # dos estrellas aisladas (deben seleccionarse) + un par pegado (debe rechazarse por falta de aislamiento)
+    isolated_positions = [(30.0, 30.0, 25000.0), (110.0, 40.0, 20000.0)]
+    close_pair = [(70.0, 100.0, 15000.0), (76.0, 100.0, 15000.0)]
+    for x0, y0, flux in isolated_positions + close_pair:
+        data = data + flux / (2 * math.pi * sigma**2) * np.exp(-(((xx - x0) ** 2 + (yy - y0) ** 2)) / (2 * sigma**2))
+
+    sub_window = main_window.add_image_window(data, "psf_auto_detect_test.fits")
+    main_window.mdi.setActiveSubWindow(sub_window)
+    qapp.processEvents()
+    view = sub_window.widget()
+
+    default_params = {p.name: p.default for p in main_window._process_by_id["photometry.psf"].parameters}
+    default_params["auto_detect"] = True
+    default_params["detect_fwhm_px"] = 2.0 * math.sqrt(2 * math.log(2)) * sigma
+    default_params["psf_min_separation_px"] = 15.0
+
+    _run_process_and_wait(qapp, main_window, "photometry.psf", default_params)
+
+    assert view._picking is False  # nunca entró en modo de clic manual
+    assert main_window._last_result_table is not None
+    assert len(main_window._last_result_table.rows) == len(isolated_positions)  # el par pegado quedó fuera
+
+
+def test_psf_position_refinement_and_diagnostics_run_end_to_end_via_click(qapp, main_window):
+    sigma = 2.0
+    true_flux = 30000.0
+    true_x, true_y = 30.4, 29.6
+    yy, xx = np.mgrid[0:61, 0:61]
+    data = 150.0 + true_flux / (2 * math.pi * sigma**2) * np.exp(-(((xx - true_x) ** 2 + (yy - true_y) ** 2)) / (2 * sigma**2))
+
+    sub_window = main_window.add_image_window(data, "psf_refine_test.fits")
+    main_window.mdi.setActiveSubWindow(sub_window)
+    qapp.processEvents()
+    view = sub_window.widget()
+
+    default_params = {p.name: p.default for p in main_window._process_by_id["photometry.psf"].parameters}
+    default_params["sigma_px"] = sigma
+    default_params["refine_positions"] = True
+    default_params["report_fit_diagnostics"] = True
+
+    windows_before = len(main_window.mdi.subWindowList())
+    main_window._run_process("photometry.psf", default_params)
+    qapp.processEvents()
+    assert view._picking is True
+
+    # clic deliberadamente descentrado -- el refinamiento debe converger a la posición real
+    click_point = view.mapFromScene(QPointF(true_x + 1.4, true_y - 1.1))
+    left_click = QMouseEvent(
+        QMouseEvent.Type.MouseButtonPress, QPointF(click_point), Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier
+    )
+    view.mousePressEvent(left_click)  # marca la posición (descentrada a propósito)
+    qapp.processEvents()
+    finish_point = view.mapFromScene(QPointF(0.0, 0.0))
+    right_click = QMouseEvent(
+        QMouseEvent.Type.MouseButtonPress, QPointF(finish_point), Qt.MouseButton.RightButton, Qt.MouseButton.RightButton, Qt.KeyboardModifier.NoModifier
+    )
+    view.mousePressEvent(right_click)  # clic derecho: termina la selección ilimitada
+    qapp.processEvents()
+
+    deadline = time.monotonic() + 10.0
+    while main_window._active_worker is not None and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.02)
+    qapp.processEvents()
+
+    assert len(main_window.mdi.subWindowList()) == windows_before + 1  # imagen de residuo del diagnóstico
+    assert main_window._last_result_table is not None
+    refined_x, refined_y = main_window._last_result_table.rows[0][0], main_window._last_result_table.rows[0][1]
+    assert refined_x == pytest.approx(true_x, abs=0.2)
+    assert refined_y == pytest.approx(true_y, abs=0.2)
 
 
 def test_running_process_without_active_image_reports_status_and_does_not_crash(qapp, main_window):
