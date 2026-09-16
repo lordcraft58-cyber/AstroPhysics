@@ -48,7 +48,7 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_compl
 from dataclasses import dataclass, field, replace, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional, Protocol
+from typing import Any, Optional, Protocol, runtime_checkable
 
 import numpy as np
 import scipy.ndimage as ndi
@@ -2199,8 +2199,14 @@ def ridge_candidates(image, bkg, rm, snr_min=4.0, min_separation_px=8.0,
     return cands
 
 
+@runtime_checkable
 class FilamentDetectionStrategy(Protocol):
-    """Contrato para estrategias de detección reproducibles de filamentos."""
+    """Contrato para estrategias de detección reproducibles de filamentos.
+
+    @runtime_checkable permite verificar el cumplimiento con
+    isinstance(strategy, FilamentDetectionStrategy) en vez de que el
+    contrato sea solo documentación no exigible (ver
+    docs/audit/03-MAPEO-DEPENDENCIAS-Y-CONTRATOS.md, seccion 1.3)."""
     def detect(self, image, variance, masks, config): ...
 
 

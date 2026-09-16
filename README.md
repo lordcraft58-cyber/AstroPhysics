@@ -12,6 +12,18 @@ En reingeniería activa. El código heredado (`legacy/AstroPhysicsSuite_v57_3_CO
 - [`docs/audit/02-ARQUITECTURA-OBJETIVO-Y-PLAN.md`](docs/audit/02-ARQUITECTURA-OBJETIVO-Y-PLAN.md) — arquitectura de paquetes objetivo, contratos de los motores especializados (Detection, Artifact Rejection, Identification, Characterization, Temporal, Physical, Anomaly, Discovery AI, Evidence, Candidate), GUI comercial objetivo, y plan de migración por fases.
 - [`docs/audit/03-MAPEO-DEPENDENCIAS-Y-CONTRATOS.md`](docs/audit/03-MAPEO-DEPENDENCIAS-Y-CONTRATOS.md) — Fase 2: grafo de llamadas completo, barrido de código muerto al 100% (23 de 307 entidades), cuantificación exacta de qué motores son alcanzables desde la GUI vs. solo desde la CLI (78 entidades CLI-only), y contratos reales de las funciones/clases que alimentarán cada motor objetivo.
 - [`docs/audit/04-FASE3-DUPLICADOS-Y-LEGADO-ELIMINADOS.md`](docs/audit/04-FASE3-DUPLICADOS-Y-LEGADO-ELIMINADOS.md) — Fase 3: corrección del bug P0 (Python <3.11), corrección del bypass de consistencia científica, conexión de la suite v46 a `selftest()`, y eliminación de las 17 entidades muertas confirmadas (−1.310 líneas), todo respaldado por la suite de tests nueva en `tests/`.
+- [`docs/audit/05-FASE4-CONTRATOS-DE-DATOS.md`](docs/audit/05-FASE4-CONTRATOS-DE-DATOS.md) — Fase 4: paquete `astrophysics_suite/` con los contratos de datos versionados (`Observation`, `Detection`, `CharacterizationResult`, `PhysicalInference`, `AnomalyVector`, `EvidenceChain`, `Candidate`, `Project`), el tipo `Quantity` (valor + incertidumbre + estatus epistémico) y el vocabulario único de `IdentificationState`, con un adaptador probado contra una ejecución real del pipeline heredado.
+
+## Arquitectura objetivo (en construcción)
+
+```
+astrophysics_suite/
+├── core/     # ValueKind, IdentificationState, ReviewState, ArtifactKind, MorphologyClass, QualityLevel, Quantity, Provenance
+└── models/   # Observation, Detection, CharacterizationResult, PhysicalInference, AnomalyVector,
+              # TemporalEvidence, MotionEvidence, EvidenceChain, Candidate, Project, legacy_adapter
+```
+
+Los motores científicos (`detection/`, `physics/`, `anomaly/`, `evidence/`, ...) que consumirán estos modelos son trabajo de la Fase 6.
 
 ## Tests
 
