@@ -500,6 +500,10 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Abre o selecciona una imagen antes de aplicar un proceso.", 5000)
             return
 
+        if process.process_id == "photometry.psf" and params.get("use_empirical_psf"):
+            self._start_empirical_psf_picking(process, view, params)
+            return
+
         if process.requires_picking is not None and params.get("auto_detect"):
             self._run_with_auto_detected_points(process, view, params)
             return
@@ -509,6 +513,47 @@ class MainWindow(QMainWindow):
             return
 
         self._start_process_worker(process, view, params)
+
+    def _start_empirical_psf_picking(self, process: ProcessDefinition, view: ImageView, params: dict) -> None:
+        """`photometry.psf` con "Usar PSF empírica" activo necesita DOS
+        sesiones de clic encadenadas en la misma ventana -- primero las
+        estrellas de referencia con las que construir la PSF, luego las
+        fuentes a medir con ella -- en vez de la única sesión que usa el
+        resto de procesos. Mismo mecanismo de picking ya existente,
+        encadenado dos veces (mismo patrón que el registro por pares de
+        estrellas entre dos ventanas de la Fase 18)."""
+        self.statusBar().showMessage(
+            "PSF empírica: marca las estrellas de REFERENCIA para construir la PSF (clic izq. marca, clic derecho termina)."
+        )
+        self.properties.apply_button.setEnabled(False)
+
+        def on_reference_picked(reference_points: list[tuple[float, float]]) -> None:
+            view.picking_finished.disconnect(on_reference_picked)
+            if not reference_points:
+                self.properties.apply_button.setEnabled(True)
+                self.statusBar().showMessage("Selección cancelada: no se marcó ninguna estrella de referencia para la PSF empírica.", 6000)
+                return
+
+            self.statusBar().showMessage(
+                f"PSF empírica: {len(reference_points)} estrella(s) de referencia marcada(s). Ahora marca las FUENTES A MEDIR -- clic derecho para terminar."
+            )
+
+            def on_target_picked(target_points: list[tuple[float, float]]) -> None:
+                view.picking_finished.disconnect(on_target_picked)
+                if not target_points:
+                    self.properties.apply_button.setEnabled(True)
+                    self.statusBar().showMessage("Selección cancelada: no se marcó ninguna fuente a medir.", 6000)
+                    return
+                picked_params = dict(params)
+                picked_params["_psf_reference_points"] = reference_points
+                picked_params["_picked_points"] = target_points
+                self._start_process_worker(process, view, picked_params)
+
+            view.picking_finished.connect(on_target_picked)
+            view.start_picking()
+
+        view.picking_finished.connect(on_reference_picked)
+        view.start_picking()
 
     def _run_with_auto_detected_points(self, process: ProcessDefinition, view: ImageView, params: dict) -> None:
         """Alternativa a `_start_picking_then_run` para procesos con

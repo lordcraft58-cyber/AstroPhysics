@@ -331,6 +331,45 @@ def test_psf_photometry_process_uses_moffat_profile_when_requested():
     assert logged_flux == pytest.approx(true_flux, rel=0.05)
 
 
+def test_psf_photometry_process_uses_empirical_psf_when_requested():
+    shape = (81, 81)
+    sigma = 2.0
+    reference_flux, target_flux = 30000.0, 18000.0
+    ref_x, ref_y = 25.0, 25.0
+    tgt_x, tgt_y = 55.0, 55.0
+    yy, xx = np.mgrid[0 : shape[0], 0 : shape[1]]
+    background = 100.0
+    data = np.full(shape, background)
+    for x0, y0, flux in ((ref_x, ref_y, reference_flux), (tgt_x, tgt_y, target_flux)):
+        data = data + flux / (2 * math.pi * sigma**2) * np.exp(-(((xx - x0) ** 2 + (yy - y0) ** 2)) / (2 * sigma**2))
+
+    process = _get("photometry.psf")
+    params = _default_params(process)
+    params["use_empirical_psf"] = True
+    params["_psf_reference_points"] = [(ref_x, ref_y)]
+    params["_picked_points"] = [(tgt_x, tgt_y)]
+
+    result = process.run(data, params)
+
+    assert "PSF empírica construida" in result.log_lines[0]
+    logged_flux = float(result.log_lines[1].split("flujo=")[1].split(" ")[0])
+    assert logged_flux == pytest.approx(target_flux, rel=0.1)
+
+
+def test_psf_photometry_process_rejects_empirical_psf_without_reference_points():
+    process = _get("photometry.psf")
+    data = np.full((40, 40), 100.0)
+    params = _default_params(process)
+    params["use_empirical_psf"] = True
+    params["_picked_points"] = [(20.0, 20.0)]
+    try:
+        process.run(data, params)
+    except ValueError as exc:
+        assert "referencia" in str(exc)
+    else:
+        raise AssertionError("se esperaba ValueError sin estrellas de referencia para la PSF empírica")
+
+
 def test_psf_photometry_process_always_returns_measurement_table():
     process = _get("photometry.psf")
     data = np.full((61, 61), 100.0)

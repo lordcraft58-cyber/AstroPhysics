@@ -75,7 +75,7 @@ capacidad sin implementar en absoluto).
 |---|---|---|---|---|
 | Modelo PSF Gaussiano elíptico | Real, `photometry/psf.py:31` (`GaussianPSF`) | `tests/unit/photometry/test_psf.py` | Expuesto en `photometry.psf` | **DISPONIBLE** |
 | Modelo PSF Moffat (colas realistas) | Real, `psf.py:56` (`MoffatPSF`) | ídem | Casilla "Usar perfil de Moffat (colas realistas)" en `photometry.psf` -- ver Fase 17.1 | **DISPONIBLE** |
-| PSF empírica (apilado de estrellas de referencia, recentrado subpíxel, sobremuestreo) | Real, `psf.py:83/102` (`build_empirical_psf`) | ídem | Motor listo, **no expuesto en la GUI** | **EXPERIMENTAL** (motor disponible, no seleccionable desde la GUI) |
+| PSF empírica (apilado de estrellas de referencia, recentrado subpíxel, sobremuestreo) | Real, `psf.py:83/102` (`build_empirical_psf`) | ídem | Casilla "Usar PSF empírica (estrellas de referencia)" en `photometry.psf` -- dos sesiones de clic encadenadas (referencia, luego medición) -- ver Fase 19 | **DISPONIBLE** |
 | Selección automática de estrellas PSF (equivalente a `pstselect`: aislamiento/redondez/nitidez) | No implementada hasta esta ronda -- las posiciones de referencia las daba siempre el llamador | `astrophysics_suite/photometry/psf.py` (`select_psf_reference_stars`: aislamiento real contra todos los candidatos, elipticidad, S/N mínima) -- ver Fase 17 | `tests/unit/photometry/test_psf.py` | Casilla "Detectar automáticamente (pstselect)" en `photometry.psf` | **DISPONIBLE** |
 | Detección automática de fuentes previa a PSF (equivalente a `daofind`) | Reutilizaba `detect_point_sources` genérico de apphot sin ningún criterio afinado para candidatura PSF | `astrophysics_suite/detection/point_sources.py` (`detect_psf_candidates`, mismo motor DAOStarFinder enriquecido con FWHM/elipticidad/nitidez vía `enrich_star_rows`) -- ver Fase 17 | `tests/unit/detection/test_point_sources.py` | Conectado a `photometry.psf` (junto con `select_psf_reference_stars`, arriba) | **DISPONIBLE** |
 | Ajuste PSF simultáneo multi-fuente con desmezclado (`group`+`psf`+`nstar` real) | Real, `psf.py:164` (`fit_group_psf_photometry`) -- matriz de diseño con una columna por fuente + término de cielo, ponderado por sigma inverso, incertidumbre por covarianza | ídem | Proceso `photometry.psf`, cableado, selección de posiciones a clic (Fase 9.6 §8) | **DISPONIBLE** |
@@ -159,7 +159,7 @@ si se decide que hace falta.
 | `ccdred` | 13 | 0 | 0 | **Cerrado.** Sesión real de LIGHTS, píxeles defectuosos, franjas, iluminación, cielo, clasificación por cabecera y perfiles de instrumento, todos con motor real y camino de uso en la GUI (Fases 10.1-10.2) |
 | Análisis de imagen | 6 | 0 | 0 | **Cerrado.** Aritmética entre dos imágenes, estadísticas+histograma, recorte por clic y normalización por percentiles, todos con motor real y camino de uso en la GUI (Fase 11.1) |
 | `apphot` | 7 | 0 | 0 | **Cerrado en la Fase 16.** Selección de fuente a clic o por detección automática (DAOStarFinder real), calibración de punto cero real contra Gaia (también con detección automática), y ajuste real de curva de crecimiento con radio óptimo recomendado -- todos con motor real y camino de uso en la GUI |
-| `daophot` | 7 | 1 | 0 | **Cerrado en la Fase 17** (selección pstselect + refinamiento allstar + diagnóstico chi²/residuo), con el selector de modelo Moffat añadido en la Fase 17.1. Queda `EXPERIMENTAL`, sin bloquear el bloque, la PSF empírica (motor real, sin camino de uso -- necesitaría una segunda sesión de selección de estrellas de referencia previa al ajuste, interacción de dos etapas no construida) |
+| `daophot` | 8 | 0 | 0 | **Cerrado por completo.** Núcleo en la Fase 17 (pstselect + allstar + diagnóstico), modelo Moffat en la Fase 17.1, PSF empírica de dos etapas de clic en la Fase 19 -- las 8 capacidades de la tabla en DISPONIBLE |
 | Astrometría | 8 | 0 | 1 | **Cerrado en la Fase 18** (registro por pares de estrellas emparejadas, sin necesitar WCS en ninguna imagen). Queda pendiente, deliberadamente fuera de alcance, solo la resolución automática contra catálogo ("blind solving") |
 | Tablas/catálogos | 4 | 0 | 2 | **Exportación cerrada en Fase 14**: `Table` genérica real + CSV, consumida por punto cero y ajuste de WCS. Quedan pendientes, deliberadamente: unificación profunda de los tipos de resultado de cada motor (alto riesgo, no abordada) y abstracción de catálogo con más de un proveedor (YAGNI hasta que haga falta un segundo) |
 | Espectroscopía | 6 | 4 | 4 | **Calibración en longitud de onda cerrada en Fase 15**: detección automática de líneas + tabla de longitudes conocidas, ajuste real. `spectroscopy.fluxcal` ahora al menos visible como pendiente (antes ni aparecía). Trazado/extracción/continuo siguen `EXPERIMENTAL` (recorte de alcance explícito: fila central, tira repetida); multi-apertura por lote, medición de líneas, combinación de espectros y el tipo `Spectrum` compartido siguen pendientes |
@@ -254,14 +254,15 @@ comportamiento por defecto ya probado desde la Fase 9.6. Con esto, `daophot`
 quedó con 6 capacidades cableadas en `DISPONIBLE`; una fase adicional
 menor (17.1) añadió el selector de modelo Moffat en `photometry.psf`
 (casilla "Usar perfil de Moffat", con `alpha`/`beta` configurables) --
-motor ya real desde la Fase 9.3, solo le faltaba la casilla. Con eso,
-`daophot` queda con 7 de sus 8 capacidades en `DISPONIBLE`; solo sigue
-`EXPERIMENTAL` la PSF empírica -- motor real (`build_empirical_psf`), pero
-sin camino de uso porque necesitaría una interacción de dos etapas que no
-se construyó (una primera sesión de clic para elegir las estrellas de
-referencia con las que construir la PSF, antes de la sesión de clic ya
-existente para elegir las fuentes a medir) -- hueco menor, documentado, no
-priorizado por no tener un caso de uso concreto que lo reclame todavía.
+motor ya real desde la Fase 9.3, solo le faltaba la casilla. La Fase 19
+cerró la última capacidad que quedaba: la PSF empírica gana la interacción
+de dos etapas que le faltaba (`MainWindow._start_empirical_psf_picking`
+encadena dos sesiones de clic ya existentes -- referencia, luego medición
+-- sin ningún mecanismo de interacción nuevo, mismo patrón que el registro
+por pares de estrellas de la Fase 18; el cielo que resta `build_empirical_
+psf` antes de apilar se estima con `estimate_local_sky` en cada
+referencia). Con esto, `daophot` queda con sus 8 capacidades en
+`DISPONIBLE` -- ninguna `PENDIENTE` ni `EXPERIMENTAL`.
 
 Con `apphot` y `daophot` cerrados, la Fase 18 (ver
 `23-FASE18-ASTROMETRIA-PARES.md`) retoma el hueco que quedaba en

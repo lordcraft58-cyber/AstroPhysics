@@ -152,6 +152,68 @@ def test_psf_photometry_process_runs_end_to_end_via_click(qapp, main_window):
     assert main_window.properties.apply_button.isEnabled()
 
 
+def test_psf_empirical_process_runs_end_to_end_via_two_click_stages(qapp, main_window):
+    shape = (81, 81)
+    sigma = 2.0
+    reference_flux, target_flux = 30000.0, 18000.0
+    ref_x, ref_y = 25.0, 25.0
+    tgt_x, tgt_y = 55.0, 55.0
+    yy, xx = np.mgrid[0 : shape[0], 0 : shape[1]]
+    data = np.full(shape, 100.0)
+    for x0, y0, flux in ((ref_x, ref_y, reference_flux), (tgt_x, tgt_y, target_flux)):
+        data = data + flux / (2 * math.pi * sigma**2) * np.exp(-(((xx - x0) ** 2 + (yy - y0) ** 2)) / (2 * sigma**2))
+
+    sub_window = main_window.add_image_window(data, "empirical_psf_test.fits")
+    main_window.mdi.setActiveSubWindow(sub_window)
+    qapp.processEvents()
+    view = sub_window.widget()
+
+    process = main_window._process_by_id["photometry.psf"]
+    params = {p.name: p.default for p in process.parameters}
+    params["use_empirical_psf"] = True
+    main_window._run_process("photometry.psf", params)
+    qapp.processEvents()
+    assert view._picking is True  # etapa 1: estrellas de referencia
+
+    _click(view, ref_x, ref_y, Qt.MouseButton.LeftButton)
+    _click(view, 0.0, 0.0, Qt.MouseButton.RightButton)  # termina la etapa 1
+    qapp.processEvents()
+    assert view._picking is True  # etapa 2: fuentes a medir, arrancó sola
+
+    _click(view, tgt_x, tgt_y, Qt.MouseButton.LeftButton)
+    _click(view, 0.0, 0.0, Qt.MouseButton.RightButton)  # termina la etapa 2
+    qapp.processEvents()
+
+    deadline = time.monotonic() + 10.0
+    while main_window._active_worker is not None and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.02)
+    qapp.processEvents()
+
+    assert view._picking is False
+    assert main_window.properties.apply_button.isEnabled()
+
+
+def test_psf_empirical_process_cancelled_at_reference_stage_does_not_run_worker(qapp, main_window):
+    data = _psf_field()
+    sub_window = main_window.add_image_window(data, "empirical_cancel_test.fits")
+    main_window.mdi.setActiveSubWindow(sub_window)
+    qapp.processEvents()
+    view = sub_window.widget()
+
+    process = main_window._process_by_id["photometry.psf"]
+    params = {p.name: p.default for p in process.parameters}
+    params["use_empirical_psf"] = True
+    main_window._run_process("photometry.psf", params)
+    qapp.processEvents()
+
+    _click(view, 0.0, 0.0, Qt.MouseButton.RightButton)  # cancela la etapa 1 sin marcar nada
+    qapp.processEvents()
+
+    assert main_window._active_worker is None
+    assert main_window.properties.apply_button.isEnabled()
+
+
 def test_spectral_trace_process_runs_end_to_end_via_click(qapp, main_window):
     height, width = 41, 150
     yy, xx = np.mgrid[0:height, 0:width]

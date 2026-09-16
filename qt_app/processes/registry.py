@@ -17,11 +17,12 @@ from astrophysics_suite.imtools.cosmic_rays import detect_cosmic_rays
 from astrophysics_suite.imtools.normalize import normalize_percentile
 from astrophysics_suite.imtools.regions import crop
 from astrophysics_suite.imtools.statistics import compute_histogram, compute_image_statistics
-from astrophysics_suite.photometry.aperture import aperture_photometry, fit_curve_of_growth
+from astrophysics_suite.photometry.aperture import aperture_photometry, estimate_local_sky, fit_curve_of_growth
 from astrophysics_suite.photometry.calibration import fit_zeropoint
 from astrophysics_suite.photometry.psf import (
     GaussianPSF,
     MoffatPSF,
+    build_empirical_psf,
     compute_psf_fit_diagnostics,
     fit_group_psf_photometry,
     fit_group_psf_photometry_with_position_refinement,
@@ -208,14 +209,34 @@ def _run_psf_photometry(data: np.ndarray, params: dict) -> ProcessResult:
         raise ValueError("no se marcó ninguna posición -- haz clic sobre al menos una fuente antes de terminar la selección (clic derecho)")
 
     uncertainty = np.sqrt(np.clip(data, 1.0, None))  # modelo de ruido Poisson aproximado -- misma nota que fotometría de apertura
-    if params.get("use_moffat_psf"):
+    fit_half_size = int(params["fit_half_size"])
+
+    empirical_log_line = None
+    if params.get("use_empirical_psf"):
+        reference_points = params.get("_psf_reference_points") or []
+        if not reference_points:
+            raise ValueError("PSF empírica: no se marcó ninguna estrella de referencia -- haz clic sobre al menos una antes de medir")
+        # `build_empirical_psf` resta un único nivel de cielo escalar antes
+        # de apilar -- se estima con el mismo cielo local robusto de
+        # apertura (mediana por anillo, rechazo sigma-clip) en cada
+        # referencia y se combina por mediana, en vez de asumir cielo 0.
+        sky_levels = [
+            estimate_local_sky(data, x, y, r_in=fit_half_size, r_out=fit_half_size * 1.6).median for x, y in reference_points
+        ]
+        background = float(np.median(sky_levels))
+        oversample = int(params.get("empirical_psf_oversample", 4))
+        psf_model = build_empirical_psf(data, reference_points, half_size=fit_half_size, oversample=oversample, background=background)
+        empirical_log_line = (
+            f"PSF empírica construida con {len(reference_points)} estrella(s) de referencia "
+            f"(cielo estimado={background:.2f} ADU, sobremuestreo={oversample}x)."
+        )
+    elif params.get("use_moffat_psf"):
         # colas más pesadas que una Gaussiana -- el modelo analítico
         # preferido para *seeing* atmosférico real (Moffat 1969); motor
         # ya existía desde la Fase 9.3, sin selector en la GUI hasta ahora.
         psf_model = MoffatPSF(alpha=params["moffat_alpha_px"], beta=params["moffat_beta"])
     else:
         psf_model = GaussianPSF(sigma_x=params["sigma_px"])
-    fit_half_size = int(params["fit_half_size"])
 
     if params.get("refine_positions"):
         results = fit_group_psf_photometry_with_position_refinement(
@@ -231,6 +252,9 @@ def _run_psf_photometry(data: np.ndarray, params: dict) -> ProcessResult:
         results = fit_group_psf_photometry(data, uncertainty, psf_model, points, fit_half_size=fit_half_size)
         log_lines = [f"({x:.1f}, {y:.1f})  ->  flujo={r.flux:.1f} ± {r.flux_uncertainty:.1f} ADU" for (x, y), r in zip(points, results)]
         summary = f"PSF ajustada simultáneamente para {len(results)} fuente(s) (desmezclado incluido si se solapan)."
+
+    if empirical_log_line is not None:
+        log_lines.insert(0, empirical_log_line)
 
     output_data = None
     if params.get("report_fit_diagnostics"):
@@ -452,6 +476,11 @@ def build_process_registry() -> list[ProcessDefinition]:
                 ),
                 ParameterSpec("moffat_alpha_px", "Escala radial de Moffat, alpha (px)", "float", 2.0, minimum=0.3, maximum=30.0),
                 ParameterSpec("moffat_beta", "Índice de colas de Moffat, beta", "float", 2.5, minimum=1.1, maximum=20.0),
+                ParameterSpec(
+                    "use_empirical_psf", "Usar PSF empírica (estrellas de referencia)", "bool", False,
+                    help_text="Construye la PSF apilando estrellas de referencia reales en vez de un modelo analítico -- captura aberraciones que ni Gaussiana ni Moffat describen. Al pulsar Aplicar se piden primero las estrellas de referencia (clic izq. marca, clic derecho termina) y luego las fuentes a medir. Tiene prioridad sobre Moffat/Gaussiana si está activa.",
+                ),
+                ParameterSpec("empirical_psf_oversample", "Sobremuestreo de la PSF empírica", "int", 4, minimum=1, maximum=10),
                 ParameterSpec(
                     "refine_positions", "Refinar posición (allstar)", "bool", False,
                     help_text="Ajuste no lineal iterativo de posición además del flujo -- útil cuando las posiciones marcadas/detectadas son solo aproximadas.",
