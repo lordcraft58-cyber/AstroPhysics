@@ -63,3 +63,72 @@ def test_build_master_flat_with_dark_requires_flat_exposure():
 def test_build_master_flat_rejects_non_positive_median():
     with pytest.raises(ValueError):
         build_master_flat([np.zeros((3, 3))] * 3)
+
+
+def test_save_and_load_master_frame_round_trips_data_uncertainty_and_n_combined(tmp_path):
+    """El guardado no debe perder la incertidumbre real ni el nº de
+    fotogramas combinados -- `calibration.py` propaga esa incertidumbre
+    de verdad al aplicar la calibración, así que inventarla al releer
+    (p. ej. con ceros) falsearía la propagación de errores."""
+    from astrophysics_suite.reduction.master_frames import load_master_frame, save_master_frame
+
+    rng = np.random.default_rng(4)
+    bias_frames = [np.full((5, 5), 500.0) + rng.normal(0, 3.0, (5, 5)) for _ in range(5)]
+    master = build_master_bias(bias_frames)
+    assert np.any(master.uncertainty > 0)
+
+    path = tmp_path / "masters" / "master_bias_test.fits"
+    save_master_frame(str(path), master)
+    assert path.exists()
+
+    reloaded = load_master_frame(str(path))
+    assert reloaded.kind == "bias"
+    np.testing.assert_allclose(reloaded.data, master.data, atol=1e-3)
+    np.testing.assert_allclose(reloaded.uncertainty, master.uncertainty, atol=1e-3)
+    np.testing.assert_array_equal(reloaded.n_combined, master.n_combined)
+
+
+def test_save_and_load_master_dark_preserves_exposure(tmp_path):
+    from astrophysics_suite.reduction.master_frames import load_master_frame, save_master_frame
+
+    dark_frames = [np.full((4, 4), 520.0) for _ in range(4)]
+    master = build_master_dark(dark_frames, exposure_s=120.0)
+
+    path = tmp_path / "master_dark_test.fits"
+    save_master_frame(str(path), master)
+    reloaded = load_master_frame(str(path))
+
+    assert reloaded.kind == "dark"
+    assert reloaded.exposure_s == pytest.approx(120.0)
+
+
+def test_load_master_frame_rejects_a_fits_that_is_not_a_saved_master_frame(tmp_path):
+    """Nunca debe aceptar un FITS cualquiera y rellenar incertidumbre/nº
+    de fotogramas inventados -- si no tiene la forma real que escribe
+    `save_master_frame`, se rechaza con un motivo explícito."""
+    from astropy.io import fits
+
+    from astrophysics_suite.reduction.master_frames import load_master_frame
+
+    path = tmp_path / "not_a_master.fits"
+    fits.PrimaryHDU(data=np.zeros((4, 4), dtype=np.float32)).writeto(path)
+
+    with pytest.raises(ValueError, match="MASTKIND"):
+        load_master_frame(str(path))
+
+
+def test_save_master_frame_confirms_overwrite_is_the_callers_responsibility(tmp_path):
+    """`save_master_frame` en sí escribe siempre que `overwrite=True`
+    (por defecto) -- la confirmación de sobrescritura ante el usuario es
+    responsabilidad de la GUI (`BuildMasterFrameDialog`), no de esta
+    función de bajo nivel; con `overwrite=False` debe fallar si ya existe."""
+    from astropy.io import fits
+
+    from astrophysics_suite.reduction.master_frames import save_master_frame
+
+    path = tmp_path / "existing.fits"
+    fits.PrimaryHDU(data=np.zeros((3, 3), dtype=np.float32)).writeto(path)
+
+    master = build_master_bias([np.full((3, 3), 100.0) for _ in range(3)])
+    with pytest.raises(OSError):
+        save_master_frame(str(path), master, overwrite=False)

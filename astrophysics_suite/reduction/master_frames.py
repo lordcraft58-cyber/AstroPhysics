@@ -90,3 +90,64 @@ def build_master_flat(
         kind="flat",
         filter_name=filter_name,
     )
+
+
+_UNCERT_EXTENSION_NAME = "UNCERT"
+_NCOMBINE_EXTENSION_NAME = "NCOMBINE"
+_KIND_HEADER_KEY = "MASTKIND"
+
+
+def save_master_frame(path: str, frame: MasterFrame, *, overwrite: bool = True) -> None:
+    """Escribe un `MasterFrame` a un FITS real de forma completa -- no solo
+    los datos: `uncertainty` y `n_combined` van en extensiones propias
+    (`UNCERT`/`NCOMBINE`), porque `calibration.py` propaga la
+    incertidumbre real del maestro al calibrar (ver `apply_calibration`);
+    guardar solo `data` y, al releer, rellenar la incertidumbre con ceros
+    inventados falsearía esa propagación en vez de simplemente omitirla."""
+    from pathlib import Path
+
+    from astropy.io import fits
+
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    primary = fits.PrimaryHDU(data=np.asarray(frame.data, dtype=np.float32))
+    primary.header[_KIND_HEADER_KEY] = (frame.kind, "Tipo de fotograma maestro: bias/dark/flat")
+    n_frames = int(np.max(frame.n_combined)) if frame.n_combined.size else 0
+    primary.header["NFRAMES"] = (n_frames, "Maximo de fotogramas combinados por pixel")
+    if frame.exposure_s is not None:
+        primary.header["EXPTIME"] = (float(frame.exposure_s), "Tiempo de exposicion (s)")
+    if frame.filter_name:
+        primary.header["FILTER"] = frame.filter_name
+    uncert_hdu = fits.ImageHDU(data=np.asarray(frame.uncertainty, dtype=np.float32), name=_UNCERT_EXTENSION_NAME)
+    ncombine_hdu = fits.ImageHDU(data=np.asarray(frame.n_combined, dtype=np.int32), name=_NCOMBINE_EXTENSION_NAME)
+    fits.HDUList([primary, uncert_hdu, ncombine_hdu]).writeto(path, overwrite=overwrite)
+
+
+def load_master_frame(path: str) -> MasterFrame:
+    """Inversa real de `save_master_frame` -- reconstruye un `MasterFrame`
+    completo (nunca con incertidumbre/nº de fotogramas inventados).
+
+    Solo acepta un FITS que de verdad tenga la forma que escribe
+    `save_master_frame` (cabecera `MASTKIND` + extensiones `UNCERT`/
+    `NCOMBINE`); cualquier otro FITS se rechaza con un mensaje explícito
+    en vez de aceptarlo con datos fabricados."""
+    from astropy.io import fits
+
+    with fits.open(path) as hdul:
+        primary = hdul[0]
+        kind = str(primary.header.get(_KIND_HEADER_KEY, "")).strip().lower()
+        if kind not in ("bias", "dark", "flat"):
+            raise ValueError(
+                f"{path}: no es un fotograma maestro reconocible (falta o es inválida la cabecera {_KIND_HEADER_KEY}) -- "
+                f"¿es un FITS guardado por \"Construir fotograma maestro\"?"
+            )
+        if _UNCERT_EXTENSION_NAME not in hdul or _NCOMBINE_EXTENSION_NAME not in hdul:
+            raise ValueError(
+                f"{path}: le faltan las extensiones {_UNCERT_EXTENSION_NAME}/{_NCOMBINE_EXTENSION_NAME} -- "
+                f"no se puede reconstruir la incertidumbre real sin inventarla, así que se rechaza el archivo."
+            )
+        data = np.asarray(primary.data, dtype=np.float64)
+        uncertainty = np.asarray(hdul[_UNCERT_EXTENSION_NAME].data, dtype=np.float64)
+        n_combined = np.asarray(hdul[_NCOMBINE_EXTENSION_NAME].data, dtype=np.int64)
+        exposure_s = float(primary.header["EXPTIME"]) if "EXPTIME" in primary.header else None
+        filter_name = str(primary.header.get("FILTER", ""))
+        return MasterFrame(data=data, uncertainty=uncertainty, n_combined=n_combined, kind=kind, exposure_s=exposure_s, filter_name=filter_name)

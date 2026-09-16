@@ -71,8 +71,11 @@ def _wait_worker(qapp, dialog_attr_owner, attr="_worker", timeout_s=10.0):
 def test_build_master_bias_end_to_end(qapp, main_window, tmp_path):
     from qt_app.reduction.build_master_frame_dialog import BuildMasterFrameDialog
 
+    from services.app_preferences import AppPreferencesStore
+
     paths = _write_bias_frames(tmp_path, n=4, level=500.0)
-    dialog = BuildMasterFrameDialog(main_window.master_frame_library, main_window)
+    preferences = AppPreferencesStore(tmp_path / "prefs.json")
+    dialog = BuildMasterFrameDialog(main_window.master_frame_library, main_window, preferences=preferences)
     dialog.kind_combo.setCurrentText("Bias")
     dialog.name_edit.setText("Bias-test")
 
@@ -86,6 +89,8 @@ def test_build_master_bias_end_to_end(qapp, main_window, tmp_path):
         item.setData(Qt.ItemDataRole.UserRole, path)
         dialog.file_list.addItem(item)
 
+    output_path = tmp_path / "masters" / "Bias-test.fits"
+    dialog.output_path_edit.setText(str(output_path))
     dialog._on_combine()
     _wait_worker(qapp, dialog)
 
@@ -95,14 +100,22 @@ def test_build_master_bias_end_to_end(qapp, main_window, tmp_path):
     assert master.data.shape == FRAME_SHAPE
     assert abs(float(np.median(master.data)) - 500.0) < 5.0
 
+    entry = main_window.master_frame_library.entry("Bias-test")
+    assert entry.path == str(output_path)
+    assert output_path.exists()
+    assert entry.saved_at is not None
+    assert preferences.get("last_master_frame_dir") == str(output_path.parent)
+
 
 def test_apply_calibration_end_to_end_creates_calibrated_window(qapp, main_window, tmp_path):
     from qt_app.reduction.apply_calibration_dialog import ApplyCalibrationDialog
 
+    from services.app_preferences import AppPreferencesStore
+
     paths = _write_bias_frames(tmp_path, n=4, level=300.0, seed=1)
     from qt_app.reduction.build_master_frame_dialog import BuildMasterFrameDialog
 
-    builder = BuildMasterFrameDialog(main_window.master_frame_library, main_window)
+    builder = BuildMasterFrameDialog(main_window.master_frame_library, main_window, preferences=AppPreferencesStore(tmp_path / "prefs.json"))
     builder.kind_combo.setCurrentText("Bias")
     builder.name_edit.setText("Bias-cal")
     from PySide6.QtCore import Qt
@@ -112,6 +125,7 @@ def test_apply_calibration_end_to_end_creates_calibrated_window(qapp, main_windo
         item = QListWidgetItem(path.split("/")[-1])
         item.setData(Qt.ItemDataRole.UserRole, path)
         builder.file_list.addItem(item)
+    builder.output_path_edit.setText(str(tmp_path / "masters" / "Bias-cal.fits"))
     builder._on_combine()
     _wait_worker(qapp, builder)
     assert "Bias-cal" in main_window.master_frame_library.all_names()
@@ -136,6 +150,146 @@ def test_apply_calibration_end_to_end_creates_calibrated_window(qapp, main_windo
     main_window._on_calibration_applied(sub_window.widget(), received["data"], received["summary"])
     qapp.processEvents()
     assert len(main_window.mdi.subWindowList()) == windows_before + 1
+
+
+def test_build_master_dark_records_exposure_and_saves_real_fits(qapp, main_window, tmp_path):
+    """Prueba obligatoria I: dark con exposición registrada, guardado en
+    la ruta elegida, y la exposición sobrevive reabrir el archivo."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QListWidgetItem
+
+    from astrophysics_suite.reduction.master_frames import load_master_frame
+    from qt_app.reduction.build_master_frame_dialog import BuildMasterFrameDialog
+    from services.app_preferences import AppPreferencesStore
+
+    rng = np.random.default_rng(2)
+    paths = []
+    for i in range(4):
+        frame = np.full(FRAME_SHAPE, 520.0, dtype=np.float32) + rng.normal(0, 2.0, FRAME_SHAPE).astype(np.float32)
+        path = tmp_path / f"dark_{i}.fits"
+        from legacy.AstroPhysicsSuite_v57_3_COMMERCIAL import _write_minimal_fits_2d
+
+        _write_minimal_fits_2d(path, frame)
+        paths.append(str(path))
+
+    dialog = BuildMasterFrameDialog(main_window.master_frame_library, main_window, preferences=AppPreferencesStore(tmp_path / "prefs.json"))
+    dialog.kind_combo.setCurrentText("Dark")
+    dialog.name_edit.setText("Dark-120s")
+    dialog.exposure_spin.setValue(120.0)
+    for path in paths:
+        item = QListWidgetItem(path.split("/")[-1])
+        item.setData(Qt.ItemDataRole.UserRole, path)
+        dialog.file_list.addItem(item)
+    output_path = tmp_path / "Dark-120s.fits"
+    dialog.output_path_edit.setText(str(output_path))
+    dialog._on_combine()
+    _wait_worker(qapp, dialog)
+
+    assert "Dark-120s" in main_window.master_frame_library.all_names()
+    master = main_window.master_frame_library.get("Dark-120s")
+    assert master.exposure_s == pytest.approx(120.0)
+
+    reloaded = load_master_frame(str(output_path))
+    assert reloaded.kind == "dark"
+    assert reloaded.exposure_s == pytest.approx(120.0)
+
+
+def test_build_master_frame_requires_confirmation_before_overwriting(qapp, main_window, tmp_path, monkeypatch):
+    """Prueba obligatoria K: si ya existe un archivo en la ruta elegida,
+    se pide confirmación -- "No" no debe tocar el archivo existente."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QListWidgetItem, QMessageBox
+    from astropy.io import fits
+
+    from qt_app.reduction.build_master_frame_dialog import BuildMasterFrameDialog
+    from services.app_preferences import AppPreferencesStore
+
+    paths = _write_bias_frames(tmp_path, n=4, level=400.0, seed=3)
+    output_path = tmp_path / "Bias-overwrite.fits"
+    sentinel = np.full((3, 3), -999.0, dtype=np.float32)
+    fits.PrimaryHDU(sentinel).writeto(output_path)
+
+    dialog = BuildMasterFrameDialog(main_window.master_frame_library, main_window, preferences=AppPreferencesStore(tmp_path / "prefs.json"))
+    dialog.kind_combo.setCurrentText("Bias")
+    dialog.name_edit.setText("Bias-overwrite")
+    for path in paths:
+        item = QListWidgetItem(path.split("/")[-1])
+        item.setData(Qt.ItemDataRole.UserRole, path)
+        dialog.file_list.addItem(item)
+    dialog.output_path_edit.setText(str(output_path))
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.No))
+    dialog._on_combine()
+    qapp.processEvents()
+    assert dialog._worker is None or not dialog._worker.isRunning()
+    assert "Bias-overwrite" not in main_window.master_frame_library.all_names()
+    with fits.open(output_path) as hdul:
+        np.testing.assert_array_equal(hdul[0].data, sentinel)  # nunca tocado
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
+    dialog._on_combine()
+    _wait_worker(qapp, dialog)
+    assert "Bias-overwrite" in main_window.master_frame_library.all_names()
+    with fits.open(output_path) as hdul:
+        assert hdul[0].data.shape == FRAME_SHAPE  # sí sobrescrito tras confirmar
+
+
+def test_load_master_frame_dialog_reuses_a_previously_saved_master(qapp, main_window, tmp_path, monkeypatch):
+    """Prueba obligatoria (reutilización en sesiones posteriores): un
+    fotograma maestro guardado a disco se puede recargar en una
+    biblioteca "nueva" (aquí, un MainWindow recién creado) vía "Cargar
+    fotograma maestro..." y queda disponible para calibrar de verdad --
+    no solo "aparece en la lista"."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QFileDialog, QInputDialog, QListWidgetItem
+
+    from qt_app.reduction.build_master_frame_dialog import BuildMasterFrameDialog
+    from services.app_preferences import AppPreferencesStore
+
+    paths = _write_bias_frames(tmp_path, n=4, level=600.0, seed=5)
+    output_path = tmp_path / "Bias-persisted.fits"
+    builder = BuildMasterFrameDialog(main_window.master_frame_library, main_window, preferences=AppPreferencesStore(tmp_path / "prefs.json"))
+    builder.kind_combo.setCurrentText("Bias")
+    builder.name_edit.setText("Bias-persisted")
+    for path in paths:
+        item = QListWidgetItem(path.split("/")[-1])
+        item.setData(Qt.ItemDataRole.UserRole, path)
+        builder.file_list.addItem(item)
+    builder.output_path_edit.setText(str(output_path))
+    builder._on_combine()
+    _wait_worker(qapp, builder)
+    assert output_path.exists()
+
+    from qt_app.main_window import MainWindow
+
+    fresh_window = MainWindow()
+    try:
+        assert "Bias-persisted" not in fresh_window.master_frame_library.all_names()
+        monkeypatch.setattr(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(output_path), "")))
+        monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("Bias-recargado", True)))
+        fresh_window._open_load_master_frame_dialog()
+
+        assert "Bias-recargado" in fresh_window.master_frame_library.all_names()
+        entry = fresh_window.master_frame_library.entry("Bias-recargado")
+        assert entry.path == str(output_path)
+        reloaded_master = fresh_window.master_frame_library.get("Bias-recargado")
+        assert reloaded_master.kind == "bias"
+        assert abs(float(np.median(reloaded_master.data)) - 600.0) < 5.0
+
+        # y de verdad se puede usar en una calibración, no solo listarse.
+        from qt_app.reduction.apply_calibration_dialog import ApplyCalibrationDialog
+
+        raw = np.full(FRAME_SHAPE, 1600.0)
+        cal_dialog = ApplyCalibrationDialog(fresh_window.master_frame_library, raw, fresh_window)
+        cal_dialog.bias_combo.setCurrentText("Bias-recargado")
+        received = {}
+        cal_dialog.calibrated.connect(lambda data, summary: received.update(data=data, summary=summary))
+        cal_dialog._on_apply()
+        _wait_worker(qapp, cal_dialog)
+        assert "data" in received
+        np.testing.assert_allclose(received["data"], 1600.0 - 600.0, atol=5.0)
+    finally:
+        fresh_window.close()
 
 
 def test_master_frame_library_names_for_kind(qapp):

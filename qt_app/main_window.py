@@ -7,11 +7,12 @@ a través de `qt_app.processes.registry` (misma disciplina que ya regía
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QColor
-from PySide6.QtWidgets import QDockWidget, QFileDialog, QMainWindow, QMdiArea, QMdiSubWindow, QMessageBox, QProgressBar
+from PySide6.QtWidgets import QDockWidget, QFileDialog, QInputDialog, QMainWindow, QMdiArea, QMdiSubWindow, QMessageBox, QProgressBar
 
 from astrophysics_suite.astrometry.registration import apply_affine_transform, fit_affine_transform
 from astrophysics_suite.detection.point_sources import detect_point_sources_in_array, detect_psf_candidates
@@ -151,6 +152,9 @@ class MainWindow(QMainWindow):
         build_master_action = QAction("&Construir fotograma maestro...", self)
         build_master_action.triggered.connect(self._open_build_master_frame_dialog)
         reduction_menu.addAction(build_master_action)
+        load_master_action = QAction("Cargar fotograma &maestro...", self)
+        load_master_action.triggered.connect(self._open_load_master_frame_dialog)
+        reduction_menu.addAction(load_master_action)
         apply_calibration_action = QAction("&Aplicar calibración a la imagen activa...", self)
         apply_calibration_action.triggered.connect(self._open_apply_calibration_dialog)
         reduction_menu.addAction(apply_calibration_action)
@@ -525,6 +529,41 @@ class MainWindow(QMainWindow):
         dialog = BuildMasterFrameDialog(self.master_frame_library, self)
         if dialog.exec() == BuildMasterFrameDialog.DialogCode.Accepted:
             logger.info("Fotograma maestro construido: %s", dialog.name_edit.text().strip())
+
+    def _open_load_master_frame_dialog(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Cargar fotograma maestro", "", "FITS (*.fits *.fit *.fts)")
+        if not path:
+            return
+        from astrophysics_suite.reduction.master_frames import load_master_frame
+
+        try:
+            master_frame = load_master_frame(path)
+        except (ValueError, OSError) as exc:
+            QMessageBox.critical(
+                self, "Cargar fotograma maestro",
+                f"No se pudo cargar «{Path(path).name}» como fotograma maestro:\n\n{exc}",
+            )
+            return
+
+        default_name = Path(path).stem
+        existing_names = self.master_frame_library.all_names()
+        proposed_name = default_name
+        suffix = 2
+        while proposed_name in existing_names:
+            proposed_name = f"{default_name} ({suffix})"
+            suffix += 1
+        name, ok = QInputDialog.getText(self, "Cargar fotograma maestro", "Nombre para esta entrada en la biblioteca:", text=proposed_name)
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        if name in existing_names:
+            QMessageBox.warning(self, "Cargar fotograma maestro", "Ya existe un fotograma maestro con ese nombre.")
+            return
+
+        saved_at = datetime.fromtimestamp(Path(path).stat().st_mtime, tz=timezone.utc)
+        self.master_frame_library.add(name, master_frame, path=path, saved_at=saved_at)
+        logger.info("Fotograma maestro cargado desde %s como «%s» (%s)", path, name, master_frame.kind)
+        self.statusBar().showMessage(f"Fotograma maestro «{name}» cargado desde {path}.", 6000)
 
     def _open_apply_calibration_dialog(self) -> None:
         view = self._active_image_view()

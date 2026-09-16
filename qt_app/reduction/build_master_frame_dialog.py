@@ -1,9 +1,16 @@
 """Construcción de fotogramas maestros de calibración (bias/dark/flat)
 desde varios archivos a la vez -- equivalente propio de `zerocombine`/
 `darkcombine`/`flatcombine` de IRAF, expuesto en el taller Qt.
+
+El resultado se escribe siempre a un FITS real en la ruta que elige el
+usuario (nunca solo en memoria): "Salida" + "Examinar..." abren un
+selector de archivos real de Qt/Windows, se recuerda la última carpeta
+usada entre construcciones, y se confirma antes de sobrescribir un
+archivo existente.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -23,30 +30,37 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from astrophysics_suite.reduction.master_frames import build_master_bias, build_master_dark, build_master_flat
+from astrophysics_suite.reduction.master_frames import build_master_bias, build_master_dark, build_master_flat, save_master_frame
 from qt_app.reduction.master_frame_library import MasterFrameLibrary
 from qt_app.workers import CallableWorker
+from services.app_preferences import AppPreferencesStore
 
 NONE_OPTION = "(ninguno)"
 KIND_OPTIONS = {"Bias": "bias", "Dark": "dark", "Flat": "flat"}
+_LAST_OUTPUT_DIR_KEY = "last_master_frame_dir"
+_FITS_EXTENSIONS = (".fits", ".fit", ".fts")
 
 
 class BuildMasterFrameDialog(QDialog):
-    def __init__(self, library: MasterFrameLibrary, parent=None):
+    def __init__(self, library: MasterFrameLibrary, parent=None, *, preferences: AppPreferencesStore | None = None):
         super().__init__(parent)
         self.library = library
+        self.preferences = preferences or AppPreferencesStore()
         self.setWindowTitle("Construir fotograma maestro")
-        self.resize(480, 480)
+        self.resize(520, 540)
         self._worker: CallableWorker | None = None
+        self._output_path_edited_by_user = False
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
         self.kind_combo = QComboBox()
         self.kind_combo.addItems(list(KIND_OPTIONS.keys()))
         self.kind_combo.currentTextChanged.connect(self._update_visibility)
+        self.kind_combo.currentTextChanged.connect(self._update_default_output_path)
         form.addRow("Tipo", self.kind_combo)
 
         self.name_edit = QLineEdit()
+        self.name_edit.textChanged.connect(self._update_default_output_path)
         form.addRow("Nombre", self.name_edit)
 
         self.exposure_spin = QDoubleSpinBox()
@@ -76,12 +90,26 @@ class BuildMasterFrameDialog(QDialog):
         self.file_list = QListWidget()
         layout.addWidget(self.file_list)
 
+        output_header = QHBoxLayout()
+        output_header.addWidget(QLabel("Carpeta/archivo de salida"))
+        layout.addLayout(output_header)
+        output_row = QHBoxLayout()
+        self.output_path_edit = QLineEdit()
+        self.output_path_edit.setPlaceholderText("Elige dónde guardar el FITS del fotograma maestro...")
+        self.output_path_edit.textEdited.connect(self._on_output_path_edited_by_user)
+        output_row.addWidget(self.output_path_edit)
+        browse_button = QPushButton("Examinar...")
+        browse_button.clicked.connect(self._browse_output_path)
+        output_row.addWidget(browse_button)
+        layout.addLayout(output_row)
+
         self.status_label = QLabel("")
         self.status_label.setObjectName("Muted")
+        self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
         self.button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        self.combine_button = QPushButton("Combinar")
+        self.combine_button = QPushButton("Combinar y guardar")
         self.combine_button.setObjectName("Accent")
         self.combine_button.clicked.connect(self._on_combine)
         self.button_box.addButton(self.combine_button, QDialogButtonBox.ButtonRole.AcceptRole)
@@ -90,6 +118,7 @@ class BuildMasterFrameDialog(QDialog):
 
         self._update_visibility(self.kind_combo.currentText())
         self._refresh_master_combos()
+        self._update_default_output_path()
 
     def _refresh_master_combos(self) -> None:
         self.bias_combo.clear()
@@ -109,6 +138,29 @@ class BuildMasterFrameDialog(QDialog):
         self.dark_row_label.setVisible(kind == "flat")
         self.dark_combo.setVisible(kind == "flat")
 
+    def _on_output_path_edited_by_user(self, _text: str) -> None:
+        self._output_path_edited_by_user = True
+
+    def _update_default_output_path(self) -> None:
+        """Propone `<última_carpeta_usada>/<nombre>.fits`, pero solo
+        mientras el usuario no haya editado la ruta a mano -- nunca pisa
+        una elección explícita solo porque cambió el nombre."""
+        if self._output_path_edited_by_user:
+            return
+        name = self.name_edit.text().strip()
+        if not name:
+            self.output_path_edit.setText("")
+            return
+        base_dir = self.preferences.get(_LAST_OUTPUT_DIR_KEY) or str(Path.home())
+        self.output_path_edit.setText(str(Path(base_dir) / f"{name}.fits"))
+
+    def _browse_output_path(self) -> None:
+        proposed = self.output_path_edit.text().strip() or str(Path(self.preferences.get(_LAST_OUTPUT_DIR_KEY) or Path.home()))
+        path, _ = QFileDialog.getSaveFileName(self, "Guardar fotograma maestro", proposed, "FITS (*.fits *.fit *.fts)")
+        if path:
+            self.output_path_edit.setText(path)
+            self._output_path_edited_by_user = True
+
     def _add_files(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(self, "Seleccionar fotogramas", "", "FITS (*.fits *.fit *.fts);;Todos los archivos (*.*)")
         for path in paths:
@@ -117,6 +169,13 @@ class BuildMasterFrameDialog(QDialog):
 
     def _selected_paths(self) -> list[str]:
         return [self.file_list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.file_list.count())]
+
+    def _resolved_output_path(self) -> Path:
+        raw = self.output_path_edit.text().strip()
+        path = Path(raw)
+        if path.suffix.lower() not in _FITS_EXTENSIONS:
+            path = path.with_name(path.name + ".fits")
+        return path
 
     def _on_combine(self) -> None:
         if not self.name_edit.text().strip():
@@ -128,6 +187,19 @@ class BuildMasterFrameDialog(QDialog):
         if len(self._selected_paths()) < 3:
             QMessageBox.warning(self, "Construir fotograma maestro", "Se necesitan al menos 3 fotogramas para un rechazo robusto.")
             return
+        if not self.output_path_edit.text().strip():
+            QMessageBox.warning(self, "Construir fotograma maestro", "Elige una carpeta/archivo de salida (botón «Examinar...»).")
+            return
+
+        output_path = self._resolved_output_path()
+        if output_path.exists():
+            reply = QMessageBox.question(
+                self, "Construir fotograma maestro",
+                f"Ya existe un archivo en «{output_path}».\n¿Deseas sobrescribirlo?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
 
         kind = KIND_OPTIONS[self.kind_combo.currentText()]
         paths = self._selected_paths()
@@ -152,12 +224,21 @@ class BuildMasterFrameDialog(QDialog):
         self.combine_button.setEnabled(False)
         self.status_label.setText(f"Combinando {len(paths)} fotograma(s)...")
         self._worker = CallableWorker(build, self)
-        self._worker.finished_ok.connect(self._on_success)
+        self._worker.finished_ok.connect(lambda frame: self._on_combined(frame, output_path))
         self._worker.failed.connect(self._on_failure)
         self._worker.start()
 
-    def _on_success(self, master_frame) -> None:
-        self.library.add(self.name_edit.text().strip(), master_frame)
+    def _on_combined(self, master_frame, output_path: Path) -> None:
+        try:
+            save_master_frame(str(output_path), master_frame)
+        except OSError as exc:
+            self.combine_button.setEnabled(True)
+            self.status_label.setText(f"El fotograma se combinó pero no se pudo guardar en «{output_path}»: {exc}")
+            QMessageBox.critical(self, "Construir fotograma maestro", f"No se pudo guardar «{output_path.name}»:\n\n{exc}")
+            return
+
+        self.preferences.set(_LAST_OUTPUT_DIR_KEY, str(output_path.parent))
+        self.library.add(self.name_edit.text().strip(), master_frame, path=str(output_path), saved_at=datetime.now(timezone.utc))
         self.status_label.setText("")
         self.combine_button.setEnabled(True)
         self.accept()
