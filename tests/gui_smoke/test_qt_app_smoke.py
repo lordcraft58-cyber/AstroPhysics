@@ -150,3 +150,20 @@ def test_stf_toggle_does_not_raise(qapp, main_window):
     assert view.stf_enabled is False
     main_window._toggle_active_stf()
     assert view.stf_enabled is True
+
+
+def test_diagnostics_dialog_runs_hardware_check_end_to_end(qapp, main_window):
+    from qt_app.diagnostics_dialog import DiagnosticsDialog
+
+    dialog = DiagnosticsDialog(main_window)
+    dialog._run()
+    assert not dialog.run_button.isEnabled()
+
+    deadline = time.monotonic() + 5.0
+    while dialog._job is not None and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    qapp.processEvents()
+
+    assert dialog._job is None
+    assert dialog.run_button.isEnabled()

@@ -151,8 +151,13 @@ revisar). 5 tests de humo nuevos en
 - Persistencia de "iconos de proceso" guardados con parámetros configurados,
   reutilizables entre sesiones (hoy la configuración vive solo mientras el panel de
   propiedades está abierto).
-- Conectar `services/hardware_service.py` (diagnóstico de equipo, Fase 8) al taller
-  nuevo -- hoy solo vive en la GUI en Tkinter conservada como referencia.
 - `services/logging_bridge.py` (Fase 8, puente de logging para Tkinter) queda sin
   usar por el taller Qt, que tiene su propio puente (`qt_app/docks/console_dock.py`)
   -- candidato a retirarse si la GUI en Tkinter deja de mantenerse activamente.
+
+`services/hardware_service.py` (diagnóstico de equipo) ya está conectado:
+`qt_app/diagnostics_dialog.py`, menú Herramientas → Diagnóstico de equipo,
+`HardwareCheckJob` sondeado por `QTimer`. Verificado end-to-end (grado degradado
+correctamente en Linux -- sin PowerShell disponible, RAM/GPU/CPU en "—", disco y
+recomendaciones reales) con captura de pantalla y test de humo nuevo en
+`tests/gui_smoke/test_qt_app_smoke.py::test_diagnostics_dialog_runs_hardware_check_end_to_end`.

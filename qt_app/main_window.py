@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QDockWidget, QFileDialog, QMainWindow, QMdiArea, Q
 from qt_app.candidates.candidate_detail_widget import CandidateDetailWidget
 from qt_app.candidates.candidates_dock import CandidatesDock
 from qt_app.candidates.new_observation_dialog import NewObservationDialog
+from qt_app.diagnostics_dialog import DiagnosticsDialog
 from qt_app.docks.console_dock import ConsoleDock
 from qt_app.docks.process_explorer import ProcessExplorer
 from qt_app.docks.properties_dock import PropertiesDock
@@ -114,6 +115,11 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
+        tools_menu = self.menuBar().addMenu("&Herramientas")
+        diagnostics_action = QAction("&Diagnóstico de equipo...", self)
+        diagnostics_action.triggered.connect(self._open_diagnostics_dialog)
+        tools_menu.addAction(diagnostics_action)
+
         view_menu = self.menuBar().addMenu("&Vista")
         stf_action = QAction("Alternar STF en la imagen activa", self)
         stf_action.setShortcut("Ctrl+T")
@@ -162,6 +168,10 @@ class MainWindow(QMainWindow):
         if sub_window is None:
             return None
         return sub_window.widget()
+
+    def _open_diagnostics_dialog(self) -> None:
+        dialog = DiagnosticsDialog(self)
+        dialog.exec()
 
     def _toggle_active_stf(self) -> None:
         view = self._active_image_view()
