@@ -14,17 +14,20 @@ En reingeniería activa. El código heredado (`legacy/AstroPhysicsSuite_v57_3_CO
 - [`docs/audit/04-FASE3-DUPLICADOS-Y-LEGADO-ELIMINADOS.md`](docs/audit/04-FASE3-DUPLICADOS-Y-LEGADO-ELIMINADOS.md) — Fase 3: corrección del bug P0 (Python <3.11), corrección del bypass de consistencia científica, conexión de la suite v46 a `selftest()`, y eliminación de las 17 entidades muertas confirmadas (−1.310 líneas), todo respaldado por la suite de tests nueva en `tests/`.
 - [`docs/audit/05-FASE4-CONTRATOS-DE-DATOS.md`](docs/audit/05-FASE4-CONTRATOS-DE-DATOS.md) — Fase 4: paquete `astrophysics_suite/` con los contratos de datos versionados (`Observation`, `Detection`, `CharacterizationResult`, `PhysicalInference`, `AnomalyVector`, `EvidenceChain`, `Candidate`, `Project`), el tipo `Quantity` (valor + incertidumbre + estatus epistémico) y el vocabulario único de `IdentificationState`, con un adaptador probado contra una ejecución real del pipeline heredado.
 - [`docs/audit/06-FASE5-TESTS-DE-REGRESION.md`](docs/audit/06-FASE5-TESTS-DE-REGRESION.md) — Fase 5: prueba de humo de GUI que **encontró y corrigió un `KeyError` que impedía arrancar `launch_gui()` en cualquier versión de Python**, guardas estructurales pedidas por el encargo (una sola implementación por función crítica; la GUI debe usar el pipeline completo — hoy `xfail` documentado; sin Tkinter en la capa de ciencia), y la suite conectada por primera vez a CI (`.github/workflows/tests.yml`).
+- [`docs/audit/07-FASE6-REFACTOR-PROGRESIVO-SLICE1.md`](docs/audit/07-FASE6-REFACTOR-PROGRESIVO-SLICE1.md) — Fase 6 (primer corte): `io/` y `detection/` poblados de extremo a extremo — carga real de FITS → `Observation`/`ImageRef`, y detección real de fuentes puntuales → `Detection`, delegando el algoritmo en el código heredado ya probado (patrón *strangler fig*) y verificado con FITS sintéticos reales, no simulaciones.
 
 ## Arquitectura objetivo (en construcción)
 
 ```
 astrophysics_suite/
-├── core/     # ValueKind, IdentificationState, ReviewState, ArtifactKind, MorphologyClass, QualityLevel, Quantity, Provenance
-└── models/   # Observation, Detection, CharacterizationResult, PhysicalInference, AnomalyVector,
-              # TemporalEvidence, MotionEvidence, EvidenceChain, Candidate, Project, legacy_adapter
+├── core/        # ValueKind, IdentificationState, ReviewState, ArtifactKind, MorphologyClass, QualityLevel, Quantity, Provenance
+├── models/      # Observation, Detection, CharacterizationResult, PhysicalInference, AnomalyVector,
+│                # TemporalEvidence, MotionEvidence, EvidenceChain, Candidate, Project, legacy_adapter
+├── io/          # carga real de FITS -> Observation/ImageRef (delega en legacy.load_fits)
+└── detection/   # detección real de fuentes puntuales -> Detection (delega en legacy DAOStarFinder)
 ```
 
-Los motores científicos (`detection/`, `physics/`, `anomaly/`, `evidence/`, ...) que consumirán estos modelos son trabajo de la Fase 6.
+Físico, astrometría, fotometría, anomalía, temporal y evidencia siguen pendientes de extracción (Fase 6 en curso, ver `docs/audit/07-...`).
 
 ## Tests
 
