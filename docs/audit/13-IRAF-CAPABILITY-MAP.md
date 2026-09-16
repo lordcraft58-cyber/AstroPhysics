@@ -31,14 +31,14 @@ capacidad sin implementar en absoluto).
 | Bias maestro | Real, `master_frames.py:29` (`build_master_bias`) | — | `tests/unit/reduction/test_master_frames.py` | Diálogo "Construir fotograma maestro" | **DISPONIBLE** |
 | Dark maestro (con resta de bias, escalado por tiempo de exposición para la ciencia) | Real, `master_frames.py:36` (`build_master_dark`) | — | ídem | ídem | **DISPONIBLE** |
 | Flat maestro (bias/dark restados, normalizado a mediana 1.0) | Real, `master_frames.py:53` (`build_master_flat`) | — | ídem | ídem | **DISPONIBLE** |
-| Calibración de una LIGHT (bias -> dark escalado -> flat -> interpolación de píxeles defectuosos, orden fijo, incertidumbre propagada) | Real, `calibration.py:35` (`calibrate_frame`) | — | `tests/unit/reduction/test_calibration.py` | Diálogo "Aplicar calibración" -- **pero solo a la imagen activa, una a una** | **EXPERIMENTAL** (motor real, GUI de una sola imagen, no de sesión) |
-| Máscara de píxeles defectuosos (umbral sobre flat normalizado + confirmación por dark + interpolación 1D + dilatado opcional) | Real, `bad_pixel_mask.py:12/28/56/68` | — | `tests/unit/reduction/test_bad_pixel_mask.py` | **Ninguno** -- `calibrate_frame` la acepta pero ningún diálogo construye una máscara | **PENDIENTE** → cerrado en Fase 10.1 (ver abajo) |
-| Corrección de franjas (fringing), escala óptima por mínimos cuadrados contra un patrón maestro | Real, `fringe.py:20` (`remove_fringe`) | — | `tests/unit/reduction/test_fringe.py` | **Ninguno** -- ni proceso, ni diálogo, ni menú | **PENDIENTE** → cerrado en Fase 10.1 (ver abajo) |
-| Reducción de una **sesión completa de LIGHTS** (muchas exposiciones + calibraciones, no una imagen a la vez) | No existía como orquestación única antes de esta ronda | `astrophysics_suite/reduction/session_pipeline.py` (`reduce_light_frames`) -- ver Fase 10.1 | `tests/unit/reduction/test_session_pipeline.py` | Diálogo "Reducir sesión de LIGHTS..." -- ver Fase 10.1 | **Fase 10.1: DISPONIBLE** |
-| Corrección de iluminación (`mkillumflat`/`mkillumcor`) | No implementada | — | — | — | **PENDIENTE** |
-| Corrección de cielo (`skyflat`/resta de fondo de cielo dedicada) | No implementada como bloque propio de `ccdred` (existe estimación de cielo local en `apphot`, ver §3, pero no una corrección de cielo a nivel de imagen completa) | — | — | — | **PENDIENTE** |
-| Gestión de grupos de imágenes / clasificación automática por cabecera (`ccdlist`, tipado bias/dark/flat/light desde `IMAGETYP`) | No implementada -- el usuario elige manualmente cada archivo en cada diálogo | — | — | — | **PENDIENTE** |
-| Configuración por instrumento (ganancia/ruido de lectura/geometría de overscan como perfil guardado por cámara) | No implementada -- ganancia/ruido de lectura se reintroducen a mano cada vez | — | — | — | **PENDIENTE** |
+| Calibración de una LIGHT (bias -> dark escalado -> flat -> interpolación de píxeles defectuosos, orden fijo, incertidumbre propagada) | Real, `calibration.py:35` (`calibrate_frame`) | — | `tests/unit/reduction/test_calibration.py` | Diálogo "Aplicar calibración" (una imagen) **y** "Reducir sesión de LIGHTS..." (sesión completa, Fase 10.1) | **DISPONIBLE** |
+| Máscara de píxeles defectuosos (umbral sobre flat normalizado + confirmación por dark + interpolación 1D + dilatado opcional) | Real, `bad_pixel_mask.py:12/28/56/68` | — | `tests/unit/reduction/test_bad_pixel_mask.py` | Casilla "Detectar y corregir píxeles defectuosos" en "Reducir sesión de LIGHTS..." (Fase 10.1) | **DISPONIBLE** |
+| Corrección de franjas (fringing), escala óptima por mínimos cuadrados contra un patrón maestro | Real, `fringe.py:20` (`remove_fringe`) | — | `tests/unit/reduction/test_fringe.py` | Selector de "Patrón de franjas maestro" en "Reducir sesión de LIGHTS..." (Fase 10.1) | **DISPONIBLE** |
+| Reducción de una **sesión completa de LIGHTS** (muchas exposiciones + calibraciones, no una imagen a la vez) | No existía como orquestación única antes de esta ronda | `astrophysics_suite/reduction/session_pipeline.py` (`reduce_light_frames`) -- ver Fase 10.1 | `tests/unit/reduction/test_session_pipeline.py` | Diálogo "Reducir sesión de LIGHTS..." -- ver Fase 10.1 | **DISPONIBLE** |
+| Corrección de iluminación (`mkillumflat`/`mkillumcor`) | No implementada | `astrophysics_suite/reduction/illumination.py` (`build_illumination_map`/`apply_illumination_correction`, suavizado gaussiano del flat maestro normalizado) -- ver Fase 10.2 | `tests/unit/reduction/test_illumination.py` | Casilla "Aplicar corrección de iluminación" en "Reducir sesión de LIGHTS..." | **DISPONIBLE** |
+| Corrección de cielo (`skyflat`/resta de fondo de cielo dedicada) | No implementada como bloque propio de `ccdred` (existe estimación de cielo local en `apphot`, ver §3, pero no una corrección de cielo a nivel de imagen completa) | `astrophysics_suite/reduction/sky.py` (`fit_sky_background`/`subtract_sky_background`, ajuste polinómico 2D con rechazo iterativo de fuentes) -- ver Fase 10.2 | `tests/unit/reduction/test_sky.py` | Grupo "Corrección de cielo" en "Reducir sesión de LIGHTS..." | **DISPONIBLE** |
+| Gestión de grupos de imágenes / clasificación automática por cabecera (`ccdlist`, tipado bias/dark/flat/light desde `IMAGETYP`) | No implementada -- el usuario elige manualmente cada archivo en cada diálogo | `astrophysics_suite/reduction/frame_classification.py` (`classify_frame_type`/`classify_session_headers`) + `astrophysics_suite/io/fits_header_reader.py` -- ver Fase 10.2 | `tests/unit/reduction/test_frame_classification.py`, `tests/unit/io/test_fits_header_reader.py` | Botón "+ Añadir carpeta (clasificar)..." en "Reducir sesión de LIGHTS..." (solo añade lo clasificado como LIGHT; nunca adivina si `IMAGETYP`/`OBSTYPE`/`FRAMETYP` no están presentes) | **DISPONIBLE** |
+| Configuración por instrumento (ganancia/ruido de lectura/geometría de overscan como perfil guardado por cámara) | No implementada -- ganancia/ruido de lectura se reintroducen a mano cada vez | `services/instrument_profiles.py` (`InstrumentProfileStore`, persistencia JSON) -- ver Fase 10.2 | `tests/unit/services/test_instrument_profiles.py` | Combo "Perfil de instrumento" + "Guardar como perfil..." en "Reducir sesión de LIGHTS..." | **DISPONIBLE** |
 
 ---
 
@@ -147,7 +147,7 @@ en la Fase 10.1 (que se centra en cerrar `ccdred`), pero debe abordarse antes de
 
 | Bloque | DISPONIBLE | EXPERIMENTAL | PENDIENTE | Veredicto |
 |---|---|---|---|---|
-| `ccdred` | 5 | 1 | 6 (2 de ellas cerradas en Fase 10.1) | Motor sólido; GUI de sesión real era el hueco principal -- cerrado en Fase 10.1 |
+| `ccdred` | 13 | 0 | 0 | **Cerrado.** Sesión real de LIGHTS, píxeles defectuosos, franjas, iluminación, cielo, clasificación por cabecera y perfiles de instrumento, todos con motor real y camino de uso en la GUI (Fases 10.1-10.2) |
 | Análisis de imagen | 3 | 0 | 3 | Cubre lo esencial (aritmética con error, L.A.Cosmic real); faltan utilidades genéricas de inspección |
 | `apphot` | 3 | 2 | 2 | Motor sólido; selección de fuente en la GUI sigue fija al centro |
 | `daophot` | 2 | 2 | 4 | Núcleo real (deblending simultáneo, tres modelos PSF); falta selección/refinamiento/diagnóstico automáticos |
@@ -159,9 +159,13 @@ en la Fase 10.1 (que se centra en cerrar `ccdred`), pero debe abordarse antes de
 
 **CCDRED → análisis de imagen → fotometría → astrometría → tablas/catálogos → espectroscopía**,
 cerrando cada bloque antes de ampliar el siguiente. La Fase 10.1 (ver
-`14-FASE10-CCDRED-SESSION-PIPELINE.md`) cierra el hueco más importante de `ccdred`:
-una GUI que solo calibraba una imagen a la vez, nunca una sesión real de LIGHTS. Los
-huecos restantes de `ccdred` (iluminación, cielo, clasificación por cabecera,
-perfiles de instrumento) quedan documentados arriba como `PENDIENTE` explícito, no
-ocultos, para una fase posterior si se decide que son necesarios antes de avanzar al
-siguiente bloque.
+`14-FASE10-CCDRED-SESSION-PIPELINE.md`) cerró el hueco más importante de `ccdred`:
+una GUI que solo calibraba una imagen a la vez, nunca una sesión real de LIGHTS, y de
+paso cableó dos motores que ya existían sin camino de uso (píxeles defectuosos,
+franjas). La Fase 10.2 (ver `15-FASE10.2-CCDRED-CIERRE.md`) cierra los cuatro huecos
+que quedaban documentados como `PENDIENTE`: iluminación, cielo, clasificación de
+fotogramas por cabecera y perfiles de instrumento. Con esto, el bloque `ccdred`
+queda completo -- las 13 capacidades de la tabla anterior en `DISPONIBLE`, ninguna
+`PENDIENTE` -- y el siguiente bloque a abrir, según el orden acordado, es análisis de
+imagen (estadística/histograma genérico, máscaras/regiones/recortes independientes
+de fotometría u overscan, normalización genérica).

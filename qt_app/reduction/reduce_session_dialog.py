@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QListWidget,
     QMessageBox,
@@ -34,9 +35,12 @@ from PySide6.QtWidgets import (
 )
 
 from astrophysics_suite.reduction.bad_pixel_mask import build_bad_pixel_mask
+from astrophysics_suite.reduction.frame_classification import classify_session_headers
+from astrophysics_suite.reduction.illumination import build_illumination_map
 from astrophysics_suite.reduction.session_pipeline import reduce_light_frames
 from qt_app.reduction.master_frame_library import MasterFrameLibrary
 from qt_app.workers import CallableWorker
+from services.instrument_profiles import InstrumentProfile, InstrumentProfileStore
 
 NONE_OPTION = "(ninguno)"
 MAX_REGION = 100000
@@ -54,11 +58,12 @@ class ReduceSessionDialog(QDialog):
     session_reduced = Signal(object)
     """Emite `SessionReductionOutcome` al terminar con éxito."""
 
-    def __init__(self, library: MasterFrameLibrary, parent=None):
+    def __init__(self, library: MasterFrameLibrary, parent=None, *, profile_store: InstrumentProfileStore | None = None):
         super().__init__(parent)
         self.library = library
+        self.profile_store = profile_store or InstrumentProfileStore()
         self.setWindowTitle("Reducir sesión de LIGHTS")
-        self.resize(560, 700)
+        self.resize(560, 820)
         self._worker: CallableWorker | None = None
         self._fringe_path: str | None = None
         self._output_dir: str | None = None
@@ -68,6 +73,9 @@ class ReduceSessionDialog(QDialog):
         files_header = QHBoxLayout()
         files_header.addWidget(QLabel("LIGHTS de la sesión"))
         files_header.addStretch(1)
+        add_folder_button = QPushButton("+ Añadir carpeta (clasificar)...")
+        add_folder_button.clicked.connect(self._add_folder_classified)
+        files_header.addWidget(add_folder_button)
         add_button = QPushButton("+ Añadir...")
         add_button.clicked.connect(self._add_files)
         files_header.addWidget(add_button)
@@ -89,13 +97,23 @@ class ReduceSessionDialog(QDialog):
         self.flat_combo = QComboBox()
         self.flat_combo.addItem(NONE_OPTION)
         self.flat_combo.addItems(library.names_for_kind("flat"))
-        self.flat_combo.currentTextChanged.connect(self._update_bad_pixel_visibility)
+        self.flat_combo.currentTextChanged.connect(self._update_flat_dependent_visibility)
         masters_form.addRow("Flat maestro", self.flat_combo)
         layout.addWidget(masters_group)
 
         self.bad_pixel_check = QCheckBox("Detectar y corregir píxeles defectuosos automáticamente desde el flat")
         layout.addWidget(self.bad_pixel_check)
-        self._update_bad_pixel_visibility(self.flat_combo.currentText())
+
+        self.illumination_check = QCheckBox("Aplicar corrección de iluminación (patrón a gran escala derivado del flat maestro)")
+        layout.addWidget(self.illumination_check)
+        illumination_form = QFormLayout()
+        self.illumination_sigma_spin = QDoubleSpinBox()
+        self.illumination_sigma_spin.setRange(1.0, 500.0)
+        self.illumination_sigma_spin.setValue(25.0)
+        self.illumination_sigma_spin.setSuffix(" px")
+        illumination_form.addRow("Suavizado", self.illumination_sigma_spin)
+        layout.addLayout(illumination_form)
+        self._update_flat_dependent_visibility(self.flat_combo.currentText())
 
         fringe_row = QHBoxLayout()
         fringe_row.addWidget(QLabel("Patrón de franjas maestro (opcional)"))
@@ -124,6 +142,18 @@ class ReduceSessionDialog(QDialog):
         overscan_layout.addRow("Recorte columnas [inicio, fin)", self._region_row(self.trim_col_start, self.trim_col_end))
         layout.addWidget(overscan_group)
 
+        profile_row = QHBoxLayout()
+        profile_row.addWidget(QLabel("Perfil de instrumento"))
+        self.profile_combo = QComboBox()
+        self.profile_combo.addItem(NONE_OPTION)
+        self.profile_combo.addItems(sorted(self.profile_store.load_all().keys()))
+        self.profile_combo.currentTextChanged.connect(self._apply_profile)
+        profile_row.addWidget(self.profile_combo, 1)
+        save_profile_button = QPushButton("Guardar como perfil...")
+        save_profile_button.clicked.connect(self._save_current_as_profile)
+        profile_row.addWidget(save_profile_button)
+        layout.addLayout(profile_row)
+
         noise_form = QFormLayout()
         self.gain_spin = QDoubleSpinBox()
         self.gain_spin.setRange(0.01, 100.0)
@@ -151,6 +181,22 @@ class ReduceSessionDialog(QDialog):
         self.sigma_clip_spin.setSuffix(" sigma")
         combine_form.addRow("Rechazo de outliers", self.sigma_clip_spin)
         layout.addWidget(combine_group)
+
+        sky_group = QGroupBox("Corrección de cielo")
+        sky_group.setCheckable(True)
+        sky_group.setChecked(False)
+        self.sky_group = sky_group
+        sky_form = QFormLayout(sky_group)
+        self.sky_degree_spin = QSpinBox()
+        self.sky_degree_spin.setRange(0, 4)
+        self.sky_degree_spin.setValue(2)
+        sky_form.addRow("Grado del ajuste (0=nivel, 1=plano, 2=curvatura)", self.sky_degree_spin)
+        self.sky_sigma_clip_spin = QDoubleSpinBox()
+        self.sky_sigma_clip_spin.setRange(1.0, 20.0)
+        self.sky_sigma_clip_spin.setValue(3.0)
+        self.sky_sigma_clip_spin.setSuffix(" sigma")
+        sky_form.addRow("Rechazo de fuentes", self.sky_sigma_clip_spin)
+        layout.addWidget(sky_group)
 
         output_row = QHBoxLayout()
         output_row.addWidget(QLabel("Carpeta de salida"))
@@ -190,16 +236,60 @@ class ReduceSessionDialog(QDialog):
         row.addWidget(end)
         return row
 
-    def _update_bad_pixel_visibility(self, flat_name: str) -> None:
-        self.bad_pixel_check.setEnabled(flat_name != NONE_OPTION)
-        if flat_name == NONE_OPTION:
+    def _update_flat_dependent_visibility(self, flat_name: str) -> None:
+        has_flat = flat_name != NONE_OPTION
+        self.bad_pixel_check.setEnabled(has_flat)
+        self.illumination_check.setEnabled(has_flat)
+        if not has_flat:
             self.bad_pixel_check.setChecked(False)
+            self.illumination_check.setChecked(False)
 
     def _add_files(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(self, "Seleccionar LIGHTS", "", "FITS (*.fits *.fit *.fts);;Todos los archivos (*.*)")
+        self._add_paths_to_list(paths)
+
+    def _add_paths_to_list(self, paths: list[str]) -> None:
+        existing = set(self._selected_paths())
         for path in paths:
+            if path in existing:
+                continue
             self.file_list.addItem(Path(path).name)
             self.file_list.item(self.file_list.count() - 1).setData(Qt.ItemDataRole.UserRole, path)
+
+    def _add_folder_classified(self) -> None:
+        directory = QFileDialog.getExistingDirectory(self, "Carpeta con la sesión")
+        if not directory:
+            return
+        fits_paths = sorted(
+            str(p) for p in Path(directory).iterdir() if p.suffix.lower() in (".fits", ".fit", ".fts") and p.is_file()
+        )
+        if not fits_paths:
+            self.status_label.setText("La carpeta no contiene ningún FITS.")
+            return
+
+        from astrophysics_suite.io.fits_header_reader import read_fits_header
+
+        headers_by_path = {}
+        unreadable = 0
+        for path in fits_paths:
+            try:
+                headers_by_path[path] = read_fits_header(path)
+            except Exception:  # noqa: BLE001 -- un archivo corrupto no debe abortar la clasificación del resto
+                unreadable += 1
+
+        classified = classify_session_headers(headers_by_path)
+        lights = [c.path for c in classified if c.frame_type == "light"]
+        counts = {frame_type: sum(1 for c in classified if c.frame_type == frame_type) for frame_type in ("bias", "dark", "flat", "light", "unknown")}
+        self._add_paths_to_list(lights)
+
+        summary = (
+            f"Carpeta clasificada: {counts['light']} LIGHT(s) añadida(s), "
+            f"{counts['bias']} bias, {counts['dark']} dark, {counts['flat']} flat, "
+            f"{counts['unknown']} sin clasificar omitidos"
+        )
+        if unreadable:
+            summary += f", {unreadable} ilegible(s)"
+        self.status_label.setText(summary)
 
     def _selected_paths(self) -> list[str]:
         return [self.file_list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.file_list.count())]
@@ -215,6 +305,53 @@ class ReduceSessionDialog(QDialog):
         if directory:
             self._output_dir = directory
             self.output_label.setText(directory)
+
+    def _apply_profile(self, name: str) -> None:
+        if name == NONE_OPTION:
+            return
+        profiles = self.profile_store.load_all()
+        profile = profiles.get(name)
+        if profile is None:
+            return
+        self.gain_spin.setValue(profile.gain_e_per_adu)
+        self.read_noise_spin.setValue(profile.read_noise_e)
+        has_overscan = None not in (
+            profile.overscan_row_start,
+            profile.overscan_row_end,
+            profile.overscan_col_start,
+            profile.overscan_col_end,
+        )
+        if has_overscan:
+            self.overscan_group.setChecked(True)
+            self.overscan_row_start.setValue(profile.overscan_row_start)
+            self.overscan_row_end.setValue(profile.overscan_row_end)
+            self.overscan_col_start.setValue(profile.overscan_col_start)
+            self.overscan_col_end.setValue(profile.overscan_col_end)
+
+    def _save_current_as_profile(self) -> None:
+        name, ok = QInputDialog.getText(self, "Guardar perfil de instrumento", "Nombre del instrumento:")
+        name = name.strip()
+        if not ok or not name:
+            return
+        overscan_values = (
+            (self.overscan_row_start.value(), self.overscan_row_end.value(), self.overscan_col_start.value(), self.overscan_col_end.value())
+            if self.overscan_group.isChecked()
+            else (None, None, None, None)
+        )
+        profile = InstrumentProfile(
+            name=name,
+            gain_e_per_adu=self.gain_spin.value(),
+            read_noise_e=self.read_noise_spin.value(),
+            overscan_row_start=overscan_values[0],
+            overscan_row_end=overscan_values[1],
+            overscan_col_start=overscan_values[2],
+            overscan_col_end=overscan_values[3],
+        )
+        self.profile_store.save(profile)
+        if self.profile_combo.findText(name) < 0:
+            self.profile_combo.addItem(name)
+        self.profile_combo.setCurrentText(name)
+        self.status_label.setText(f"Perfil «{name}» guardado.")
 
     @staticmethod
     def _slice_or_none(start: QSpinBox, end: QSpinBox) -> slice:
@@ -251,12 +388,17 @@ class ReduceSessionDialog(QDialog):
                 )
 
         build_bad_pixels = self.bad_pixel_check.isChecked() and master_flat is not None
+        apply_illumination = self.illumination_check.isChecked() and master_flat is not None
+        illumination_sigma = self.illumination_sigma_spin.value()
         fringe_path = self._fringe_path
         gain = self.gain_spin.value()
         read_noise = self.read_noise_spin.value()
         combine = self.combine_group.isChecked()
         combine_method = self.combine_method_combo.currentText()
         sigma_clip = self.sigma_clip_spin.value()
+        subtract_sky = self.sky_group.isChecked()
+        sky_degree = self.sky_degree_spin.value()
+        sky_sigma_clip = self.sky_sigma_clip_spin.value()
         output_dir = self._output_dir
 
         def run() -> SessionReductionOutcome:
@@ -279,6 +421,7 @@ class ReduceSessionDialog(QDialog):
 
             master_fringe_data = load_image(fringe_path, band="", role="calibration").legacy_image.data if fringe_path else None
             bad_pixel_mask = build_bad_pixel_mask(master_flat.data) if build_bad_pixels else None
+            illumination_map = build_illumination_map(master_flat.data, smoothing_sigma_px=illumination_sigma) if apply_illumination else None
 
             result = reduce_light_frames(
                 light_frames,
@@ -293,6 +436,10 @@ class ReduceSessionDialog(QDialog):
                 master_flat=master_flat,
                 bad_pixel_mask=bad_pixel_mask,
                 master_fringe=master_fringe_data,
+                illumination_map=illumination_map,
+                subtract_sky=subtract_sky,
+                sky_degree=sky_degree,
+                sky_sigma_clip=sky_sigma_clip,
                 combine=combine,
                 combine_method=combine_method,
                 combine_sigma_clip=sigma_clip,

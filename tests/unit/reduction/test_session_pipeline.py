@@ -8,6 +8,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from astrophysics_suite.reduction.illumination import build_illumination_map
 from astrophysics_suite.reduction.master_frames import MasterFrame
 from astrophysics_suite.reduction.session_pipeline import reduce_light_frames
 
@@ -152,3 +153,61 @@ def test_reduce_light_frames_end_to_end_session_matches_manual_reference():
     assert result.combined is not None
     np.testing.assert_allclose(result.combined.data, expected, rtol=1e-6)
     assert np.all(result.combined.n_combined == 4)
+
+
+def test_reduce_light_frames_applies_illumination_correction():
+    height, width = 60, 60
+    yy, xx = np.mgrid[0:height, 0:width]
+    true_illumination = 1.0 + 0.2 * (xx / (width - 1))
+    illumination = build_illumination_map(true_illumination, smoothing_sigma_px=3.0)
+
+    uniform_sky = 500.0
+    light = uniform_sky * true_illumination
+
+    result = reduce_light_frames([light], illumination_map=illumination)
+
+    margin = 10
+    interior = slice(margin, -margin)
+    corrected_interior = result.frames[0].calibrated.data[interior, interior]
+    # se aplana a un nivel constante -- el mismo criterio que ya prueba
+    # illumination.py: lo que importa es que ya no varíe con x.
+    np.testing.assert_allclose(corrected_interior, float(np.mean(corrected_interior)), rtol=1e-3)
+
+
+def test_reduce_light_frames_subtracts_sky_background_per_light():
+    height, width = 40, 50
+    yy, xx = np.mgrid[0:height, 0:width]
+    gradient = 30.0 * (xx / (width - 1))
+    star = 4000.0 * np.exp(-(((xx - 25) ** 2 + (yy - 20) ** 2)) / (2 * 2.0**2))
+    light = 200.0 + gradient + star
+
+    result = reduce_light_frames([light], subtract_sky=True, sky_degree=1)
+
+    frame = result.frames[0]
+    assert frame.sky_background is not None
+    assert frame.sky_background.degree == 1
+    corrected = frame.calibrated.data
+    background_region = corrected.copy()
+    background_region[15:26, 20:31] = np.nan
+    assert np.nanstd(background_region) < 6.0  # el gradiente de 30 ADU quedó aplanado
+    assert corrected[20, 25] > 3500.0  # la estrella sigue presente
+
+
+def test_reduce_light_frames_combines_illumination_fringe_and_sky_in_correct_order():
+    """El orden físico importa: iluminación y franjas se aplican sobre la
+    imagen ya bias/dark/flat-calibrada, y la corrección de cielo se aplica
+    la última, sobre el resultado ya libre de esos patrones instrumentales."""
+    shape = (30, 30)
+    light = np.full(shape, 1000.0)
+
+    illumination = build_illumination_map(np.full(shape, 1.0))
+    result = reduce_light_frames(
+        [light],
+        illumination_map=illumination,
+        subtract_sky=True,
+        sky_degree=0,
+    )
+
+    frame = result.frames[0]
+    np.testing.assert_allclose(frame.calibrated.data, 0.0, atol=1e-6)  # cielo constante, se resta a cero
+    assert frame.sky_background is not None

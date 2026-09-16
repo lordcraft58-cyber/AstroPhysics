@@ -198,3 +198,156 @@ def test_reduce_session_dialog_reports_missing_exptime_without_crashing(qapp, ma
     assert "EXPTIME" in dialog.status_label.text()
     assert shown.get("called") is True
     assert not (tmp_path / "out").exists() or not list((tmp_path / "out").glob("*.fits"))
+
+
+def test_reduce_session_dialog_applies_illumination_correction_end_to_end(qapp, main_window, tmp_path):
+    """Aísla la mecánica de la corrección de iluminación (división extra
+    por el mapa suavizado derivado del propio flat maestro), no un
+    escenario de flat de cúpula frente a flat de cielo -- esa distinción
+    física ya la prueban test_illumination.py y
+    test_session_pipeline.py; aquí solo se confirma que la casilla de la
+    GUI conecta de verdad con el motor y produce el valor exacto
+    esperado."""
+    from astrophysics_suite.reduction.master_frames import MasterFrame
+    from qt_app.reduction.reduce_session_dialog import ReduceSessionDialog
+
+    shape = (80, 80)
+    margin = 20
+    yy, xx = np.mgrid[0:shape[0], 0:shape[1]]
+    gradient = 1.0 + 0.3 * (xx / (shape[1] - 1))
+    flat_master = MasterFrame(data=gradient, uncertainty=np.zeros(shape), n_combined=np.full(shape, 5), kind="flat")
+    main_window.master_frame_library.add("Flat-illum", flat_master)
+
+    science_level = 1000.0
+    light = science_level * gradient  # tras el flat-fielding normal, queda perfectamente plana
+    light_path = tmp_path / "light_illum.fits"
+    hdu = fits.PrimaryHDU(light.astype(np.float32))
+    hdu.writeto(light_path)
+
+    output_dir = tmp_path / "out_illum"
+    dialog = ReduceSessionDialog(main_window.master_frame_library, main_window)
+    _inject_paths(dialog.file_list, [str(light_path)])
+    dialog.flat_combo.setCurrentText("Flat-illum")
+    assert dialog.illumination_check.isEnabled()
+    dialog.illumination_check.setChecked(True)
+    dialog.illumination_sigma_spin.setValue(3.0)
+    dialog.combine_group.setChecked(False)
+    dialog._output_dir = str(output_dir)
+
+    dialog._on_run()
+    _wait_worker(qapp, dialog)
+
+    assert dialog.status_label.text() == ""
+    with fits.open(output_dir / "light_illum_calibrada.fits") as hdul:
+        data = hdul[0].data
+
+    from astrophysics_suite.reduction.illumination import apply_illumination_correction, build_illumination_map
+
+    expected_map = build_illumination_map(gradient, smoothing_sigma_px=3.0)
+    expected = apply_illumination_correction(np.full(shape, science_level), expected_map)
+    interior = slice(margin, -margin)
+    np.testing.assert_allclose(data[interior, interior], expected[interior, interior], rtol=1e-3)
+
+
+def test_reduce_session_dialog_applies_sky_background_correction_end_to_end(qapp, main_window, tmp_path):
+    from qt_app.reduction.reduce_session_dialog import ReduceSessionDialog
+
+    shape = (40, 50)
+    yy, xx = np.mgrid[0:shape[0], 0:shape[1]]
+    gradient = 30.0 * (xx / (shape[1] - 1))
+    star = 4000.0 * np.exp(-(((xx - 25) ** 2 + (yy - 20) ** 2)) / (2 * 2.0**2))
+    light = 200.0 + gradient + star
+    light_path = tmp_path / "light_sky.fits"
+    fits.PrimaryHDU(light.astype(np.float32)).writeto(light_path)
+
+    output_dir = tmp_path / "out_sky"
+    dialog = ReduceSessionDialog(main_window.master_frame_library, main_window)
+    _inject_paths(dialog.file_list, [str(light_path)])
+    dialog.sky_group.setChecked(True)
+    dialog.sky_degree_spin.setValue(1)
+    dialog.combine_group.setChecked(False)
+    dialog._output_dir = str(output_dir)
+
+    dialog._on_run()
+    _wait_worker(qapp, dialog)
+
+    assert dialog.status_label.text() == ""
+    with fits.open(output_dir / "light_sky_calibrada.fits") as hdul:
+        data = hdul[0].data.copy()
+
+    background_region = data.copy()
+    background_region[15:26, 20:31] = np.nan
+    assert np.nanstd(background_region) < 6.0  # el gradiente de 30 ADU quedó aplanado
+    assert data[20, 25] > 3500.0  # la estrella sigue presente
+
+
+def test_reduce_session_dialog_add_folder_classified_only_adds_lights(qapp, main_window, tmp_path, monkeypatch):
+    import qt_app.reduction.reduce_session_dialog as reduce_session_dialog_module
+    from qt_app.reduction.reduce_session_dialog import ReduceSessionDialog
+
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+
+    def _write(name, imagetyp):
+        path = session_dir / name
+        hdu = fits.PrimaryHDU(np.full((10, 10), 100.0, dtype=np.float32))
+        hdu.header["IMAGETYP"] = imagetyp
+        hdu.writeto(path)
+        return path
+
+    _write("bias_0.fits", "Bias Frame")
+    _write("dark_0.fits", "Dark Frame")
+    _write("flat_0.fits", "Flat Field")
+    _write("light_0.fits", "Light Frame")
+    _write("light_1.fits", "Light Frame")
+    (session_dir / "not_fits.txt").write_text("no soy un FITS")
+
+    monkeypatch.setattr(
+        reduce_session_dialog_module.QFileDialog, "getExistingDirectory", staticmethod(lambda *a, **k: str(session_dir))
+    )
+
+    dialog = ReduceSessionDialog(main_window.master_frame_library, main_window)
+    dialog._add_folder_classified()
+
+    selected = {Path(p).name for p in dialog._selected_paths()}
+    assert selected == {"light_0.fits", "light_1.fits"}
+    assert "2 LIGHT(s)" in dialog.status_label.text()
+    assert "1 bias" in dialog.status_label.text()
+    assert "1 dark" in dialog.status_label.text()
+    assert "1 flat" in dialog.status_label.text()
+
+
+def test_reduce_session_dialog_saves_and_applies_instrument_profile(qapp, main_window, tmp_path, monkeypatch):
+    import qt_app.reduction.reduce_session_dialog as reduce_session_dialog_module
+    from qt_app.reduction.reduce_session_dialog import ReduceSessionDialog
+    from services.instrument_profiles import InstrumentProfileStore
+
+    store = InstrumentProfileStore(tmp_path / "profiles.json")
+
+    monkeypatch.setattr(
+        reduce_session_dialog_module.QInputDialog, "getText", staticmethod(lambda *a, **k: ("ZWO ASI2600MM", True))
+    )
+
+    dialog = ReduceSessionDialog(main_window.master_frame_library, main_window, profile_store=store)
+    dialog.gain_spin.setValue(0.8)
+    dialog.read_noise_spin.setValue(3.5)
+    dialog.overscan_group.setChecked(True)
+    dialog.overscan_row_start.setValue(0)
+    dialog.overscan_row_end.setValue(5)
+    dialog.overscan_col_start.setValue(0)
+    dialog.overscan_col_end.setValue(0)
+
+    dialog._save_current_as_profile()
+
+    assert "ZWO ASI2600MM" in store.load_all()
+    assert dialog.profile_combo.currentText() == "ZWO ASI2600MM"
+
+    fresh_dialog = ReduceSessionDialog(main_window.master_frame_library, main_window, profile_store=store)
+    assert fresh_dialog.profile_combo.findText("ZWO ASI2600MM") >= 0
+    fresh_dialog.gain_spin.setValue(1.0)  # valor distinto para comprobar que el perfil de verdad lo cambia
+    fresh_dialog.profile_combo.setCurrentText("ZWO ASI2600MM")
+
+    assert fresh_dialog.gain_spin.value() == pytest.approx(0.8)
+    assert fresh_dialog.read_noise_spin.value() == pytest.approx(3.5)
+    assert fresh_dialog.overscan_group.isChecked()
+    assert fresh_dialog.overscan_row_end.value() == 5
