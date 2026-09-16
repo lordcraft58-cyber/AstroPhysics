@@ -88,7 +88,18 @@ except Exception:
     photutils = None
 
 try:
-    from photutils.background import Background2D, MedianBackground, SigmaClip
+    from photutils.background import Background2D, MedianBackground
+    try:
+        # photutils >= 2.0 dejó de reexportar SigmaClip (ahora vive
+        # solo en astropy.stats) -- sin este fallback, la importación
+        # entera de arriba fallaba con ImportError (verificado con
+        # photutils 3.0.0), lo que apagaba HAS_PHOTUTILS_BACKGROUND por
+        # completo y forzaba SIEMPRE el bucle Python tile-a-tile de más
+        # abajo, mucho más lento en imágenes reales (varios segundos
+        # extra por imagen, siempre, no solo en casos raros).
+        from photutils.background import SigmaClip
+    except ImportError:
+        from astropy.stats import SigmaClip
     HAS_PHOTUTILS_BACKGROUND = True
 except Exception:
     Background2D = MedianBackground = SigmaClip = None
@@ -10309,8 +10320,17 @@ def _dao_column(tab, wanted):
     if wanted.lower() in wl:
         return wl[wanted.lower()]
     aliases = {
-        "xcentroid": ("xcentroid", "x_peak", "xpos", "x"),
-        "ycentroid": ("ycentroid", "y_peak", "ypos", "y"),
+        # photutils >= 1.13 renombró xcentroid/ycentroid -> x_centroid/
+        # y_centroid en las tablas de salida de DAOStarFinder/IRAFStarFinder
+        # (QTable, no la Table antigua) -- sin este alias, cualquier
+        # instalación con un photutils reciente (verificado con 3.0.0) no
+        # encuentra la columna, dispara el RuntimeError de más abajo, y
+        # cae siempre al detector legacy en Python puro -- mucho más
+        # lento en imágenes reales (varios segundos extra por imagen en
+        # una cámara de ~26 MP), silenciosamente, sin que nada lo avise
+        # salvo un LOG.warning fácil de pasar por alto.
+        "xcentroid": ("xcentroid", "x_centroid", "x_peak", "xpos", "x"),
+        "ycentroid": ("ycentroid", "y_centroid", "y_peak", "ypos", "y"),
         "flux": ("flux", "source_flux"),
     }
     for a in aliases.get(wanted, (wanted,)):
