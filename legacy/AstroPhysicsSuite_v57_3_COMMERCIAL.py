@@ -180,17 +180,6 @@ class FilterTransmission:
     approximate: bool = False
     units: str = "nm"
 
-@dataclass
-class FilterResponse:
-    name_filter: str
-    transmission_oiii_4959: float
-    transmission_oiii_5007: float
-    transmission_ha_6563: float
-    transmission_nii_6548: float
-    transmission_nii_6584: float
-    integration_method: str = "sample_at_line"
-    warnings: list[str] = field(default_factory=list)
-
 def _normalise_curve_columns(rows):
     if not rows:
         raise ValueError("Curva de filtro vacía")
@@ -252,16 +241,6 @@ def load_filter_curve(path, name=None):
 
 def _curve_eval(curve, wave_nm):
     return float(np.interp(float(wave_nm), curve.wavelength_nm, curve.transmission, left=0.0, right=0.0))
-
-def build_filter_response(curve: FilterTransmission, name=None):
-    source_note="Curva T(λ) medida/proporcionada" if (curve is not None and not bool(getattr(curve,"approximate",False))) else "Curva T(λ) nominal/aproximada"
-    return FilterResponse(name_filter=name or curve.name,
-                          transmission_oiii_4959=_curve_eval(curve,495.9),
-                          transmission_oiii_5007=_curve_eval(curve,500.7),
-                          transmission_ha_6563=_curve_eval(curve,656.3),
-                          transmission_nii_6548=_curve_eval(curve,654.8),
-                          transmission_nii_6584=_curve_eval(curve,658.4),
-                          warnings=[f"{source_note}: integración simplificada en líneas; QE/atmósfera no incluidas salvo que se proporcionen."])
 
 def demix_two_filters(o1,o2,t1_oiii,t1_ha,t2_oiii,t2_ha,sigma1=None,sigma2=None,mc=0,seed=0):
     A=np.array([[float(t1_oiii),float(t1_ha)],[float(t2_oiii),float(t2_ha)]],float)
@@ -728,27 +707,6 @@ def query_gaia_sources(ra_deg, dec_deg, radius_deg=0.5, mag_limit=GAIA_DEFAULT_M
         return None
 
 
-def estimate_field_center_from_gaia(ra_hint, dec_hint, radius_deg=0.5,
-                                     mag_limit=17.0, max_rows=3000):
-    if not HAS_GAIA:
-        return None, None, 0, "Gaia no disponible"
-    tbl = query_gaia_sources(ra_hint, dec_hint, radius_deg, mag_limit, max_rows)
-    if tbl is None or len(tbl) < 5:
-        n = 0 if tbl is None else len(tbl)
-        return None, None, n, f"Gaia: solo {n} fuentes"
-    ra = np.asarray(tbl["ra"], float)
-    dec = np.asarray(tbl["dec"], float)
-    ra_c = float(np.median(ra))
-    dec_c = float(np.median(dec))
-    return (ra_c, dec_c, len(tbl),
-            f"Gaia DR3 centroide: {len(tbl)} fuentes → RA={ra_c:.5f}°, Dec={dec_c:.5f}°")
-
-
-def gaia_distance_pc(ra_deg, dec_deg, radius_deg=0.3, max_rows=500):
-    """Deprecated: no uses mediana de paralajes de estrellas de campo como distancia del remanente."""
-    raise RuntimeError("No se permite derivar la distancia del remanente con la mediana de estrellas de campo; use una distancia justificada e independiente.")
-
-
 def verify_wcs_with_gaia(im, detected_sources, max_match_arcsec=3.0):
     """Comprueba WCS mediante correspondencias estrictamente uno-a-uno."""
     if im.wcs is None or not HAS_GAIA or detected_sources is None or len(detected_sources) < 5:
@@ -1116,22 +1074,6 @@ def stellar_summary(stars):
 # ====================================================================
 # RESOLUCIÓN DE CENTRO / RADIO
 # ====================================================================
-def resolve_object_center_legacy(target_name: str, ra_hint=None, dec_hint=None):
-    if target_name and HAS_SIMBAD:
-        try:
-            s = Simbad()
-            result = s.query_object(target_name)
-            if result is not None and len(result) > 0:
-                ra = float(result['ra'][0]); dec = float(result['dec'][0])
-                return ra, dec, f"SIMBAD: {target_name} → RA={ra:.5f}°, Dec={dec:.5f}°"
-        except Exception as exc:
-            LOG.debug("SIMBAD falló: %s", exc)
-    if ra_hint is not None and dec_hint is not None and \
-       math.isfinite(ra_hint) and math.isfinite(dec_hint):
-        return float(ra_hint), float(dec_hint), "RA/Dec manual"
-    return None, None, "no resuelto"
-
-
 def compute_remnant_radius_from_center(im_ha, rows, ra_c, dec_c, distance_pc):
     if im_ha.wcs is None or not math.isfinite(ra_c) or not math.isfinite(dec_c):
         return float("nan"), float("nan")
@@ -1157,32 +1099,6 @@ def compute_remnant_radius_from_center(im_ha, rows, ra_c, dec_c, distance_pc):
     except Exception as exc:
         LOG.warning("compute_remnant_radius: %s", exc)
         return float("nan"), float("nan")
-
-
-def estimate_remnant_radius_uncertainty(im_ha, rows, ra_c, dec_c, distance_pc, n_boot=500, seed=20260915):
-    """Estimación bootstrap reproducible de la incertidumbre geométrica del radio aproximado."""
-    if im_ha.wcs is None or not math.isfinite(finite(ra_c,float("nan"))) or not math.isfinite(finite(dec_c,float("nan"))):
-        return float("nan"), float("nan")
-    scale=finite(im_ha.pixel_scale_arcsec,float("nan"))
-    d=finite(distance_pc,float("nan"))
-    pts=np.array([[finite(r.get("x"),np.nan),finite(r.get("y"),np.nan)] for r in (rows or [])],float)
-    pts=pts[np.all(np.isfinite(pts),axis=1)]
-    if len(pts)<3 or not np.isfinite(scale) or scale<=0 or not np.isfinite(d) or d<=0:
-        return float("nan"), float("nan")
-    rng=np.random.default_rng(seed); vals=[]
-    for _ in range(int(max(100,n_boot))):
-        q=pts[rng.integers(0,len(pts),len(pts))]
-        cx,cy=np.median(q[:,0]),np.median(q[:,1])
-        try:
-            ra_an,dec_an=im_ha.pixel_to_world(np.array([cx]),np.array([cy]))
-            sep=angular_separation_arcsec(ra_an[0],dec_an[0],ra_c,dec_c)
-            rp=np.percentile(np.hypot(q[:,0]-cx,q[:,1]-cy),90)*scale
-            vals.append(sep+rp)
-        except Exception:
-            continue
-    if len(vals)<50: return float("nan"), float("nan")
-    arr=np.asarray(vals,float); lo,hi=np.percentile(arr,[16,84])
-    return float((hi-lo)/2), float(np.std(arr,ddof=1))
 
 
 def build_literature_comparison(summary, target_name, user_distance_pc=None):
@@ -1841,12 +1757,6 @@ def estimate_background(data, box=64, filter_size=3, clip_sigma=3.0, mask=None, 
     rms=ndi.map_coordinates(rm,[gy,gx],order=1,mode="nearest").astype(np.float32)
     return Background(bkg=bkg,rms=np.maximum(rms,1e-12),box=box)
 
-@dataclass
-class FITSQuality:
-    metadata: dict
-    mask: np.ndarray
-    variance: np.ndarray
-
 def wcs_quality_report(im: FitsImage) -> dict:
     """Diagnóstico WCS trazable: presencia, escala, orientación y huella."""
     out={"present":bool(im.wcs is not None),"celestial":False,
@@ -2050,42 +1960,6 @@ def _detect_point_sources_legacy(data, bkg, fwhm_px=3.0, threshold_sigma=6.0,
         if len(out) >= max_sources:
             break
     return np.asarray(out, dtype=np.float64).reshape(-1, 3)
-
-
-def detect_point_sources_legacy(data, bkg, fwhm_px=3.0, threshold_sigma=5.0,
-                         max_sources=3000, **_ignored_kwargs):
-    if HAS_PHOTUTILS:
-        try:
-            img = (np.asarray(data, np.float32) - np.asarray(bkg.bkg, np.float32))
-            img = np.where(np.isfinite(img), img, 0.0)
-            rms_med = float(np.median(np.asarray(bkg.rms, np.float32)))
-            threshold = float(threshold_sigma) * max(rms_med, 1e-9)
-            daofind = DAOStarFinder(
-                fwhm=float(fwhm_px),
-                threshold=threshold,
-                sharplo=DAO_SHARPLO, sharphi=DAO_SHARPHI,
-                roundlo=DAO_ROUNDLO, roundhi=DAO_ROUNDHI,
-                exclude_border=True,
-            )
-            sources = daofind(img)
-            if sources is None or len(sources) == 0:
-                LOG.info("DAOStarFinder: 0 fuentes (¿umbral alto?)")
-                return np.zeros((0, 3), dtype=np.float64)
-            xs = np.asarray(sources["xcentroid"], float)
-            ys = np.asarray(sources["ycentroid"], float)
-            flux = (np.asarray(sources["flux"], float)
-                    if "flux" in sources.colnames
-                    else np.ones_like(xs))
-            order = np.argsort(flux)[::-1][:int(max_sources)]
-            xs, ys, flux = xs[order], ys[order], flux[order]
-            LOG.info("DAOStarFinder: %d fuentes (σ=%.1f, fwhm=%.1f px)",
-                     len(xs), threshold_sigma, fwhm_px)
-            return np.column_stack([xs, ys, flux]).astype(np.float64)
-        except Exception as exc:
-            LOG.warning("DAOStarFinder falló (%s); usando detector legacy", exc)
-    return _detect_point_sources_legacy(
-        data, bkg, fwhm_px=fwhm_px, threshold_sigma=threshold_sigma,
-        max_sources=max_sources, **_ignored_kwargs)
 
 
 def enrich_star_rows(im: FitsImage, sources, bkg: Background):
@@ -4651,50 +4525,6 @@ def get_object_profile_config(target_name: str) -> dict:
     return base
 
 
-def _profile_selection_score(c, cfg):
-    def f(k, d=0.0): return finite(c.get(k), d)
-    snr = min(max(f("peak_snr_ha"),0),100) + min(max(f("peak_snr_oiii"),0),100)
-    oe = max(f("offset_err_px", np.nan), 1e-6)
-    osig = abs(f("offset_px")) / oe if np.isfinite(oe) else 0.0
-    n_expected = 2.0 * cfg.get("half_length_px",26) / 0.5 + 1.0
-    completeness = min(f("profile_valid_ha",0), f("profile_valid_o3",0)) / max(1.0,n_expected)
-    completeness = max(0.0,min(1.0,completeness))
-    aniso = f("anisotropy",0.5)
-    shape = max(0.0, 1.0 - abs(aniso-0.25)/0.75)
-    ridge = max(0.0,f("ridge_response"))
-    quality = 0.0 if c.get("profile_truncated") else 1.0
-    star_dist = f("source_distance_px",np.inf)
-    star_penalty = 1.0 if not np.isfinite(star_dist) else min(1.0,star_dist/max(1.0,cfg.get("min_separation_px",10)))
-    mode=cfg.get("selection")
-    if mode=="shell_completeness": return 3*snr+5*completeness+1.5*osig+2*shape+quality+star_penalty
-    if mode=="high_contrast": return 4*snr+3*osig+2*ridge+2*completeness+quality+star_penalty
-    return 3*snr+3*osig+3*completeness+1.5*shape+quality+star_penalty
-
-
-def select_optimal_profile_candidates(cands, target_name, max_profiles=24):
-    cfg=get_object_profile_config(target_name)
-    usable=[]; rejected=[]
-    for c in cands or []:
-        if c.get("candidate_type","shock")=="star":
-            c["status"]="rejected_star"; c["reason"]="fuente puntual identificada en las imágenes normales"; rejected.append(c); continue
-        if not c.get("keep",True): rejected.append(c); continue
-        if not np.isfinite(finite(c.get("snr_pix"),np.nan)) or finite(c.get("snr_pix"),0)<cfg["snr_min"]:
-            c["status"]="rejected_profile_selection"; c["reason"]="SNR inferior al umbral optimizado para el objeto"; rejected.append(c); continue
-        c["profile_selection_score"]=float(_profile_selection_score(c,cfg)); usable.append(c)
-    usable.sort(key=lambda x:(-finite(x.get("profile_selection_score"),-np.inf),-finite(x.get("snr_pix"),-np.inf),int(x.get("id",0))))
-    n=max(1,int(max_profiles)); selected=usable[:n]
-    for c in usable[n:]:
-        c["status"]="rejected_profile_selection"; c["reason"]=f"fuera del top-{n} optimizado para {cfg['canonical']}"; rejected.append(c)
-    for rank,c in enumerate(selected,1):
-        c["profile_rank"]=rank; c["profile_selection"]=cfg["selection"]; c["profile_geometry"]=cfg["geometry"]; c["profile_object"]=cfg["canonical"]
-        _off = finite(c.get("offset_px"), float("nan"))
-        _oe = max(finite(c.get("offset_err_px"), float("nan")), 1e-6)
-        _snr_sum = min(max(finite(c.get("peak_snr_ha"), 0), 100) + min(max(finite(c.get("peak_snr_oiii"), 0), 100), 100), 200)
-        _comp = min(finite(c.get("profile_valid_ha"),0), finite(c.get("profile_valid_o3"),0)) / max(1.0, 2.0*cfg.get("half_length_px",26)/0.5+1.0)
-        c["profile_score_components"]={"snr":float(_snr_sum), "offset_significance":float(abs(_off)/_oe) if np.isfinite(_off) else 0.0, "completeness":float(max(0.0,min(1.0,_comp)))}
-    return selected,rejected,cfg
-
-
 # ====================================================================
 # PIPELINE PRINCIPAL
 # ====================================================================
@@ -5731,7 +5561,8 @@ def write_html_report(payload,path,ha_image=None,o3_image=None):
     sc = payload.get("scientific_consistency")
     if sc:
         body.append("<h2>Verificación de Consistencia Científica</h2>")
-        body.append(f"<p><b>Estado:</b> {'<span class=\"ok\">PASS</span>' if sc.get('passed') else '<span class=\"warn\">FAIL</span>'}</p>")
+        _sc_badge = '<span class="ok">PASS</span>' if sc.get('passed') else '<span class="warn">FAIL</span>'
+        body.append(f"<p><b>Estado:</b> {_sc_badge}</p>")
         if sc.get("warnings"):
             body.append("<h3>Advertencias</h3><ul>")
             for w in sc["warnings"]:
@@ -6591,1021 +6422,6 @@ def read_fits_exptime(path):
 
 
 # ====================================================================
-# GUI
-# ====================================================================
-class _QueueLogHandler(logging.Handler):
-    def __init__(self, q):
-        super().__init__(level=logging.INFO)
-        self.q = q
-        self.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%H:%M:%S"))
-    def emit(self, record):
-        try:
-            self.q.put(("log", self.format(record)))
-        except Exception:
-            pass
-
-
-def launch_gui_legacy(oiii=None, ha=None, _test_hook=None):
-    try:
-        import tkinter as tk
-        from tkinter import ttk, filedialog, messagebox
-        from tkinter.scrolledtext import ScrolledText
-    except Exception as exc:
-        raise SystemExit(f"Tkinter no disponible ({exc})")
-    import queue
-    import threading
-    import traceback
-
-    tk_canvas_cls = None
-    if HAS_MPL:
-        try:
-            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg as tk_canvas_cls
-        except Exception:
-            tk_canvas_cls = None
-
-    class App:
-        TABLE_COLS = ["id", "status", "x", "y", "candidate_type", "offset_px",
-                      "offset_err_px", "offset_arcsec", "ratio", "log_ratio",
-                      "log_ratio_err", "front_class", "v_kms", "novelty_score",
-                      "novelty_state", "ai_class", "ai_class_probability", "reason"]
-
-        def __init__(self, root):
-            self.root = root
-            root.title(f"AstroPhysics Suite {__version__} — [O III]/Hα")
-            root.geometry("1550x980")
-            self.q = queue.Queue()
-            self.cancel = threading.Event()
-            self.worker = None
-            self.payload = None
-            self.image = None
-            self.image_o3 = None
-            self.image_starless = None
-            self.image_o3_starless = None
-            self.image_factor = 1
-            self.profile_keys = []
-            self.profile_pos = 0
-            self._tree_rows = {}
-            default_workers = max(1, min(4, (os.cpu_count() or 2) - 1))
-            self.vars = {
-                "oiii": tk.StringVar(value=oiii or ""),
-                "ha": tk.StringVar(value=ha or ""),
-                "broadband": tk.StringVar(value=""),
-                "science_ha": tk.StringVar(value=""),
-                "science_oiii": tk.StringVar(value=""),
-                "science_broadband": tk.StringVar(value=""),
-                "out": tk.StringVar(value=str(Path.cwd() / "gui_run")),
-                "light": tk.StringVar(value=""),
-                "grid": tk.StringVar(value=""),
-                "target_name": tk.StringVar(value=""),
-                "pixel_scale": tk.StringVar(value=""),
-                "distance": tk.StringVar(value="725"),
-                "n0": tk.StringVar(value="6.0"),
-                "snr": tk.StringVar(value="4.0"),
-                "maxc": tk.StringVar(value="2000"),
-                "mins": tk.StringVar(value="8"),
-                "workers": tk.StringVar(value=str(default_workers)),
-                "starless": tk.BooleanVar(value=False),
-                "register_stars": tk.BooleanVar(value=True),
-                "register_phase": tk.BooleanVar(value=False),
-                "processes": tk.BooleanVar(value=True),
-                "offline": tk.BooleanVar(value=False),
-        "discovery_snr": tk.StringVar(value="5"),
-        "discovery_max": tk.StringVar(value="2000"),
-                "accumulate": tk.BooleanVar(value=True),
-                "cal_nii_ha": tk.StringVar(value="0.0"),
-                "cal_ebv": tk.StringVar(value="0.0"),
-                "cal_ebv_err": tk.StringVar(value="0.0"),
-                "cal_frac_err": tk.StringVar(value="0.0"),
-                "oiii_filter": tk.StringVar(value=FILTER_DEFAULT),
-                "ha_filter": tk.StringVar(value=FILTER_DEFAULT),
-                "oiii_curve": tk.StringVar(value=""),
-                "ha_curve": tk.StringVar(value=""),
-                "photometric_calibrated": tk.BooleanVar(value=False),
-                "oiii_zp_factor": tk.StringVar(value="1.0"),
-                "ha_zp_factor": tk.StringVar(value="1.0"),
-                "r_v": tk.StringVar(value="3.1"),
-                "zeropoint_source": tk.StringVar(value=""),
-                "zeropoint_error_mag": tk.StringVar(value=""),
-                "calibration_id": tk.StringVar(value=""),
-                "profile_mode": tk.StringVar(value="Nebulosa / frentes"),
-                "oiii_starless": tk.StringVar(value=""),
-                "ha_starless":   tk.StringVar(value=""),
-                "oiii_stars":    tk.StringVar(value=""),
-                "ha_stars":      tk.StringVar(value=""),
-                "bias_oiii": tk.StringVar(value=""),
-                "bias_ha": tk.StringVar(value=""),
-                "dark_oiii": tk.StringVar(value=""),
-                "dark_ha": tk.StringVar(value=""),
-                "flat_oiii": tk.StringVar(value=""),
-                "flat_ha": tk.StringVar(value=""),
-                "filament_strategy": tk.StringVar(value="Hessian multiescala"),
-                "oiii_plane": tk.StringVar(value=""),
-                "ha_plane": tk.StringVar(value=""),
-                "ai_model": tk.StringVar(value=str(Path.cwd() / "astrodiscovery_v33.pkl")),
-                "ai_training": tk.StringVar(value=""),
-                "ai_min_rows": tk.StringVar(value="80"),
-                "ai_contamination": tk.StringVar(value="0.02"),
-                "ai_vision_model": tk.StringVar(value=str(Path.cwd() / "astrovision_v34.pt")),
-                "ai_vision_training": tk.StringVar(value=""),
-                "ai_vision_epochs": tk.StringVar(value="12"),
-            }
-            self.ai_session = None
-            self._build()
-            self._log_handler = _QueueLogHandler(self.q)
-            root_log = logging.getLogger()
-            if root_log.level > logging.INFO or root_log.level == logging.NOTSET:
-                root_log.setLevel(logging.INFO)
-            root_log.addHandler(self._log_handler)
-            root.after(100, self._poll)
-            root.protocol("WM_DELETE_WINDOW", self._close)
-
-        def _build(self):
-            top = ttk.Frame(self.root, padding=6); top.pack(fill="x")
-            r = 0
-            for key, label in (("oiii", "NORMAL · FITS [O III]"), ("ha", "NORMAL · FITS Hα"),
-                               ("broadband", "BANDA ANCHA · FITS Optolong L-Quad Enhance (opcional)"),
-                               ("out", "Carpeta de salida"),
-                               ("grid", "Grilla física (opcional; necesaria para inferencias de modelo)")):
-                ttk.Label(top, text=label, width=26).grid(row=r, column=0, sticky="w")
-                ttk.Entry(top, textvariable=self.vars[key], width=70).grid(row=r, column=1, sticky="we", padx=4)
-                ttk.Button(top, text="…", width=3, command=lambda k=key: self._pick(k)).grid(row=r, column=2)
-                r += 1
-            ttk.Button(top, text="Directorio con el par…", command=self._pick_dir).grid(row=0, column=3, padx=6)
-            sci = ttk.LabelFrame(top, text="MAPAS CIENTÍFICOS APILADOS · sin metadata obligatoria · píxel a píxel", padding=4)
-            sci.grid(row=r, column=0, columnspan=4, sticky="we", pady=4)
-            for key, label in (("science_ha", "Hα apilada"), ("science_oiii", "OIII apilada"), ("science_broadband", "Banda ancha/RGB (opcional)")):
-                ttk.Label(sci, text=label).pack(side="left", padx=(5,2))
-                ttk.Entry(sci, textvariable=self.vars[key], width=30).pack(side="left", padx=3)
-                ttk.Button(sci, text="...", width=3, command=lambda k=key: self._pick(k)).pack(side="left", padx=(0,7))
-            ttk.Button(sci, text="Analizar píxel a píxel", command=self._start_pixel_science).pack(side="left", padx=8)
-            r += 1
-            ttk.Label(top, text="Plano OIII / Hα (cubo, opcional):").grid(row=r, column=0, sticky="w")
-            ttk.Entry(top, textvariable=self.vars["oiii_plane"], width=12).grid(row=r, column=1, sticky="w", padx=4)
-            ttk.Entry(top, textvariable=self.vars["ha_plane"], width=12).grid(row=r, column=1, sticky="e", padx=4)
-            ttk.Label(top, text="formato: 0 o 0,1 para 4D").grid(row=r, column=2, columnspan=2, sticky="w")
-            r += 1
-            ttk.Label(top, text="Objeto (literatura):").grid(row=r, column=0, sticky="w")
-            ttk.Entry(top, textvariable=self.vars["target_name"], width=40).grid(row=r, column=1, sticky="we", padx=4)
-            r += 1
-            aux_frame = ttk.LabelFrame(top, text="STARLESS · única fuente de perfiles científicos", padding=4)
-            aux_frame.grid(row=r, column=0, columnspan=4, sticky="we", pady=4)
-            for key, label in (("oiii_starless", "STARLESS [O III]"), ("ha_starless", "STARLESS Hα")):
-                ttk.Label(aux_frame, text=label, width=18).pack(side="left", padx=(6, 2))
-                ttk.Entry(aux_frame, textvariable=self.vars[key], width=34).pack(side="left", padx=(0, 4))
-                ttk.Button(aux_frame, text="...", width=3, command=lambda k=key: self._pick(k)).pack(side="left", padx=(0, 12))
-            ttk.Label(aux_frame, text="Las normales alimentan estrellas/registro; las starless alimentan exclusivamente perfiles y crestas.").pack(side="left", padx=6)
-            r += 1
-            ttk.Label(top, text="v30: bias/dark/flat y stars-only se han retirado del selector científico; use masters previos o el flujo de calibración externo del observatorio.").grid(row=r, column=0, columnspan=4, sticky="w", pady=2)
-            r += 1
-            fil = ttk.LabelFrame(top, text="Sistema óptico permitido", padding=4)
-            fil.grid(row=r, column=0, columnspan=4, sticky="we", pady=4)
-            ttk.Label(fil, text="Filtro óptico:").pack(side="left", padx=(6, 4))
-            ttk.Combobox(fil, textvariable=self.vars["oiii_filter"], state="readonly",
-                         values=FILTER_NARROWBAND_VISIBLE, width=38).pack(side="left", padx=4)
-            ttk.Label(fil, text="SV220 para ambos canales Hα/OIII · L-QEF se carga aparte como broadband · Color: Gaia DR3 XP / SPCC-compatible").pack(side="left", padx=12)
-            r += 1
-            ttk.Label(top, text="Nota: los presets identifican el filtro; la calibración espectrofotométrica exige respuesta T(λ) real y Gaia XP.").grid(row=r,column=0,columnspan=4,sticky="w",pady=2)
-            r += 1
-            resp = ttk.Frame(top); resp.grid(row=r,column=0,columnspan=4,sticky="w",pady=2)
-            ttk.Label(resp,text="Curva T(λ) medida del filtro (opcional):").pack(side="left",padx=(6,2))
-            ttk.Entry(resp,textvariable=self.vars["oiii_curve"],width=58).pack(side="left",padx=4)
-            ttk.Button(resp,text="…",width=3,command=lambda:self._pick("oiii_curve")).pack(side="left",padx=(0,8))
-            ttk.Label(resp,text="una sola curva se usa para ambos canales").pack(side="left")
-            r += 1
-            par = ttk.Frame(top); par.grid(row=r, column=0, columnspan=4, sticky="w", pady=4)
-            for key, label in (("distance", "d (pc)"), ("n0", "n0 (cm⁻³)"),
-                               ("snr", "SNR mín"), ("maxc", "máx. cand."),
-                               ("mins", "sep. mín (px)"),
-                               ("workers", "workers"), ("pixel_scale", "escala ″/px")):
-                ttk.Label(par, text=label).pack(side="left")
-                ttk.Entry(par, textvariable=self.vars[key], width=8).pack(side="left", padx=(2, 10))
-            r += 1
-            mode = ttk.Frame(top); mode.grid(row=r, column=0, columnspan=4, sticky="w", pady=4)
-            ttk.Label(mode, text="Modo científico v30: NORMAL → estrellas/registro  |  STARLESS → perfiles/crestas").pack(side="left", padx=6)
-            ttk.Checkbutton(mode, text="Usar procesos", variable=self.vars["processes"]).pack(side="left", padx=10)
-            ttk.Checkbutton(mode, text="Modo offline (sin Gaia/SIMBAD)", variable=self.vars["offline"]).pack(side="left", padx=6)
-            ttk.Checkbutton(mode, text="Acumular candidatos", variable=self.vars["accumulate"]).pack(side="left", padx=6)
-            ttk.Label(mode,text="Detección:").pack(side="left",padx=(12,2))
-            ttk.Combobox(mode,textvariable=self.vars["filament_strategy"],state="readonly",width=20,
-                         values=["Hessian multiescala","Canny adaptativo"]).pack(side="left",padx=3)
-            r += 1
-            top.columnconfigure(1, weight=1)
-
-            bar = ttk.Frame(self.root, padding=(6, 0)); bar.pack(fill="x")
-            self.btn_run = ttk.Button(bar, text="Analizar", command=self._start)
-            self.btn_run.pack(side="left")
-            self.btn_cancel = ttk.Button(bar, text="Cancelar", command=self._cancel, state="disabled")
-            self.btn_cancel.pack(side="left", padx=4)
-            ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=8)
-            ttk.Button(bar, text="Abrir catalog.json…", command=self._open_catalog).pack(side="left")
-            ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=8)
-            ttk.Button(bar, text="Ejecutar script…", command=self._run_script).pack(side="left")
-            ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=8)
-            self.btn_export = []
-            for label, fn in (("Exportar JSON", self._export_json),
-                              ("Exportar CSV", self._export_csv),
-                              ("Exportar PDF", self._export_pdf),
-                              ("Exportar HTML", self._export_html)):
-                b = ttk.Button(bar, text=label, command=fn, state="disabled")
-                b.pack(side="left", padx=2); self.btn_export.append(b)
-            self.progress = ttk.Progressbar(bar, mode="determinate", maximum=1.0, length=260)
-            self.progress.pack(side="right", padx=6)
-            self.status = ttk.Label(bar, text="Listo"); self.status.pack(side="right")
-
-            ai_frame = ttk.LabelFrame(self.root, text="ASTRODISCOVERY AI v34 · visión + física · sesión persistente", padding=4)
-            ai_frame.pack(fill="x", padx=6, pady=(0, 4))
-            ttk.Label(ai_frame, text="Modelo .pkl:").pack(side="left", padx=(4,2))
-            ttk.Entry(ai_frame, textvariable=self.vars["ai_model"], width=42).pack(side="left", padx=3)
-            ttk.Button(ai_frame, text="…", width=3, command=lambda:self._pick("ai_model")).pack(side="left")
-            ttk.Label(ai_frame, text="Entrenamiento CSV/JSON:").pack(side="left", padx=(10,2))
-            ttk.Entry(ai_frame, textvariable=self.vars["ai_training"], width=42).pack(side="left", padx=3)
-            ttk.Button(ai_frame, text="…", width=3, command=lambda:self._pick("ai_training")).pack(side="left")
-            ttk.Button(ai_frame, text="Cargar / entrenar IA física", command=self._ai_prepare).pack(side="left", padx=8)
-            ttk.Label(ai_frame, text="CNN visual .pt:").pack(side="left", padx=(10,2))
-            ttk.Entry(ai_frame, textvariable=self.vars["ai_vision_model"], width=34).pack(side="left", padx=3)
-            ttk.Button(ai_frame, text="…", width=3, command=lambda:self._pick("ai_vision_model")).pack(side="left")
-            ttk.Label(ai_frame, text="Directorio de imágenes reales:").pack(side="left", padx=(10,2))
-            ttk.Entry(ai_frame, textvariable=self.vars["ai_vision_training"], width=34).pack(side="left", padx=3)
-            ttk.Button(ai_frame, text="…", width=3, command=lambda:self._pick("ai_vision_training")).pack(side="left")
-            ttk.Button(ai_frame, text="Entrenar visión", command=self._ai_vision_prepare).pack(side="left", padx=8)
-            self.ai_status = ttk.Label(ai_frame, text="IA no cargada")
-            self.ai_status.pack(side="left", padx=8)
-
-            self.nb = ttk.Notebook(self.root); self.nb.pack(fill="both", expand=True, padx=6, pady=6)
-            tab = ttk.Frame(self.nb); self.nb.add(tab, text="Catálogo")
-            fl = ttk.Frame(tab); fl.pack(fill="x")
-            ttk.Label(fl, text="Filtro:").pack(side="left")
-            self.filter_var = tk.StringVar(value="todos")
-            cb = ttk.Combobox(fl, textvariable=self.filter_var,
-                              values=["todos", "frentes (shock)", "estrellas", "ok", "rechazados/error"],
-                              width=20, state="readonly")
-            cb.pack(side="left", padx=4)
-            cb.bind("<<ComboboxSelected>>", lambda e: self._fill_table())
-            self.summary_lbl = ttk.Label(fl, text=""); self.summary_lbl.pack(side="left", padx=10)
-            self.tree = ttk.Treeview(tab, columns=self.TABLE_COLS, show="headings", selectmode="browse")
-            for c in self.TABLE_COLS:
-                self.tree.heading(c, text=c)
-                self.tree.column(c, width=70 if c not in ("reason", "front_class", "status",
-                                                          "candidate_type") else 170,
-                                 anchor="center")
-            ys = ttk.Scrollbar(tab, orient="vertical", command=self.tree.yview)
-            xs = ttk.Scrollbar(tab, orient="horizontal", command=self.tree.xview)
-            self.tree.configure(yscrollcommand=ys.set, xscrollcommand=xs.set)
-            self.tree.pack(side="left", fill="both", expand=True)
-            ys.pack(side="right", fill="y"); xs.pack(side="bottom", fill="x")
-            self.tree.bind("<<TreeviewSelect>>", self._on_select)
-            stars_tab = ttk.Frame(self.nb); self.nb.add(stars_tab, text="Estrellas")
-            self.stars_summary = ttk.Label(stars_tab, text="Sin caracterización estelar")
-            self.stars_summary.pack(fill="x", padx=6, pady=4)
-            self.stars_notes = ScrolledText(stars_tab, height=7, wrap="word",
-                                            font=("TkDefaultFont", 9))
-            self.stars_notes.pack(fill="x", padx=6, pady=(0, 4))
-            star_cols = ("source_id", "g_mag", "bp_rp", "teff_k", "spectral_class_est",
-                         "luminosity_class_est", "pm_total_masyr", "distance_pc",
-                         "simbad_main_id", "simbad_otype", "interest")
-            self.star_tree = ttk.Treeview(stars_tab, columns=star_cols, show="headings")
-            for c in star_cols:
-                self.star_tree.heading(c, text=c)
-                self.star_tree.column(c,
-                    width=95 if c not in ("interest", "simbad_main_id", "simbad_otype") else 240,
-                    anchor="center")
-            star_ys = ttk.Scrollbar(stars_tab, orient="vertical", command=self.star_tree.yview)
-            self.star_tree.configure(yscrollcommand=star_ys.set)
-            self.star_tree.pack(side="left", fill="both", expand=True)
-            star_ys.pack(side="right", fill="y")
-            self.star_tree.bind("<Double-1>", self._on_star_select)
-            self.figs = {}; self.canvases = {}
-            for name, title in (("profiles", "Perfiles"), ("ratio", "Ratio [OIII]/Hα"),
-                                ("cooling", "Enfriamiento Hα/[OIII]"),
-                                ("map", "Composición"), ("diagram", "Diagrama")):
-                t = ttk.Frame(self.nb); self.nb.add(t, text=title)
-                if name == "profiles":
-                    nav = ttk.Frame(t); nav.pack(fill="x")
-                    ttk.Label(nav, text="Mostrar:").pack(side="left")
-                    pcb = ttk.Combobox(nav, textvariable=self.vars["profile_mode"],
-                                       state="readonly", width=22,
-                                       values=["Perfiles científicos de nebulosa"])
-                    pcb.pack(side="left", padx=5)
-                    pcb.bind("<<ComboboxSelected>>", lambda e: self._set_profile_mode())
-                    ttk.Button(nav, text="◀ anterior", command=lambda: self._step_profile(-1)).pack(side="left")
-                    ttk.Button(nav, text="siguiente ▶", command=lambda: self._step_profile(+1)).pack(side="left", padx=4)
-                    self.prof_lbl = ttk.Label(nav, text="—"); self.prof_lbl.pack(side="left", padx=10)
-                if HAS_MPL and tk_canvas_cls is not None:
-                    fig = Figure(figsize=(9, 6.5), dpi=96)
-                    cv = tk_canvas_cls(fig, master=t)
-                    cv.get_tk_widget().pack(fill="both", expand=True)
-                    self.figs[name], self.canvases[name] = fig, cv
-                else:
-                    ttk.Label(t, text="matplotlib no disponible").pack(expand=True)
-            t = ttk.Frame(self.nb); self.nb.add(t, text="Resumen")
-            self.summary_txt = ScrolledText(t, wrap="word", font=("TkFixedFont", 9))
-            self.summary_txt.pack(fill="both", expand=True)
-            t = ttk.Frame(self.nb); self.nb.add(t, text="Log")
-            self.log_txt = ScrolledText(t, wrap="word", height=10, font=("TkFixedFont", 9))
-            self.log_txt.pack(fill="both", expand=True)
-
-        def _auto_exptimes(self, o3, h):
-            def exptime(p):
-                try:
-                    return read_fits_exptime(p)
-                except Exception:
-                    return 1.0
-            self._oiii_exptime = exptime(o3)
-            self._ha_exptime = exptime(h)
-
-        def _show_calibration(self):
-            try:
-                o3 = self.vars["oiii"].get().strip()
-                h = self.vars["ha"].get().strip()
-                if o3 and h and Path(o3).is_file() and Path(h).is_file():
-                    self._auto_exptimes(o3, h)
-                else:
-                    self._oiii_exptime = 1.0; self._ha_exptime = 1.0
-                cal, corr, ok = calibrate_from_filters(
-                    self.vars["oiii_filter"].get(), self.vars["ha_filter"].get(),
-                    exptime_oiii=self._oiii_exptime, exptime_ha=self._ha_exptime,
-                    nii_over_ha=float(self.vars["cal_nii_ha"].get() or 0.0),
-                    ebv=float(self.vars["cal_ebv"].get() or 0.0),
-                    ebv_err=float(self.vars["cal_ebv_err"].get() or 0.0),
-                    oiii_curve=(load_filter_curve(self.vars["oiii_curve"].get())[0] if self.vars["oiii_curve"].get().strip() else None),
-                    ha_curve=(load_filter_curve(self.vars["ha_curve"].get())[0] if self.vars["ha_curve"].get().strip() else None),
-                    photometric_calibrated=bool(self.vars["photometric_calibrated"].get()),
-                    oiii_zp_factor=float(self.vars["oiii_zp_factor"].get() or 1.0),
-                    ha_zp_factor=float(self.vars["ha_zp_factor"].get() or 1.0),
-                    r_v=float(self.vars["r_v"].get() or 3.1),
-                    zeropoint_source=self.vars["zeropoint_source"].get().strip(),
-                    zeropoint_error_mag=float(self.vars["zeropoint_error_mag"].get() or "nan"),
-                    calibration_id=self.vars["calibration_id"].get().strip())
-                msg = (f"Calibración automática\n"
-                       f"Filtro OIII: {self.vars['oiii_filter'].get()}\n"
-                       f"Filtro Hα:  {self.vars['ha_filter'].get()}\n"
-                       f"EXPTIME OIII/Hα: {self._oiii_exptime:.2f} / {self._ha_exptime:.2f} s\n"
-                       f"Transmisión OIII: {cal.oiii_transmission:.3f}\n"
-                       f"Transmisión Hα:  {cal.ha_transmission:.3f}\n"
-                       f"Factor de corrección al ratio: {corr:.4f}\n"
-                       f"Estado: {'CALIBRACIÓN FOTOMÉTRICA VALIDADA' if cal.calibration_basis == 'validated_photometric' else ('CORRECCIÓN RELATIVA (curva propia)' if cal.calibration_basis == 'user_curve_relative' else 'INSTRUMENTAL / PRESET APROXIMADO')}\n"
-                       f"NII/Hα: {cal.nii_over_ha} · E(B−V): {cal.ebv}")
-                messagebox.showinfo("Calibración", msg)
-            except Exception as exc:
-                messagebox.showerror("Calibración", f"Error: {exc}")
-
-        def _pick(self, key):
-            if key == "out":
-                p = filedialog.askdirectory(title="Carpeta de salida")
-            elif key == "grid":
-                p = filedialog.askopenfilename(filetypes=[("Grillas", "*.csv *.ecsv *.json *.txt"), ("Todos", "*")])
-            elif key in ("oiii_curve", "ha_curve"):
-                p = filedialog.askopenfilename(filetypes=[("Curvas", "*.csv *.dat *.json *.txt"), ("Todos", "*")])
-            elif key == "light":
-                p = filedialog.askopenfilename(filetypes=[("FITS", "*.fits *.fit *.fts *.fz"), ("Todos", "*")])
-            elif key == "ai_model":
-                p = filedialog.askopenfilename(filetypes=[("Modelo IA", "*.pkl"), ("Todos", "*")])
-            elif key == "ai_training":
-                p = filedialog.askopenfilename(filetypes=[("Datos IA", "*.csv *.json"), ("Todos", "*")])
-            elif key == "ai_vision_model":
-                p = filedialog.askopenfilename(filetypes=[("Modelo visual", "*.pt *.pth"), ("Todos", "*")])
-            elif key == "ai_vision_training":
-                p = filedialog.askdirectory(title="Directorio de FITS astronómicos reales para entrenar visión")
-            elif key in ("oiii_starless", "ha_starless", "oiii_stars", "ha_stars",
-                         "bias_oiii", "bias_ha", "dark_oiii", "dark_ha", "flat_oiii", "flat_ha"):
-                p = filedialog.askopenfilename(filetypes=[("FITS", "*.fits *.fit *.fts *.fz"), ("Todos", "*")])
-            else:
-                p = filedialog.askopenfilename(filetypes=[("FITS", "*.fits *.fit *.fts *.fz"), ("Todos", "*")])
-            if p:
-                self.vars[key].set(p)
-
-        def _pick_dir(self):
-            d = filedialog.askdirectory(title="Directorio con el par FITS")
-            if not d:
-                return
-            o3, h = auto_pair_directory(d)
-            if o3:
-                self.vars["oiii"].set(o3)
-            if h:
-                self.vars["ha"].set(h)
-            self.vars["out"].set(str(Path(d) / "run"))
-            self._append_log(f"Directorio {d}: [O III]={o3 or 'NO'}  Hα={h or 'NO'}")
-            if not (o3 and h):
-                messagebox.showwarning("Par incompleto", "No se identificaron ambos filtros.")
-
-        @staticmethod
-        def _parse_plane_text(text):
-            text = str(text or "").strip()
-            if not text:
-                return None
-            try:
-                parts = tuple(int(x.strip()) for x in text.split(",") if x.strip() != "")
-            except ValueError as exc:
-                raise ValueError(f"Plano inválido '{text}': use 0 o 0,1") from exc
-            if len(parts) == 1:
-                return parts[0]
-            if len(parts) >= 2:
-                return parts
-            return None
-
-        def _params(self):
-            f = lambda k, d: float(self.vars[k].get() or d)
-            px_str = self.vars["pixel_scale"].get().strip()
-            px_scale = float(px_str) if px_str else float("nan")
-            target = self.vars["target_name"].get().strip()
-            curve_path = self.vars["oiii_curve"].get().strip()
-            # v30: un único modo científico: normales para estrellas/registro,
-            # starless para detección y perfiles de nebulosa.
-            if not self.vars["oiii_starless"].get().strip() or not self.vars["ha_starless"].get().strip():
-                raise ValueError("Debe seleccionar OIII starless y Hα starless.")
-            o3f = self.vars["oiii_filter"].get() or FILTER_DEFAULT
-            haf = o3f
-            self.vars["ha_filter"].set(o3f)
-            cal = LineCalibration(
-                oiii_exptime_s=getattr(self, "_oiii_exptime", 1.0),
-                ha_exptime_s=getattr(self, "_ha_exptime", 1.0),
-                calibrated=False, calibration_basis="instrumental",
-                calibration_warning="v33: la calibración fotométrica absoluta no se declara desde un preset.",
-                oiii_filter=o3f, ha_filter=haf,
-                filter_curve_oiii=curve_path, filter_curve_ha=curve_path,
-                ebv=f("cal_ebv", 0.0), ebv_err=f("cal_ebv_err", 0.0),
-                nii_over_ha=f("cal_nii_ha", 0.0), r_v=f("r_v", 3.1),
-                zeropoint_source=self.vars["zeropoint_source"].get().strip(),
-                zeropoint_error_mag=f("zeropoint_error_mag", float("nan")) if self.vars["zeropoint_error_mag"].get().strip() else float("nan"),
-                calibration_id=self.vars["calibration_id"].get().strip(),
-                validation_evidence={"gui_flag":bool(self.vars["photometric_calibrated"].get())})
-            return AnalysisParams(
-                snr_min=f("snr", 4.0), max_candidates=int(f("maxc", 2000)),
-                min_separation_px=f("mins", 8.0), distance_pc=f("distance", 725.0),
-                n0=f("n0", 6.0), workers=max(1, int(f("workers", 1))),
-                use_processes=bool(self.vars["processes"].get()), register="stars",
-                starless=True, light_path="", pixel_scale_override=px_scale, target_name=target,
-                accumulate=bool(self.vars["accumulate"].get()), calibration=cal,
-                oiii_filter=o3f, ha_filter=haf,
-                oiii_starless_path=self.vars["oiii_starless"].get().strip(),
-                ha_starless_path=self.vars["ha_starless"].get().strip(),
-                oiii_stars_path="", ha_stars_path="", offline=bool(self.vars["offline"].get()),
-                export_products=True, export_ecsv=True, export_html=False,
-                filament_strategy=("canny" if self.vars["filament_strategy"].get().startswith("Canny") else "hessian"),
-                oiii_plane=self._parse_plane_text(self.vars["oiii_plane"].get()),
-                ha_plane=self._parse_plane_text(self.vars["ha_plane"].get()),
-                broadband_path=self.vars["broadband"].get().strip(),
-                grid_path=self.vars["grid"].get().strip(),
-                ai_enabled=True, ai_model_path=self.vars["ai_model"].get().strip(),
-                ai_training_path=self.vars["ai_training"].get().strip(),
-                ai_min_training_rows=max(10,int(f("ai_min_rows",80))),
-                ai_anomaly_contamination=min(0.25,max(0.0001,f("ai_contamination",0.02))),
-                ai_vision_enabled=HAS_TORCH, ai_vision_model_path=self.vars["ai_vision_model"].get().strip(),
-                ai_vision_training_dir=self.vars["ai_vision_training"].get().strip(),
-                ai_vision_epochs=max(1,int(f("ai_vision_epochs",12))), ai_vision_batch_size=8)
-
-        def _ai_prepare(self):
-            """Carga el modelo persistente o entrena una sola vez; la sesión queda viva en GUI."""
-            if self.ai_session is not None and self.ai_session.state == "ACTIVA":
-                self.ai_status.configure(text="IA activa · sesión persistente")
-                return
-            model=self.vars["ai_model"].get().strip(); training=self.vars["ai_training"].get().strip()
-            try:
-                self.ai_session=DiscoverySession(model_path=model, training_path=training, seed=20260915,
-                                                 min_rows=max(10,int(self.vars["ai_min_rows"].get() or 80)),
-                                                 contamination=float(self.vars["ai_contamination"].get() or 0.02))
-                if self.ai_session.state == "ACTIVA":
-                    src=self.ai_session.ai.training_meta.get("n_rows_real", "?")
-                    self.ai_status.configure(text=f"IA activa · {src} registros de referencia")
-                    self._append_log("AstroDiscovery AI v33: sesión persistente activa; clasificación neuronal + detector de novedad.")
-                else:
-                    self.ai_status.configure(text=f"IA: {self.ai_session.state}")
-                    messagebox.showwarning("AstroDiscovery AI", self.ai_session.last_error or "No se pudo preparar la IA.")
-            except Exception as exc:
-                self.ai_session=None; self.ai_status.configure(text="IA: error")
-                messagebox.showerror("AstroDiscovery AI", f"No se pudo preparar la IA:\n{type(exc).__name__}: {exc}")
-
-        def _ai_vision_prepare(self):
-            if not HAS_TORCH:
-                messagebox.showwarning("AstroVision AI", "PyTorch no está instalado.")
-                return
-            model=self.vars["ai_vision_model"].get().strip(); training=self.vars["ai_vision_training"].get().strip()
-            try:
-                if model and Path(model).is_file():
-                    va=AstroVisionAI.load(model); src="modelo persistente"
-                elif training and Path(training).is_dir():
-                    va=AstroVisionAI(seed=20260915)
-                    rep=va.fit_from_directory(training,epochs=max(1,int(self.vars["ai_vision_epochs"].get() or 12)))
-                    if not rep.get("state","").startswith("ENTRENADA"):
-                        raise RuntimeError(rep.get("reason","entrenamiento no disponible"))
-                    if model: va.save(model)
-                    src=str(rep.get("metrics",{}).get("n_images","?"))+" imágenes reales"
-                else:
-                    raise RuntimeError("Seleccione un modelo .pt existente o un directorio con FITS reales.")
-                self.ai_vision_session=va
-                self.ai_status.configure(text=f"IA activa · física + visión ({src})")
-                self._append_log("AstroVision AI v34: CNN convolucional activa; ve píxeles mediante embeddings + detección visual de novedad.")
-            except Exception as exc:
-                self.ai_vision_session=None
-                messagebox.showerror("AstroVision AI", f"No se pudo preparar la IA visual:\n{type(exc).__name__}: {exc}")
-
-        def _start_pixel_science(self):
-            ha = self.vars["science_ha"].get().strip(); o3 = self.vars["science_oiii"].get().strip(); bb = self.vars["science_broadband"].get().strip()
-            if not (ha and o3 and Path(ha).is_file() and Path(o3).is_file()):
-                messagebox.showerror("Mapas científicos", "Seleccione Hα y OIII apiladas válidas."); return
-            try:
-                out = self.vars["out"].get().strip() or str(Path.cwd()/"science_pixel_products")
-                st = self.vars["pixel_scale"].get().strip(); scale = float(st) if st else float("nan")
-                ebv = float(self.vars["cal_ebv"].get() or 0.0); rv = float(self.vars["r_v"].get() or 3.1)
-                nii = float(self.vars["cal_nii_ha"].get() or 0.0); snr = float(self.vars["snr"].get() or 4.0)
-            except ValueError as exc:
-                messagebox.showerror("Mapas científicos", f"Parámetro inválido: {exc}"); return
-            self.status.set("Analizando mapas píxel a píxel…")
-            def work():
-                try:
-                    rep = analyze_pixel_science_images(ha, o3, bb, pixel_scale_arcsec=scale, ebv=ebv, r_v=rv, nii_over_ha=nii, snr_min=snr, output_dir=out, plane_ha=parse_plane_arg(self.vars["ha_plane"].get()), plane_oiii=parse_plane_arg(self.vars["oiii_plane"].get()))
-                    self.q.put(("log", "PIXEL SCIENCE v51\n" + f"píxeles válidos: {rep['valid_pixels']}/{rep['total_pixels']}\n" + f"ratio mediano: {rep['ratio_statistics']['median']}\n" + f"regiones: {rep['regions']['count']}\n" + f"salida: {rep['products']['npz']}"))
-                    self.root.after(0, lambda: self.status.set("Análisis píxel a píxel terminado"))
-                except (OSError, ValueError, TypeError, RuntimeError) as exc:
-                    self.q.put(("error", f"pixel-science: {type(exc).__name__}: {exc}")); self.root.after(0, lambda: self.status.set("Error en mapas científicos"))
-            self.worker = threading.Thread(target=work, daemon=True); self.worker.start()
-
-        def _start(self):
-            if self.worker is not None and self.worker.is_alive():
-                return
-            o3 = self.vars["oiii"].get().strip()
-            h = self.vars["ha"].get().strip()
-            out = self.vars["out"].get().strip()
-            if not (o3 and h and out):
-                messagebox.showerror("Entradas", "Seleccione FITS y carpeta de salida."); return
-            if not (Path(o3).is_file() and Path(h).is_file()):
-                messagebox.showerror("Entradas", "Algún FITS normal no existe."); return
-            so3 = self.vars["oiii_starless"].get().strip(); sha = self.vars["ha_starless"].get().strip()
-            if not (so3 and sha and Path(so3).is_file() and Path(sha).is_file()):
-                messagebox.showerror("Entradas", "Seleccione OIII starless y Hα starless. Los perfiles científicos solo pueden salir de esas imágenes."); return
-            try:
-                self._auto_exptimes(o3, h)
-                P = self._params()
-            except ValueError as exc:
-                messagebox.showerror("Parámetros", f"Parámetro inválido: {exc}"); return
-            grid_path = self.vars["grid"].get().strip() or None
-            self.cancel.clear(); self.payload = None; self.image = None; self.image_o3 = None; self.image_o3_raw = None; self.image_starless = None; self.image_o3_starless = None
-            for b in self.btn_export:
-                b.configure(state="disabled")
-            self.btn_run.configure(state="disabled")
-            self.btn_cancel.configure(state="normal")
-            self.progress["value"] = 0.0; self.status.configure(text="Iniciando…")
-            self.tree.delete(*self.tree.get_children())
-
-            def work():
-                try:
-                    grid, grid_meta = load_scientific_grid(
-                        grid_path, allow_demo=True, context="GUI analyze")
-                    if grid_path:
-                        self.q.put(("log", f"Grilla validada por MappingsGridLoader: {grid_path}"))
-                    else:
-                        self.q.put(("log", "Grilla heuristic_demo_grid embebida (solo demostración; no es MAPPINGS/3MdB)"))
-                    try:
-                        img_ha = load_fits(h, plane=P.ha_plane)  # los cubos requieren plano explícito
-                        small_ha, fct = _downsample_for_display(img_ha.data, 2048)
-                        self.q.put(("image_ha", small_ha, fct))
-                        try:
-                            img_o3 = load_fits(o3, plane=P.oiii_plane)  # los cubos requieren plano explícito
-                            small_o3, _ = _downsample_for_display(img_o3.data, 2048)
-                            self.q.put(("image_o3", small_o3, fct))
-                        except (OSError, ValueError, AmbiguousCubeError) as exc:
-                            LOG.debug("Preview OIII no disponible: %s", exc)
-                        try:
-                            img_hs = load_fits(P.ha_starless_path, plane=P.ha_plane)
-                            small_hs, sf = _downsample_for_display(img_hs.data, 2048)
-                            self.q.put(("image_ha_starless", small_hs, sf))
-                            img_os = load_fits(P.oiii_starless_path, plane=P.oiii_plane)
-                            small_os, _ = _downsample_for_display(img_os.data, 2048)
-                            self.q.put(("image_o3_starless", small_os, sf))
-                        except (OSError, ValueError, AmbiguousCubeError) as exc:
-                            LOG.debug("Preview OIII starless no disponible: %s", exc)
-                    except (OSError, ValueError, AmbiguousCubeError) as exc:
-                        self.q.put(("log", f"Imagen preview: {exc}"))
-                    payload = analyze_pair(o3, h, out, P, grid, None,
-                                           progress=lambda fr, msg: self.q.put(("progress", fr, msg)),
-                                           cancel=self.cancel)
-                    self.q.put(("done", payload))
-                except AnalysisCancelled:
-                    self.q.put(("cancelled",))
-                except AmbiguousCubeError as exc:
-                    self.q.put(("error", f"FITS de entrada ambiguo (cubo 3D/4D):\n{exc}"))
-                except Exception:
-                    self.q.put(("error", traceback.format_exc()))
-
-            self.worker = threading.Thread(target=work, name="analyze_pair", daemon=True)
-            self.worker.start()
-
-        def _cancel(self):
-            if self.worker is None or not self.worker.is_alive():
-                return
-            self.cancel.set()
-            self.btn_cancel.configure(state="disabled")
-            self.status.configure(text="Cancelando…")
-
-        def _open_catalog(self):
-            p = filedialog.askopenfilename(filetypes=[("JSON", "catalog.json"), ("Todos", "*")])
-            if not p:
-                return
-            try:
-                payload = json.load(open(p, encoding="utf-8"))
-                prof = Path(p).with_name("profiles.json")
-                if prof.exists():
-                    payload["profiles"] = json.load(open(prof, encoding="utf-8")).get("profiles", {})
-                else:
-                    payload["profiles"] = {}
-            except Exception as exc:
-                messagebox.showerror("Catálogo", f"No se pudo leer: {exc}"); return
-            self.image = None; self.image_o3 = None; self.image_o3_raw = None
-            selected = (payload.get("manifest") or {}).get("selected_cube_plane") or {}
-            hp = (payload.get("inputs") or {}).get("ha")
-            if hp and Path(hp).is_file():
-                try:
-                    self.image, self.image_factor = _downsample_for_display(
-                        load_fits(hp, plane=selected.get("ha")).data, 2048)  # plano guardado en manifiesto
-                except Exception as exc:
-                    self._append_log(f"Imagen Hα: {exc}")
-            op = (payload.get("inputs") or {}).get("oiii")
-            if op and Path(op).is_file():
-                try:
-                    self.image_o3_raw, _ = _downsample_for_display(
-                        load_fits(op, plane=selected.get("oiii")).data, 2048)
-                    self.image_o3 = self.image_o3_raw.copy()
-                except Exception:
-                    self.image_o3 = None
-            self._set_payload(payload)
-
-        def _run_script(self):
-            """v29: Ejecutar script Python externo (plugin) sobre el payload actual.
-
-            No es un sandbox seguro: solo ejecutar scripts de confianza.
-            El resultado se marca externo/no validado y no reemplaza estados
-            científicos de la suite.
-            """
-            p = filedialog.askopenfilename(
-                title="Seleccionar script externo (.py)",
-                filetypes=[("Python", "*.py"), ("Todos", "*")])
-            if not p:
-                return
-            if not messagebox.askyesno(
-                "Confirmar ejecución",
-                f"Va a ejecutar código Python arbitrario:\n{p}\n\n"
-                "Esto NO es un entorno aislado (sandbox). Solo ejecute scripts "
-                "de confianza. ¿Continuar?"):
-                return
-            out_dir = str(Path(p).parent)
-            result = run_external_script(p, payload=self.payload or {}, out_dir=out_dir)
-            self._append_log(f"Script externo: {p} -> estado={result['state']}")
-            if result.get("stdout"):
-                self._append_log(f"[script stdout]\n{result['stdout']}")
-            if result.get("error"):
-                messagebox.showerror("Script externo", f"Error:\n{result['error']}")
-            else:
-                messagebox.showinfo(
-                    "Script externo",
-                    f"Ejecutado correctamente.\nResultado (no validado por la suite):\n"
-                    f"{json.dumps(json_sanitize(result['result']), indent=2, ensure_ascii=False)[:800]}")
-
-        def _export(self, kind):
-            if not self.payload:
-                return
-            ext = {"json": ".json", "csv": ".csv", "pdf": ".pdf", "html": ".html"}[kind]
-            p = filedialog.asksaveasfilename(defaultextension=ext,
-                                             filetypes=[(kind.upper(), "*" + ext)],
-                                             initialfile=f"catalog{ext}")
-            if not p:
-                return
-            payload = self.payload; image = self.image; image_o3 = self.image_o3
-            self.status.configure(text=f"Exportando {kind.upper()}…")
-            def work():
-                try:
-                    if kind == "json":
-                        atomic_json_dump({k: v for k, v in payload.items() if k != "profiles"}, p)
-                    elif kind == "csv":
-                        write_catalog_csv(payload["candidates"], Path(p))
-                    elif kind == "pdf":
-                        if not HAS_MPL:
-                            raise RuntimeError("matplotlib no disponible")
-                        write_report_pdf(payload, p, ha_image=image, o3_image=image_o3)
-                    else:
-                        write_html_report(payload, p, ha_image=image, o3_image=image_o3)
-                    self.q.put(("log", f"Exportado {p}"))
-                    self.q.put(("status", "Exportación completada"))
-                except Exception as exc:
-                    self.q.put(("log", f"ERROR al exportar: {exc}"))
-                    self.q.put(("status", "Error al exportar"))
-            threading.Thread(target=work, daemon=True).start()
-
-        def _export_json(self): self._export("json")
-        def _export_csv(self): self._export("csv")
-        def _export_pdf(self): self._export("pdf")
-        def _export_html(self): self._export("html")
-
-        def _poll(self):
-            try:
-                for _ in range(200):
-                    try:
-                        msg = self.q.get_nowait()
-                    except queue.Empty:
-                        break
-                    try:
-                        self._handle_msg(msg)
-                    except Exception as exc:
-                        self._append_log(f"[poll] Error manejando mensaje: {exc}")
-                        self._append_log(traceback.format_exc())
-            finally:
-                self.root.after(100, self._poll)
-
-        def _handle_msg(self, msg):
-            kind = msg[0]
-            if kind == "log":
-                self._append_log(msg[1])
-            elif kind == "progress":
-                self.progress["value"] = max(0.0, min(1.0, msg[1]))
-                self.status.configure(text=msg[2])
-            elif kind == "status":
-                self.status.configure(text=msg[1])
-            elif kind == "image_ha":
-                self.image, self.image_factor = msg[1], msg[2]
-            elif kind == "image_o3":
-                self.image_o3_raw = np.asarray(msg[1], np.float32).copy()
-                self.image_o3 = self.image_o3_raw.copy()
-            elif kind == "image_ha_starless":
-                self.image_starless = np.asarray(msg[1], np.float32).copy()
-            elif kind == "image_o3_starless":
-                self.image_o3_starless = np.asarray(msg[1], np.float32).copy()
-            elif kind == "done":
-                self._finish()
-                try:
-                    self._set_payload(msg[1])
-                except Exception as exc:
-                    self._append_log(f"Error mostrando payload: {exc}")
-                    self._append_log(traceback.format_exc())
-                self.status.configure(text="Análisis terminado")
-            elif kind == "cancelled":
-                self._finish(); self.status.configure(text="Cancelado")
-            elif kind == "error":
-                self._finish(); self.status.configure(text="Error")
-                self._append_log(msg[1])
-                messagebox.showerror("Error", msg[1].strip().splitlines()[-1])
-
-        def _finish(self):
-            self.btn_run.configure(state="normal")
-            self.btn_cancel.configure(state="disabled")
-            if self.worker is not None and not self.worker.is_alive():
-                self.worker = None
-
-        def _append_log(self, text):
-            self.log_txt.insert("end", text + "\n"); self.log_txt.see("end")
-
-        def _set_payload(self, payload):
-            self.payload = payload
-            for b in self.btn_export:
-                b.configure(state="normal")
-            s = payload.get("summary", {})
-            rows_now = payload.get("candidates", [])
-            prof_now = payload.get("profiles") or {}
-            n_prof = sum(1 for r in rows_now
-                         if r.get("candidate_type", "shock") != "star"
-                         and profile_key(r) in prof_now)
-            stellar = payload.get("stellar_profiles") or {}
-            self.summary_lbl.configure(
-                text=(f"brutos {s.get('n_candidates')} · nuevos {s.get('n_new_candidates')} · "
-                      f"analizados {s.get('n_analyzed')} · ok {s.get('n_ok')} · "
-                      f"frentes con perfil {n_prof} · estrellas detectadas {s.get('n_stars_detected',0)} · "
-                      f"perfiles estelares {len(stellar)}"))
-            self.summary_txt.delete("1.0", "end")
-            summary_display = {"summary": s, "manifest": payload.get("manifest")}
-            # v29: Add QC, consistency, provenance to GUI summary
-            if payload.get("scientific_consistency"):
-                summary_display["scientific_consistency"] = payload["scientific_consistency"]
-            if payload.get("qc_summary"):
-                summary_display["qc_summary"] = payload["qc_summary"]
-            if payload.get("provenance"):
-                summary_display["provenance"] = payload["provenance"]
-            self.summary_txt.insert("end", json.dumps(json_sanitize(
-                summary_display), indent=1, ensure_ascii=False))
-            self._fill_table()
-            self._fill_stars()
-            self._align_display_o3()
-            rows = payload.get("candidates", [])
-            self.profile_pos = 0
-            self._set_profile_mode()
-            if "ratio" in self.figs:
-                _plot_map(self.figs["ratio"], self.image, self.image_o3,
-                          self.image_factor, rows, mode="ratio", star_sources=self.payload.get("stars"))
-                self.canvases["ratio"].draw_idle()
-            if "cooling" in self.figs:
-                _plot_map(self.figs["cooling"], self.image, self.image_o3,
-                          self.image_factor, rows, mode="cooling", star_sources=self.payload.get("stars"))
-                self.canvases["cooling"].draw_idle()
-            if "map" in self.figs:
-                _plot_map(self.figs["map"], self.image, self.image_o3,
-                          self.image_factor, rows, mode="rgb")
-                self.canvases["map"].draw_idle()
-            if "diagram" in self.figs:
-                _plot_diagram(self.figs["diagram"], rows, s.get("pixel_scale_arcsec"))
-                self.canvases["diagram"].draw_idle()
-            self._show_profile()
-
-        def _fill_stars(self):
-            if not hasattr(self, "star_tree"):
-                return
-            self.star_tree.delete(*self.star_tree.get_children())
-            stars = (self.payload or {}).get("stars") or []
-            self._star_rows = {}
-            for i, r in enumerate(stars):
-                vals = []
-                for c in ("source_id", "g_mag", "bp_rp", "teff_k", "spectral_class_est",
-                          "luminosity_class_est", "pm_total_masyr", "distance_pc",
-                          "simbad_main_id", "simbad_otype", "interest"):
-                    v = r.get(c)
-                    if isinstance(v, float):
-                        vals.append(f"{v:.3g}" if math.isfinite(v) else "")
-                    else:
-                        vals.append("" if v is None else str(v))
-                iid = f"star_{i}"
-                self._star_rows[iid] = r
-                self.star_tree.insert("", "end", iid=iid, values=vals)
-            ss = (self.payload or {}).get("summary", {}).get("stellar_summary", {})
-            types = ss.get("types", {}) or {}
-            type_txt = ", ".join(f"{k}:{v}" for k, v in sorted(types.items())) if types else "sin tipos"
-            hi = (self.payload or {}).get("stellar_highlights") or []
-            self.stars_summary.configure(text=(f"Estrellas cruzadas con Gaia: {ss.get('n_matched',0)} · "
-                                              f"interesantes: {ss.get('n_interesting',0)} · "
-                                              f"tipos: {type_txt} · "
-                                              f"objetos SIMBAD destacados: {len(hi)}"))
-            self.stars_notes.delete("1.0", "end")
-            if hi:
-                self.stars_notes.insert("end", "OBJETOS DE INTERÉS EN EL CAMPO (Gaia DR3 + SIMBAD)\n")
-                for o in hi[:25]:
-                    oid = str(o.get("main_id") or "objeto sin nombre")
-                    typ = str(o.get("type_pretty") or o.get("otype") or "tipo no disponible")
-                    self.stars_notes.insert("end",
-                        f"• {oid}: {typ}. Catálogo conocido; no constituye descubrimiento propio.\n")
-            else:
-                self.stars_notes.insert("end",
-                    "No se encontraron objetos de SIMBAD con tipos destacados en el campo.\n"
-                    "Las propiedades de cada estrella se infieren de Gaia DR3 (paralaje, Teff, "
-                    "magnitudes, movimiento propio) y se muestran en la tabla.\n"
-                    "Para más detalle abre SIMBAD con el nombre del objeto.\n")
-            bright = ss.get("brightest") or {}
-            if bright.get("source_id") is not None:
-                self.stars_notes.insert("end",
-                    f"\nEstrella más brillante detectada: Gaia DR3 {bright.get('source_id')} · "
-                    f"G={bright.get('g_mag')} · tipo estimado={bright.get('spectral_class_est')}.\n")
-
-        def _align_display_o3(self):
-            try:
-                if self.image_o3_raw is None:
-                    return
-                reg = (self.payload or {}).get("summary", {}).get("registration") or {}
-                dx = float(reg.get("dx", 0) or 0); dy = float(reg.get("dy", 0) or 0)
-                f = float(self.image_factor or 1)
-                if abs(dx) > 1e-6 or abs(dy) > 1e-6:
-                    self.image_o3 = ndi.shift(np.asarray(self.image_o3_raw, np.float32),
-                                              shift=(dy/f, dx/f), order=1,
-                                              mode="nearest", prefilter=False).astype(np.float32)
-                else:
-                    self.image_o3 = self.image_o3_raw.copy()
-            except (TypeError, ValueError, RuntimeError) as exc:
-                self._append_log(f"Alineación preview: {exc}")
-
-        def _fill_table(self):
-            self.tree.delete(*self.tree.get_children())
-            self._tree_rows = {}
-            if not self.payload:
-                return
-            flt = self.filter_var.get()
-            for idx, r in enumerate(self.payload.get("candidates", [])):
-                st = str(r.get("status", ""))
-                ctype = r.get("candidate_type", "shock")
-                if flt == "frentes (shock)" and ctype == "star":
-                    continue
-                if flt == "estrellas" and ctype != "star":
-                    continue
-                if flt == "ok" and not st.startswith("ok"):
-                    continue
-                if flt == "rechazados/error" and (st.startswith("ok") or ctype == "star"):
-                    continue
-                vals = []
-                for c in self.TABLE_COLS:
-                    v = r.get(c)
-                    if isinstance(v, float):
-                        vals.append(f"{v:.3g}" if math.isfinite(v) else "")
-                    elif v is None:
-                        vals.append("")
-                    else:
-                        vals.append(str(v))
-                iid = f"row_{idx}"
-                self._tree_rows[iid] = r
-                self.tree.insert("", "end", iid=iid, values=vals)
-
-        def _on_select(self, _evt):
-            sel = self.tree.selection()
-            if not sel or not self.payload:
-                return
-            iid = sel[0]
-            row = self._tree_rows.get(iid)
-            if row is None:
-                return
-            key = profile_key(row)
-            if row.get("candidate_type", "shock") == "star":
-                self.prof_lbl.configure(text=f"Candidato {key}: fuente estelar")
-                self.vars["profile_mode"].set("Estrellas / PSF"); self._set_profile_mode()
-                return
-            profiles = self.payload.get("profiles") or {}
-            if key in profiles:
-                try:
-                    self.profile_pos = self.profile_keys.index(key)
-                except ValueError:
-                    self.profile_pos = 0
-                self.vars["profile_mode"].set("Nebulosa / frentes")
-                self._set_profile_mode()
-                self.nb.select(1)
-            else:
-                self.prof_lbl.configure(text=f"Candidato {key}: sin perfil guardado")
-
-        def _set_profile_mode(self):
-            self.profile_pos = 0
-            self.prof_lbl.configure(text="Cargando perfiles…") if hasattr(self, "prof_lbl") else None
-            if self.vars["profile_mode"].get().startswith("Estrellas"):
-                sp = (self.payload or {}).get("stellar_profiles") or {}
-                self.profile_keys = list(sp.keys())
-            else:
-                prof = (self.payload or {}).get("profiles") or {}
-                rows = (self.payload or {}).get("candidates") or []
-                keys = []
-                for r in rows:
-                    if r.get("candidate_type", "shock") == "star":
-                        continue
-                    k = profile_key(r)
-                    if k is None:
-                        continue
-                    if k in prof and not str(k).startswith("star_"):
-                        keys.append(k)
-                seen = set()
-                self.profile_keys = [k for k in keys if not (k in seen or seen.add(k))]
-            self._show_profile()
-
-        def _on_star_select(self, _evt):
-            sel = self.star_tree.selection()
-            if not sel or not self.payload:
-                return
-            star = self._star_rows.get(sel[0])
-            if star is None:
-                return
-            key = star_profile_key(int(star.get("det_id", 0)))
-            self.vars["profile_mode"].set("Estrellas / PSF"); self._set_profile_mode()
-            if key in self.profile_keys:
-                self.profile_pos = self.profile_keys.index(key)
-                self._show_profile()
-                for tab_id in self.nb.tabs():
-                    if self.nb.tab(tab_id, "text") == "Perfiles":
-                        self.nb.select(tab_id); break
-
-        def _step_profile(self, d):
-            if self.profile_keys:
-                self.profile_pos = (self.profile_pos + d) % len(self.profile_keys)
-                self._show_profile()
-
-        def _show_profile(self):
-            if not self.payload:
-                self.prof_lbl.configure(text="Sin datos"); return
-            if self.vars["profile_mode"].get().startswith("Estrellas"):
-                profiles = self.payload.get("stellar_profiles") or {}
-                if not self.profile_keys:
-                    self.prof_lbl.configure(text="Sin perfiles estelares"); return
-                key = self.profile_keys[self.profile_pos]
-                sp = profiles.get(key, {})
-                ident = sp.get("simbad_main_id") or sp.get("source_id") or key
-                self.prof_lbl.configure(
-                    text=f"Estrella {ident}  ({self.profile_pos+1}/{len(self.profile_keys)})")
-                if "profiles" in self.figs:
-                    _plot_stellar_profile(self.figs["profiles"], sp,
-                                          ha_image=self.image, o3_image=self.image_o3,
-                                          factor=self.image_factor)
-                    self.canvases["profiles"].draw_idle()
-                return
-            if not self.profile_keys:
-                self.prof_lbl.configure(text="Sin perfiles de nebulosa"); return
-            key = self.profile_keys[self.profile_pos]
-            self.prof_lbl.configure(
-                text=f"Frente {key}  ({self.profile_pos+1}/{len(self.profile_keys)})")
-            if "profiles" in self.figs:
-                _plot_profiles(self.figs["profiles"], self.payload, key,
-                               ha_image=(self.image_starless if self.image_starless is not None else self.image),
-                               o3_image=(self.image_o3_starless if self.image_o3_starless is not None else self.image_o3),
-                               factor=self.image_factor)
-                self.canvases["profiles"].draw_idle()
-
-        def _close(self):
-            self.cancel.set()
-            logging.getLogger().removeHandler(self._log_handler)
-            self.root.destroy()
-
-    root = tk.Tk()
-    app = App(root)
-    if _test_hook is not None:
-        root.after(200, lambda: _test_hook(root, app))
-    root.mainloop()
-
-
-# ====================================================================
 # SECTION 49: SCIENTIFIC SCHEMA CONTRACT / NORMALIZATION
 # ====================================================================
 SCIENCE_SCHEMA_VERSION = 1
@@ -8143,18 +6959,6 @@ class MappingsGridLoader:
         if self._metadata is None:
             return False
         return self._metadata.model_family not in ("heuristic_demo_grid", "unknown")
-
-
-def load_mappings_grid(path: str, trust_registry_path: str = "") -> tuple:
-    """
-    Carga un grid MAPPINGS/3MdB y devuelve (grid, metadata).
-    Si path es None o vacío, devuelve (None, None).
-    """
-    if not path:
-        return None, None
-    loader = MappingsGridLoader(trust_registry_path=(trust_registry_path or None))
-    grid = loader.load(path)
-    return grid, loader.metadata
 
 
 def register_trusted_grid(grid_path: str, registry_path: str, *, reference: str = "") -> dict:
@@ -9301,37 +8105,6 @@ def stack_multiband(
     }
 
 
-def compute_color_color_diagram(payload: dict) -> dict:
-    """
-    Calcula diagramas color-color ([NII]/Hα vs [SII]/Hα) si los datos existen.
-
-    Requiere multibanda: si solo hay OIII y Hα, devuelve 'no disponible'.
-    """
-    # Verificar si hay datos de NII y SII
-    bands = payload.get("summary", {}).get("bands_available", [])
-    if not isinstance(bands, list):
-        bands = []
-
-    has_nii = "NII" in bands or any("nii" in str(k).lower() for k in payload.keys())
-    has_sii = "SII" in bands or any("sii" in str(k).lower() for k in payload.keys())
-
-    if not (has_nii and has_sii):
-        return {
-            "available": False,
-            "reason": "Se requieren datos de [NII] y [SII] para diagrama color-color",
-            "state": "NO DISPONIBLE"
-        }
-
-    # Si hay datos, calcular ratios
-    # (implementación futura cuando se proporcionen datos multibanda reales)
-    return {
-        "available": True,
-        "nii_ha_ratios": [],
-        "sii_ha_ratios": [],
-        "state": "OBSERVABLE"
-    }
-
-
 # ====================================================================
 # SECTION 35: PROPER MOTION
 # ====================================================================
@@ -9448,22 +8221,6 @@ def apply_redshift_correction(
         "state": "RESULTADO CALIBRADO",
         "note": f"Longitud de onda corregida por redshift z={z}"
     }
-
-
-def luminosity_distance(z: float) -> float:
-    """
-    Calcula la distancia de luminosidad para z pequeño (aproximación Hubble).
-    D_L = c * z / H0
-
-    Solo válida para z << 1. Para z grande, requiere cosmología completa.
-    """
-    if z <= 0:
-        return 0.0
-    H0 = 70.0  # km/s/Mpc (constante de Hubble aproximada)
-    c_km_s = 299792.458  # velocidad de la luz en km/s
-    d_l_mpc = c_km_s * z / H0
-    d_l_pc = d_l_mpc * 1e6
-    return d_l_pc
 
 
 # ====================================================================
@@ -10571,6 +9328,10 @@ def selftest(verbose=True):
         _v45_regression_tests(); check("v45: regression/security/scientific-contract suite", True)
     except Exception as exc:
         check("v45: regression/security/scientific-contract suite", False, str(exc))
+    try:
+        _v46_regression_tests(); check("v46: physical constraints/spatial/temporal/evidence engine suite", True)
+    except Exception as exc:
+        check("v46: physical constraints/spatial/temporal/evidence engine suite", False, str(exc))
     check("json sanitize NaN/inf", json_sanitize({"a":float("nan"),"b":float("inf")})=={"a":None,"b":None})
     # atomic write
     import tempfile
@@ -11121,7 +9882,7 @@ def audit_report():
             "v28: estimate_ast_remnant_age() with radius+distance+velocity guard",
             "v28: stack_multiband() for NII/SII/OIII/Halpha stacking",
             "v28: measure_proper_motion() two-epoch proper motion",
-            "v28: apply_redshift_correction() and luminosity_distance()",
+            "v28: apply_redshift_correction()",
             "v28: build_provenance_chain() full pipeline provenance",
             "v28: compute_physical_maps() 2D quantity maps with states",
             "v28: extract_radial_profile() for circular remnants",
@@ -11656,43 +10417,6 @@ def infer_target_from_paths(*paths) -> str:
     return re.sub(r"\s+", "", m.group(0)).upper() if m else ""
 
 
-def robust_query_simbad_field(ra_deg, dec_deg, radius_deg=0.6, max_rows=1000):
-    """Field query with generous radius and reliable column discovery."""
-    if not HAS_SIMBAD or not HAS_ASTROPY:
-        return []
-    try:
-        from astropy.coordinates import SkyCoord
-        import astropy.units as u
-        sb = Simbad(); sb.ROW_LIMIT = int(max_rows)
-        try: sb.add_votable_fields("otype", "sptype")
-        except Exception: pass
-        coord = SkyCoord(float(ra_deg), float(dec_deg), unit="deg", frame="icrs")
-        tab = sb.query_region(coord, radius=float(radius_deg)*u.deg)
-        if tab is None or len(tab)==0:
-            return []
-        names=list(tab.colnames)
-        def get(rec, *cols):
-            for c in cols:
-                if c in names:
-                    try:
-                        v=rec[c]
-                        return "" if v is None else str(v)
-                    except Exception: pass
-            return ""
-        out=[]
-        for rec in tab:
-            try: ra=float(rec[next(c for c in ("ra","RA") if c in names)])
-            except Exception: ra=float("nan")
-            try: dec=float(rec[next(c for c in ("dec","DEC") if c in names)])
-            except Exception: dec=float("nan")
-            out.append({"main_id":get(rec,"main_id","MAIN_ID"),"ra_deg":ra,"dec_deg":dec,
-                        "otype":get(rec,"otype","OTYPE","otype_txt"),
-                        "sp_type":get(rec,"sp_type","SP_TYPE","sp_type_txt")})
-        LOG.info("SIMBAD campo: %d objetos", len(out)); return out
-    except Exception as exc:
-        LOG.warning("SIMBAD consulta de campo falló: %s", exc); return []
-
-
 # ---------- improved profile selection ----------
 def _profile_selection_quality(c, cfg):
     def f(k, d=float("nan")):
@@ -11777,13 +10501,6 @@ def _survey_infer_role(name, filter_name=""):
     if re.search(r"(?:^|[_\-.])(rgb|color|colour)(?:[_\-.]|$)",hay): return "RGB"
     if re.search(r"(?:l-?qef|quad.?enhance|lquad)",hay): return "L-QEF"
     return "UNKNOWN"
-
-
-def _survey_infer_object(name, parent_parts=()):
-    hay=" ".join([str(name),*(str(x) for x in parent_parts)]).lower()
-    if re.search(r"(?:ngc[\s_-]?6960|veil|western[\s_-]?veil)",hay): return "NGC6960"
-    if re.search(r"(?:^|[^a-z0-9])m31(?:[^a-z0-9]|$)|andromeda",hay): return "M31"
-    return infer_target_from_paths(name,*parent_parts) or "UNKNOWN"
 
 
 def _survey_discover(root, max_depth=32):
@@ -11935,7 +10652,7 @@ def analyze_series_with_ai(folders, base_params, model_path="", training_path=""
         if not (o3 and h and os and hs): errors.append({"folder":str(folder),"error":"Falta OIII/Hα normal o una de las dos starless"}); continue
         P=dataclasses.replace(base_params,oiii_starless_path=os,ha_starless_path=hs,broadband_path=broad or "",target_name=base_params.target_name or infer_target_from_paths(folder))
         outdir=Path(output).parent/(folder.name+f"_run_{idx+1:03d}"); outdir.mkdir(parents=True,exist_ok=True)
-        payload=analyze_pair_core(o3,h,str(outdir),P,grid=None,progress=None,cancel=None)
+        payload=analyze_pair(o3,h,str(outdir),P,grid=None,progress=None,cancel=None)
         ai=discovery_ai_from_rows(payload.get("candidates",[]),model_path=model_path,training_path=training_path,seed=seed,min_rows=80)
         visual_novelty=0
         if visual is not None:
@@ -13434,22 +12151,6 @@ class ParameterEstimate:
         return json_sanitize(dataclasses.asdict(self))
 
 
-@dataclass
-class ModelFit:
-    model_id: str
-    family: str
-    log_likelihood: Optional[float]
-    reduced_chi2: Optional[float]
-    n_observables: int
-    n_parameters: int
-    status: str
-    reason: str = ""
-    parameters: dict = field(default_factory=dict)
-
-    def asdict(self):
-        return json_sanitize(dataclasses.asdict(self))
-
-
 class PhysicalModelRegistry:
     """Registro explícito de familias y modelos físicos.
 
@@ -13768,14 +12469,6 @@ def build_discovery_record(payload, *, ai_result=None, project_id=""):
 MODEL_ENGINE_VERSION = "2.0"
 
 @dataclass
-class ModelParameter:
-    name: str
-    value: float
-    lower: float
-    upper: float
-    unit: str = ""
-
-@dataclass
 class PhysicalHypothesis:
     model_id: str
     family: str
@@ -14029,10 +12722,6 @@ def _v45_regression_tests():
                 safe_loads.append(any(isinstance(k,ast.keyword) and k.arg=="weights_only" and isinstance(k.value,ast.Constant) and k.value.value is True for k in node.keywords))
         assert safe_loads and all(safe_loads)
     return True
-
-def _v44_regression_tests():
-    return _v45_regression_tests()
-
 
 
 # ====================================================================

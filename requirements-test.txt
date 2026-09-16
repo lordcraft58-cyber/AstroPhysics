@@ -1,0 +1,12 @@
+# Dependencias mínimas para ejecutar tests/ contra legacy/AstroPhysicsSuite_v57_3_COMMERCIAL.py.
+# Esto es un punto de partida para la Fase 3-5 (tests de regresión), NO el
+# manifiesto de dependencias fijado del producto -- eso es trabajo de la
+# Fase 9 (empaquetado), que debe auditar y acotar estas versiones para el
+# build comercial de Windows.
+numpy>=2.0
+scipy>=1.13
+astropy>=6.0
+photutils>=1.13
+matplotlib>=3.8
+openpyxl>=3.1
+pytest>=8.0
