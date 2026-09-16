@@ -66,15 +66,30 @@ def build_observation(
     Devuelve también un `dict[path, LoadedImage]` para que el resto del
     pipeline (Fase 6 en adelante) no tenga que volver a tocar disco --
     cada motor recibe los píxeles ya cargados, no una ruta que releer.
+
+    El diccionario se indexa por `ImageRef.path` (la ruta ya resuelta por
+    `load_image` vía `Path(path).resolve()`), NUNCA por la ruta cruda que
+    pasó el llamador -- las dos pueden diferir como texto aunque señalen
+    al mismo archivo (una ruta relativa se vuelve absoluta; en Windows,
+    `QFileDialog` devuelve rutas con `/` mientras que `Path.resolve()`
+    normaliza a `\\`). `run_generic_discovery` busca cada imagen por
+    `image_ref.path` -- si el diccionario se indexara por la ruta cruda,
+    esa búsqueda fallaría con un `KeyError` real siempre que las dos
+    formas no coincidieran carácter a carácter (bug real reportado en
+    uso: "Descubrimiento falló: '<ruta>'", ver
+    docs/audit/25-FIX-DISCOVERY-KEYERROR-RUTA.md).
     """
-    loaded = {path: load_image(path, band=band, role=role) for path, band in images}
+    loaded_by_resolved_path: dict[str, LoadedImage] = {}
+    for path, band in images:
+        loaded_image = load_image(path, band=band, role=role)
+        loaded_by_resolved_path[loaded_image.image_ref.path] = loaded_image
     observation = Observation.create(
         observation_id=observation_id,
         target_name=target_name,
         created_at=created_at or datetime.now(timezone.utc),
-        images=tuple(li.image_ref for li in loaded.values()),
+        images=tuple(li.image_ref for li in loaded_by_resolved_path.values()),
         epoch=epoch,
         instrument=instrument,
         notes=notes,
     )
-    return observation, loaded
+    return observation, loaded_by_resolved_path
