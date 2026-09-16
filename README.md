@@ -16,6 +16,7 @@ En reingeniería activa. El código heredado (`legacy/AstroPhysicsSuite_v57_3_CO
 - [`docs/audit/06-FASE5-TESTS-DE-REGRESION.md`](docs/audit/06-FASE5-TESTS-DE-REGRESION.md) — Fase 5: prueba de humo de GUI que **encontró y corrigió un `KeyError` que impedía arrancar `launch_gui()` en cualquier versión de Python**, guardas estructurales pedidas por el encargo (una sola implementación por función crítica; la GUI debe usar el pipeline completo — hoy `xfail` documentado; sin Tkinter en la capa de ciencia), y la suite conectada por primera vez a CI (`.github/workflows/tests.yml`).
 - [`docs/audit/07-FASE6-REFACTOR-PROGRESIVO-SLICE1.md`](docs/audit/07-FASE6-REFACTOR-PROGRESIVO-SLICE1.md) — Fase 6 (primer corte): `io/` y `detection/` poblados de extremo a extremo — carga real de FITS → `Observation`/`ImageRef`, y detección real de fuentes puntuales → `Detection`, delegando el algoritmo en el código heredado ya probado (patrón *strangler fig*) y verificado con FITS sintéticos reales, no simulaciones.
 - [`docs/audit/08-FASE6-MOTORES-RESTANTES.md`](docs/audit/08-FASE6-MOTORES-RESTANTES.md) — Fase 6 (resto de motores): `artifacts/`, `catalogs/`, `photometry/`, `physics/`, `anomaly/`, `temporal/` y `evidence/` poblados. Incluye un hallazgo científico real: las comprobaciones de consistencia interna de `PhysicalConstraintEngine` (edad Sedov, temperatura de choque) son **inalcanzables en la ruta de producción real** (`DiscoveryEvidenceEngine.evaluate_rows`) por un desajuste de contrato entre `infer_physical_parameters` y lo que esas comprobaciones necesitan leer.
+- [`docs/audit/09-FASE7-DISCOVERY-ENGINE.md`](docs/audit/09-FASE7-DISCOVERY-ENGINE.md) — Fase 7: `discovery/pipeline.py` orquesta los nueve motores en una ruta real **`Observation → list[Candidate]`**, probada de extremo a extremo con FITS sintéticos reales (sin mocks). Demuestra además que physics + anomaly + evidence componen correctamente en el modo especializado (choque OIII/Hα), aunque todavía no partan de píxeles reales.
 
 ## Arquitectura objetivo (en construcción)
 
@@ -32,10 +33,11 @@ astrophysics_suite/
 ├── physics/     # inferencia física por fila -> PhysicalInference
 ├── anomaly/     # tensión física -> AnomalyVector.physical
 ├── temporal/    # variabilidad multiépoca -> TemporalEvidence
-└── evidence/    # fusión de evidencia -> EvidenceChain
+├── evidence/    # fusión de evidencia -> EvidenceChain
+└── discovery/   # orquestación real: Observation -> list[Candidate] (modo genérico)
 ```
 
-Los nueve motores conceptuales tienen ya un primer corte real y probado (Fase 6, ver `docs/audit/07-...` y `08-...`). Falta fusionarlos en una única ruta `Observation → Candidate` (Fase 7) y las extensiones a los otros pipelines (choque OIII/Hα completo, motor v46).
+Los nueve motores conceptuales tienen un primer corte real y probado, y `discovery/pipeline.py` los orquesta en una ruta ejecutable de extremo a extremo (Fase 7, ver `docs/audit/09-...`). Queda extraer la medición de observables físicos de `analyze_pair_core` para que el modo especializado (choque OIII/Hα) parta de píxeles reales como el genérico, y conectar todo esto a una GUI comercial (Fase 8).
 
 ## Tests
 
