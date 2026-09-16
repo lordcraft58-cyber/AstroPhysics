@@ -194,6 +194,49 @@ def test_build_master_dark_records_exposure_and_saves_real_fits(qapp, main_windo
     assert reloaded.exposure_s == pytest.approx(120.0)
 
 
+def test_build_master_flat_normalizes_and_saves_real_fits(qapp, main_window, tmp_path):
+    """Prueba obligatoria J: flat normalizado a mediana 1.0, guardado en
+    la ruta elegida y reutilizable tras reabrir el archivo."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QListWidgetItem
+
+    from astrophysics_suite.reduction.master_frames import load_master_frame
+    from legacy.AstroPhysicsSuite_v57_3_COMMERCIAL import _write_minimal_fits_2d
+    from qt_app.reduction.build_master_frame_dialog import BuildMasterFrameDialog
+    from services.app_preferences import AppPreferencesStore
+
+    rng = np.random.default_rng(6)
+    paths = []
+    for i in range(5):
+        frame = np.full(FRAME_SHAPE, 30000.0, dtype=np.float32) + rng.normal(0, 50.0, FRAME_SHAPE).astype(np.float32)
+        frame[0:5, 0:5] *= 0.8  # viñeteado real en una esquina
+        path = tmp_path / f"flat_{i}.fits"
+        _write_minimal_fits_2d(path, frame)
+        paths.append(str(path))
+
+    dialog = BuildMasterFrameDialog(main_window.master_frame_library, main_window, preferences=AppPreferencesStore(tmp_path / "prefs.json"))
+    dialog.kind_combo.setCurrentText("Flat")
+    dialog.name_edit.setText("Flat-HA")
+    for path in paths:
+        item = QListWidgetItem(path.split("/")[-1])
+        item.setData(Qt.ItemDataRole.UserRole, path)
+        dialog.file_list.addItem(item)
+    output_path = tmp_path / "Flat-HA.fits"
+    dialog.output_path_edit.setText(str(output_path))
+    dialog._on_combine()
+    _wait_worker(qapp, dialog)
+
+    assert "Flat-HA" in main_window.master_frame_library.all_names()
+    master = main_window.master_frame_library.get("Flat-HA")
+    assert master.kind == "flat"
+    assert np.median(master.data) == pytest.approx(1.0, abs=1e-3)
+    assert master.data[0, 0] == pytest.approx(0.8, abs=0.05)
+
+    reloaded = load_master_frame(str(output_path))
+    assert reloaded.kind == "flat"
+    np.testing.assert_allclose(reloaded.data, master.data, atol=1e-4)
+
+
 def test_build_master_frame_requires_confirmation_before_overwriting(qapp, main_window, tmp_path, monkeypatch):
     """Prueba obligatoria K: si ya existe un archivo en la ruta elegida,
     se pide confirmación -- "No" no debe tocar el archivo existente."""

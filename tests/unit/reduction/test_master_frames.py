@@ -88,6 +88,28 @@ def test_save_and_load_master_frame_round_trips_data_uncertainty_and_n_combined(
     np.testing.assert_array_equal(reloaded.n_combined, master.n_combined)
 
 
+def test_save_and_load_master_flat_preserves_normalization_and_filter(tmp_path):
+    """Prueba obligatoria J: el flat guardado conserva la normalización a
+    mediana 1.0 y el filtro registrado tras reabrir el archivo real."""
+    from astrophysics_suite.reduction.master_frames import load_master_frame, save_master_frame
+
+    flat_frames = [np.full((6, 6), 30000.0) for _ in range(5)]
+    for frame in flat_frames:
+        frame[0:2, 0:2] *= 0.85
+    master = build_master_flat(flat_frames, filter_name="HA")
+    assert master.kind == "flat"
+    assert np.median(master.data) == pytest.approx(1.0, abs=1e-6)
+
+    path = tmp_path / "master_flat_test.fits"
+    save_master_frame(str(path), master)
+    reloaded = load_master_frame(str(path))
+
+    assert reloaded.kind == "flat"
+    assert reloaded.filter_name == "HA"
+    np.testing.assert_allclose(reloaded.data, master.data, atol=1e-6)
+    assert np.median(reloaded.data) == pytest.approx(1.0, abs=1e-6)
+
+
 def test_save_and_load_master_dark_preserves_exposure(tmp_path):
     from astrophysics_suite.reduction.master_frames import load_master_frame, save_master_frame
 
