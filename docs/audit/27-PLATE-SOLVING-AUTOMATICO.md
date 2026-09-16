@@ -171,11 +171,58 @@ Ejecutado en ambos entornos (`aps-test`, sin PySide6, y `aps-gui`, con
 PySide6 + Xvfb): suite completa `aps-test` 380 passed / 3 skipped; suite
 completa `aps-gui` 468 passed / 2 skipped / 1 xfailed. Sin regresiones.
 
-## 6. Pendiente (no hecho en esta ronda)
+## 6. Integración en Discovery
 
-- Integración automática de `solve_plate` **dentro** del flujo de
-  Discovery (objetivo separado, aún no implementado): al seleccionar
-  imágenes para Discovery, si falta WCS, intentar resolución automática
-  antes de continuar, con los estados WCS PRESENTE / RESUELTO
-  AUTOMÁTICAMENTE / RESUELTO Y VALIDADO / NO DISPONIBLE / FALLIDO / NO
-  EJECUTADO visibles en la GUI.
+`astrophysics_suite/discovery/pipeline.py`, `run_generic_discovery`: antes
+de detectar fuentes en cada imagen, `_ensure_wcs` la revisa:
+
+1. Si `legacy_image.wcs` ya está presente (WCS real en el FITS): no hace
+   nada, estado `WCS_PRESENTE`.
+2. Si falta y `auto_plate_solve=True` (por defecto): llama a
+   `solve_plate(data, header)` con el header real de la imagen. Si
+   resuelve, asigna el WCS resultante (`wcs_solution_to_astropy`) a
+   `legacy_image.wcs` -- a partir de ahí el resto del pipeline (detección,
+   `characterize_point_source`, `identify_detection`) lo usa exactamente
+   igual que si hubiera venido en el FITS. Estado `WCS_RESUELTO_Y_
+   VALIDADO_AUTOMATICAMENTE`.
+3. Si falla (sin puntero, sin escala, pocas estrellas, RMS alto, etc.):
+   nunca lanza excepción ni inventa un WCS -- registra el motivo exacto
+   (el `reason` real de `solve_plate`) y esa imagen sigue el resto del
+   pipeline sin coordenadas celestes. Estado `PLATE_SOLVING_FALLIDO`.
+4. Si `auto_plate_solve=False` (el usuario lo desactivó en "Nueva
+   observación"): ni se intenta. Estado `PLATE_SOLVING_NO_EJECUTADO`.
+
+Cada imagen produce un `ImageWCSStatus(path, band, state, detail)`, todos
+recogidos en `DiscoveryRunSummary.wcs_status`. La GUI
+(`qt_app/main_window.py`, `_poll_discovery`) los registra en la consola
+integrada (uno por imagen, con el detalle legible) y resume en la barra
+de estado cuántas imágenes se resolvieron automáticamente y cuántas
+quedaron sin WCS -- nunca un "Error" genérico ni un estado que oculte lo
+que realmente pasó.
+
+`services/discovery_service.py`: `DiscoveryParams.auto_plate_solve`
+(por defecto `True`) se enhebra hasta `run_generic_discovery`.
+`qt_app/candidates/new_observation_dialog.py`: casilla "Intentar
+resolución de placa automáticamente si falta WCS" (marcada por defecto)
+en el asistente de nueva observación.
+
+Verificado con datos sintéticos reales (no solo mocks de "no lanza"):
+imagen sin WCS pero con puntero/escala en el header -> Discovery la
+resuelve sola y llega a candidatos KNOWN reales (mismo catálogo Gaia
+simulado usado tanto por `solve_plate` como por `identify_detection`);
+imagen sin ningún puntero -> falla explícitamente sin romper Discovery,
+degradando a DISCOVERY_REVIEW como antes; `auto_plate_solve=False` ->
+`solve_plate` verificablemente nunca se llama; imagen que ya trae WCS ->
+`solve_plate` tampoco se llama.
+
+Tests: `tests/integration/test_generic_discovery_pipeline.py` --
+`test_run_generic_discovery_resolves_missing_wcs_automatically_and_reaches_known`,
+`test_run_generic_discovery_records_plate_solve_failure_without_crashing`,
+`test_run_generic_discovery_skips_plate_solve_when_disabled`,
+`test_run_generic_discovery_reports_wcs_present_and_never_calls_solve_plate`.
+
+## 7. Pendiente (no hecho en esta ronda)
+
+- La GUI no tiene todavía una tabla/panel dedicado de estados de WCS por
+  imagen dentro de Discovery -- se muestran en la consola integrada y en
+  un resumen de la barra de estado, no en un widget propio.

@@ -745,11 +745,14 @@ class MainWindow(QMainWindow):
         dialog = NewObservationDialog(self)
         if dialog.exec() != NewObservationDialog.DialogCode.Accepted:
             return
-        self._start_discovery(dialog.result_target_name(), dialog.result_images())
+        self._start_discovery(dialog.result_target_name(), dialog.result_images(), dialog.result_auto_plate_solve())
 
-    def _start_discovery(self, target_name: str, images: list[tuple[str, str]]) -> None:
+    def _start_discovery(self, target_name: str, images: list[tuple[str, str]], auto_plate_solve: bool = True) -> None:
         self._discovery_job = DiscoveryJob(
-            target_name=target_name, images=images, params=DiscoveryParams(), pipeline_version=PIPELINE_VERSION
+            target_name=target_name,
+            images=images,
+            params=DiscoveryParams(auto_plate_solve=auto_plate_solve),
+            pipeline_version=PIPELINE_VERSION,
         )
         self._discovery_job.start()
         self.discovery_progress.setVisible(True)
@@ -779,7 +782,20 @@ class MainWindow(QMainWindow):
                     "Descubrimiento completado: %d candidatos de %d detecciones (%d rechazados como artefacto)",
                     event.summary.n_candidates, event.summary.n_detected, event.summary.n_artifact_rejected,
                 )
-                self.statusBar().showMessage(f"Completado: {event.summary.n_candidates} candidatos de {event.summary.n_detected} detecciones.", 8000)
+                n_auto_resolved = 0
+                n_wcs_missing = 0
+                for wcs_status in event.summary.wcs_status:
+                    logger.info("WCS %s (%s): %s", wcs_status.state, wcs_status.band, wcs_status.detail)
+                    if wcs_status.state == "WCS_RESUELTO_Y_VALIDADO_AUTOMATICAMENTE":
+                        n_auto_resolved += 1
+                    elif wcs_status.state in ("PLATE_SOLVING_FALLIDO", "PLATE_SOLVING_NO_EJECUTADO"):
+                        n_wcs_missing += 1
+                wcs_suffix = ""
+                if n_auto_resolved or n_wcs_missing:
+                    wcs_suffix = f" WCS: {n_auto_resolved} resuelto(s) automáticamente, {n_wcs_missing} sin WCS (ver consola)."
+                self.statusBar().showMessage(
+                    f"Completado: {event.summary.n_candidates} candidatos de {event.summary.n_detected} detecciones.{wcs_suffix}", 8000
+                )
                 self._finish_discovery()
                 return
             elif event.kind == "cancelled":

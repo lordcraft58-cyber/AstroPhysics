@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from typing import Callable
 
 from astrophysics_suite.artifacts.morphology_screen import classify_morphology
+from astrophysics_suite.astrometry.plate_solve import solve_plate
+from astrophysics_suite.astrometry.wcs_fit import wcs_solution_to_astropy
 from astrophysics_suite.catalogs.gaia import identify_detection
 from astrophysics_suite.core.enums import QualityLevel, ValueKind
 from astrophysics_suite.core.quantity import Quantity
@@ -42,6 +44,33 @@ class DiscoveryCancelled(Exception):
     código heredado (`legacy...analyze_pair_core`)."""
 
 
+# Estados reales y mutuamente excluyentes del WCS de cada imagen al
+# entrar en Discovery -- nunca "sin WCS" a secas: el motivo concreto
+# (ya lo traía / se resolvió automáticamente / se intentó y falló / no
+# se intentó) debe llegar a la GUI para que el usuario sepa exactamente
+# qué análisis pudieron ejecutarse con coordenadas celestes y cuáles no.
+WCS_STATE_PRESENT = "WCS_PRESENTE"
+WCS_STATE_AUTO_RESOLVED = "WCS_RESUELTO_Y_VALIDADO_AUTOMATICAMENTE"
+WCS_STATE_SOLVE_FAILED = "PLATE_SOLVING_FALLIDO"
+WCS_STATE_SOLVE_NOT_RUN = "PLATE_SOLVING_NO_EJECUTADO"
+
+
+@dataclass(frozen=True)
+class ImageWCSStatus:
+    """Resultado real de intentar asegurar un WCS para una imagen antes
+    de detectar/identificar fuentes -- consumido por la GUI para mostrar
+    con claridad qué pasó con cada imagen (nunca solo "Error")."""
+
+    path: str
+    band: str
+    state: str
+    """Uno de `WCS_STATE_*` -- nunca un texto genérico inventado aquí."""
+    detail: str
+    """Mensaje legible: por qué ya tenía WCS, qué encontró el plate
+    solving (proveedor, RMS, nº de estrellas) o por qué falló/no se
+    intentó."""
+
+
 @dataclass(frozen=True)
 class DiscoveryRunSummary:
     """El resumen que el usuario final ve tras un escaneo -- ver el
@@ -56,6 +85,44 @@ class DiscoveryRunSummary:
     n_known: int
     n_unmatched: int
     n_discovery_review: int
+    wcs_status: tuple[ImageWCSStatus, ...] = ()
+
+
+def _ensure_wcs(
+    loaded: LoadedImage, image_ref, *, auto_plate_solve: bool, report: Callable[[float, str], None], progress_fraction: float
+) -> ImageWCSStatus:
+    """Se asegura de que `loaded.legacy_image.wcs` esté disponible antes
+    de detectar fuentes, intentando plate solving automático si falta --
+    nunca inventa un WCS ni convierte su ausencia en una excepción:
+    cuando no se puede, lo registra explícitamente y Discovery continúa
+    (el resto de motores ya degradan con gracia sin WCS, ver
+    `catalogs/gaia.py`)."""
+    fits_image = loaded.legacy_image
+    if fits_image.wcs is not None:
+        return ImageWCSStatus(
+            path=image_ref.path, band=image_ref.band, state=WCS_STATE_PRESENT,
+            detail="El FITS ya traía un WCS válido en la cabecera -- no hizo falta resolver la placa.",
+        )
+    if not auto_plate_solve:
+        return ImageWCSStatus(
+            path=image_ref.path, band=image_ref.band, state=WCS_STATE_SOLVE_NOT_RUN,
+            detail="Resolución automática de placa desactivada para este análisis -- WCS no disponible, "
+                   "continuando sin coordenadas celestes para esta imagen.",
+        )
+    report(progress_fraction, f"Resolviendo WCS automáticamente para {image_ref.band}...")
+    result = solve_plate(fits_image.data, fits_image.header or {})
+    if not result.success:
+        return ImageWCSStatus(
+            path=image_ref.path, band=image_ref.band, state=WCS_STATE_SOLVE_FAILED,
+            detail=f"Plate solving falló: {result.reason} -- WCS no disponible, continuando sin coordenadas "
+                   f"celestes para esta imagen (usa Astrometría -> Resolver placa automáticamente... o Ajustar "
+                   f"WCS manualmente... para intentarlo con otros parámetros).",
+        )
+    fits_image.wcs = wcs_solution_to_astropy(result.solution)
+    return ImageWCSStatus(
+        path=image_ref.path, band=image_ref.band, state=WCS_STATE_AUTO_RESOLVED,
+        detail=f"WCS resuelto y validado automáticamente ({result.provider}): {result.reason}.",
+    )
 
 
 def run_generic_discovery(
@@ -70,6 +137,7 @@ def run_generic_discovery(
     pipeline_version: str = "",
     progress: Callable[[float, str], None] | None = None,
     cancel: threading.Event | None = None,
+    auto_plate_solve: bool = True,
 ) -> tuple[list[Candidate], DiscoveryRunSummary]:
     """Ejecuta el modo genérico sobre todas las imágenes de una
     `Observation` ya cargada (ver `io.fits_loader.build_observation`).
@@ -80,7 +148,16 @@ def run_generic_discovery(
     `progress(fraccion_0_a_1, mensaje)` y `cancel` (un `threading.Event`)
     siguen la misma convención que `legacy...analyze_pair_core` -- pensado
     para ejecutarse en un hilo de fondo desde una GUI, nunca en el hilo
-    principal (ver docs/audit/10-FASE8-GUI.md)."""
+    principal (ver docs/audit/10-FASE8-GUI.md).
+
+    Antes de detectar fuentes en cada imagen, si le falta WCS y
+    `auto_plate_solve` está activo (por defecto), se intenta resolución
+    automática (`astrometry.plate_solve.solve_plate`) -- la ausencia de
+    WCS nunca aborta el análisis: si no se puede resolver, se registra
+    el motivo exacto en `DiscoveryRunSummary.wcs_status` y esa imagen
+    sigue por el resto del pipeline sin coordenadas celestes (las
+    identificaciones que las necesiten degradan con gracia, ver
+    `catalogs/gaia.py`)."""
 
     def report(fraction: float, message: str) -> None:
         if progress is not None:
@@ -94,11 +171,16 @@ def run_generic_discovery(
     n_detected = 0
     n_rejected = 0
     n_images = max(1, len(observation.images))
+    wcs_statuses: list[ImageWCSStatus] = []
 
     for image_index, image_ref in enumerate(observation.images):
         check_cancelled()
-        report(image_index / n_images, f"Detectando fuentes en {image_ref.band} ({image_index + 1}/{n_images})")
         loaded = loaded_images[image_ref.path]
+        wcs_statuses.append(
+            _ensure_wcs(loaded, image_ref, auto_plate_solve=auto_plate_solve, report=report, progress_fraction=image_index / n_images)
+        )
+        check_cancelled()
+        report(image_index / n_images, f"Detectando fuentes en {image_ref.band} ({image_index + 1}/{n_images})")
         detections = detect_point_sources(
             loaded,
             observation_id=observation.observation_id,
@@ -160,5 +242,6 @@ def run_generic_discovery(
         n_known=sum(1 for c in candidates if c.identification_state.value == "KNOWN"),
         n_unmatched=sum(1 for c in candidates if c.identification_state.value == "UNMATCHED"),
         n_discovery_review=sum(1 for c in candidates if c.identification_state.value == "DISCOVERY_REVIEW"),
+        wcs_status=tuple(wcs_statuses),
     )
     return candidates, summary

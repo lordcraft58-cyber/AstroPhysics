@@ -10,6 +10,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -61,6 +62,15 @@ class NewObservationDialog(QDialog):
 
         self.image_list = QListWidget()
         layout.addWidget(self.image_list)
+
+        self.auto_plate_solve_check = QCheckBox("Intentar resolución de placa automáticamente si falta WCS")
+        self.auto_plate_solve_check.setChecked(True)
+        self.auto_plate_solve_check.setToolTip(
+            "Para cada imagen sin WCS, detecta estrellas reales y las resuelve contra Gaia antes de analizar "
+            "(ver Astrometría -> Resolver placa automáticamente...). Si falla, esa imagen sigue el análisis sin "
+            "coordenadas celestes -- nunca se inventa un WCS."
+        )
+        layout.addWidget(self.auto_plate_solve_check)
 
         self.button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         self.button_box.button(QDialogButtonBox.StandardButton.Ok).setText("Analizar")
@@ -114,3 +124,6 @@ class NewObservationDialog(QDialog):
 
     def result_target_name(self) -> str:
         return self.target_edit.text().strip()
+
+    def result_auto_plate_solve(self) -> bool:
+        return self.auto_plate_solve_check.isChecked()

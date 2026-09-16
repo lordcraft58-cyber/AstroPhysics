@@ -32,6 +32,11 @@ class DiscoveryParams:
     max_sources: int = 3000
     match_radius_arcsec: float = 3.0
     gaia_mag_limit: float = 20.0
+    auto_plate_solve: bool = True
+    """Si una imagen no trae WCS, intentar resolución automática de placa
+    antes de detectar/identificar fuentes (ver `discovery.pipeline.
+    _ensure_wcs`) -- desactivable desde "Nueva observación" cuando el
+    usuario prefiere el flujo manual ("Ajustar WCS manualmente...")."""
 
 
 @dataclass(frozen=True)
@@ -114,6 +119,7 @@ class DiscoveryJob:
                 pipeline_version=self._pipeline_version,
                 progress=self._report,
                 cancel=self._cancel_event,
+                auto_plate_solve=self._params.auto_plate_solve,
             )
             self._events.put(
                 JobEvent(
