@@ -20,9 +20,10 @@ from dataclasses import dataclass
 from typing import Callable
 
 from astrophysics_suite.artifacts.morphology_screen import classify_morphology
-from astrophysics_suite.astrometry.plate_solve import solve_plate
+from astrophysics_suite.astrometry.plate_solve import estimate_approx_pointing_from_header, solve_plate
 from astrophysics_suite.astrometry.wcs_fit import wcs_solution_to_astropy
 from astrophysics_suite.catalogs.gaia import identify_detection
+from astrophysics_suite.catalogs.simbad import resolve_object_coordinates
 from astrophysics_suite.core.enums import QualityLevel, ValueKind
 from astrophysics_suite.core.quantity import Quantity
 from astrophysics_suite.detection.point_sources import detect_point_sources
@@ -88,8 +89,29 @@ class DiscoveryRunSummary:
     wcs_status: tuple[ImageWCSStatus, ...] = ()
 
 
+def _resolve_approx_pointing(header: dict, target_name: str) -> tuple[float, float, str] | None:
+    """Puntero aproximado para `solve_plate`: primero el header FITS (si
+    trae RA/DEC u OBJCTRA/OBJCTDEC reconocibles); si no, SIMBAD por el
+    NOMBRE del objetivo de la observación (el mismo que el usuario
+    escribió en "Nueva observación") -- igual que "Spectrophotometric
+    Color Calibration" de PixInsight: el usuario da el nombre real, no
+    depende de que la cámara/montura haya escrito RA/Dec en el header
+    (con software de captura real, a menudo falta o está en una clave
+    distinta). Nunca inventa un puntero -- `None` si ninguna de las dos
+    fuentes resuelve."""
+    pointing = estimate_approx_pointing_from_header(header)
+    if pointing is not None:
+        return pointing[0], pointing[1], "header FITS"
+    resolved = resolve_object_coordinates(target_name)
+    if resolved is not None:
+        ra, dec, source = resolved
+        return ra, dec, source
+    return None
+
+
 def _ensure_wcs(
-    loaded: LoadedImage, image_ref, *, auto_plate_solve: bool, report: Callable[[float, str], None], progress_fraction: float
+    loaded: LoadedImage, image_ref, *, target_name: str, auto_plate_solve: bool,
+    report: Callable[[float, str], None], progress_fraction: float,
 ) -> ImageWCSStatus:
     """Se asegura de que `loaded.legacy_image.wcs` esté disponible antes
     de detectar fuentes, intentando plate solving automático si falta --
@@ -109,19 +131,28 @@ def _ensure_wcs(
             detail="Resolución automática de placa desactivada para este análisis -- WCS no disponible, "
                    "continuando sin coordenadas celestes para esta imagen.",
         )
-    report(progress_fraction, f"Resolviendo WCS automáticamente para {image_ref.band}...")
-    result = solve_plate(fits_image.data, fits_image.header or {})
+    approx = _resolve_approx_pointing(fits_image.header or {}, target_name)
+    approx_ra = approx[0] if approx is not None else None
+    approx_dec = approx[1] if approx is not None else None
+    pointing_note = f" (puntero: {approx[2]})" if approx is not None else ""
+    report(progress_fraction, f"Resolviendo WCS automáticamente para {image_ref.band}{pointing_note}...")
+    result = solve_plate(fits_image.data, fits_image.header or {}, approx_ra_deg=approx_ra, approx_dec_deg=approx_dec)
     if not result.success:
+        pointing_hint = (
+            " Ninguna posición aproximada disponible (ni en el header FITS ni resolviendo por SIMBAD el nombre "
+            "del objetivo) -- comprueba que el nombre de la observación sea un objeto real reconocible."
+            if approx is None else ""
+        )
         return ImageWCSStatus(
             path=image_ref.path, band=image_ref.band, state=WCS_STATE_SOLVE_FAILED,
-            detail=f"Plate solving falló: {result.reason} -- WCS no disponible, continuando sin coordenadas "
-                   f"celestes para esta imagen (usa Astrometría -> Resolver placa automáticamente... o Ajustar "
-                   f"WCS manualmente... para intentarlo con otros parámetros).",
+            detail=f"Plate solving falló: {result.reason}{pointing_hint} -- WCS no disponible, continuando sin "
+                   f"coordenadas celestes para esta imagen (usa Astrometría -> Resolver placa automáticamente... "
+                   f"o Ajustar WCS manualmente... para intentarlo con otros parámetros).",
         )
     fits_image.wcs = wcs_solution_to_astropy(result.solution)
     return ImageWCSStatus(
         path=image_ref.path, band=image_ref.band, state=WCS_STATE_AUTO_RESOLVED,
-        detail=f"WCS resuelto y validado automáticamente ({result.provider}): {result.reason}.",
+        detail=f"WCS resuelto y validado automáticamente ({result.provider}), puntero{pointing_note}: {result.reason}.",
     )
 
 
@@ -177,7 +208,10 @@ def run_generic_discovery(
         check_cancelled()
         loaded = loaded_images[image_ref.path]
         wcs_statuses.append(
-            _ensure_wcs(loaded, image_ref, auto_plate_solve=auto_plate_solve, report=report, progress_fraction=image_index / n_images)
+            _ensure_wcs(
+                loaded, image_ref, target_name=observation.target_name, auto_plate_solve=auto_plate_solve,
+                report=report, progress_fraction=image_index / n_images,
+            )
         )
         check_cancelled()
         report(image_index / n_images, f"Detectando fuentes en {image_ref.band} ({image_index + 1}/{n_images})")

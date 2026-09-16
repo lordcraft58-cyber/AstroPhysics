@@ -3,9 +3,12 @@
 alcance exacto (requiere una posición/escala aproximadas, no es "blind
 solving" completo). Este diálogo pide esos valores aproximados
 (pre-rellenados desde el header FITS cuando están, editables siempre),
-resuelve en un hilo de fondo (consulta Gaia real + búsqueda de
-orientación, puede tardar varios segundos), y muestra el resultado con
-mensajes accionables -- nunca "Error" a secas."""
+o se pueden obtener escribiendo el NOMBRE real del objeto y pulsando
+"Buscar en SIMBAD..." -- mismo flujo que "Spectrophotometric Color
+Calibration" de PixInsight. Resuelve en un hilo de fondo (consulta Gaia
+real + búsqueda de orientación, puede tardar varios segundos), y
+muestra el resultado con mensajes accionables -- nunca "Error" a secas.
+"""
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
@@ -13,7 +16,10 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
+    QHBoxLayout,
     QLabel,
+    QLineEdit,
+    QPushButton,
     QVBoxLayout,
 )
 
@@ -22,6 +28,7 @@ from astrophysics_suite.astrometry.plate_solve import (
     estimate_approx_scale_from_header,
     solve_plate,
 )
+from astrophysics_suite.catalogs.simbad import resolve_object_coordinates
 from astrophysics_suite.tables.table import Table
 from qt_app.workers import CallableWorker
 
@@ -39,11 +46,12 @@ class PlateSolveDialog(QDialog):
         self._data = data
         self._header = header or {}
         self._worker: CallableWorker | None = None
+        self._simbad_worker: CallableWorker | None = None
         self._result_solution = None
         self._result_table: Table | None = None
 
         self.setWindowTitle("Resolver placa automáticamente")
-        self.resize(460, 260)
+        self.resize(460, 320)
 
         layout = QVBoxLayout(self)
         hint = QLabel(
@@ -56,6 +64,22 @@ class PlateSolveDialog(QDialog):
 
         approx_pointing = estimate_approx_pointing_from_header(self._header)
         approx_scale = estimate_approx_scale_from_header(self._header)
+
+        object_row = QHBoxLayout()
+        self.object_name_edit = QLineEdit()
+        self.object_name_edit.setPlaceholderText("Nombre real del objeto (p. ej. \"M 31\")...")
+        object_name_hint = self._header.get("OBJECT")
+        if object_name_hint:
+            self.object_name_edit.setText(str(object_name_hint))
+        object_row.addWidget(self.object_name_edit)
+        self.simbad_button = QPushButton("Buscar en SIMBAD...")
+        self.simbad_button.clicked.connect(self._on_simbad_lookup)
+        object_row.addWidget(self.simbad_button)
+        layout.addLayout(object_row)
+        self.simbad_status_label = QLabel("")
+        self.simbad_status_label.setObjectName("Muted")
+        self.simbad_status_label.setWordWrap(True)
+        layout.addWidget(self.simbad_status_label)
 
         form = QFormLayout()
         self.ra_spin = QDoubleSpinBox()
@@ -108,6 +132,39 @@ class PlateSolveDialog(QDialog):
         self.accept_button.clicked.connect(self._on_accept)
         self.button_box.rejected.connect(self.reject)
         layout.addWidget(self.button_box)
+
+    def _on_simbad_lookup(self) -> None:
+        name = self.object_name_edit.text().strip()
+        if not name:
+            self.simbad_status_label.setText("Escribe el nombre real del objeto (p. ej. \"M 31\") antes de buscar.")
+            return
+        self.simbad_button.setEnabled(False)
+        self.simbad_status_label.setText(f"Consultando SIMBAD por «{name}»...")
+
+        def run():
+            return resolve_object_coordinates(name)
+
+        self._simbad_worker = CallableWorker(run, self)
+        self._simbad_worker.finished_ok.connect(self._on_simbad_resolved)
+        self._simbad_worker.failed.connect(self._on_simbad_failed)
+        self._simbad_worker.start()
+
+    def _on_simbad_resolved(self, result) -> None:
+        self.simbad_button.setEnabled(True)
+        if result is None:
+            self.simbad_status_label.setText(
+                f"SIMBAD no pudo resolver «{self.object_name_edit.text().strip()}» -- comprueba el nombre "
+                f"(o la conectividad) e inténtalo de nuevo, o introduce la posición aproximada a mano."
+            )
+            return
+        ra, dec, source = result
+        self.ra_spin.setValue(ra)
+        self.dec_spin.setValue(dec)
+        self.simbad_status_label.setText(f"Posición obtenida de {source}: RA={ra:.6f}° Dec={dec:.6f}°.")
+
+    def _on_simbad_failed(self, message: str) -> None:
+        self.simbad_button.setEnabled(True)
+        self.simbad_status_label.setText(f"No se pudo consultar SIMBAD: error interno inesperado -- {message}")
 
     def _on_solve(self) -> None:
         self.solve_button.setEnabled(False)

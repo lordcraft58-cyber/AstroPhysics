@@ -157,6 +157,19 @@ def _radius_filtered_gaia_mock(gaia_rows):
     return query
 
 
+def _write_fits_with_scale_only_no_pointing(path, data, *, pixscale: float):
+    """FITS real con escala pero SIN ningún puntero en el header (ni
+    OBJCTRA/OBJCTDEC ni RA/DEC) -- el caso real reportado en uso: el
+    software de captura no siempre escribe la posición, aunque el
+    usuario sepa perfectamente qué objeto está fotografiando. Solo
+    SIMBAD (por el nombre real del objetivo) puede dar un puntero aquí."""
+    from astropy.io import fits
+
+    header = fits.Header()
+    header["PIXSCALE"] = pixscale
+    fits.PrimaryHDU(data.astype(np.float32), header=header).writeto(path)
+
+
 def test_run_generic_discovery_resolves_missing_wcs_automatically_and_reaches_known(tmp_path, monkeypatch):
     """Prueba obligatoria (objetivo 1 y 3 del encargo): Discovery, ante una
     imagen sin WCS pero con puntero/escala aproximados reales en el
@@ -183,6 +196,33 @@ def test_run_generic_discovery_resolves_missing_wcs_automatically_and_reaches_kn
     for candidate in candidates:
         if candidate.identification_state is IdentificationState.KNOWN:
             assert candidate.catalog_matches[0].catalog_id.startswith("GAIA-")
+
+
+def test_run_generic_discovery_resolves_pointing_via_simbad_object_name_when_header_lacks_it(tmp_path, monkeypatch):
+    """Caso real reportado en uso: el header no trae RA/DEC ni OBJCTRA/
+    OBJCTDEC (el software de captura no siempre las escribe), así que
+    Discovery no puede resolver la placa por el header -- pero SÍ debe
+    resolverla usando el NOMBRE del objetivo (el que el usuario escribió
+    en "Nueva observación") vía SIMBAD, igual que "Spectrophotometric
+    Color Calibration" de PixInsight."""
+    data, gaia_rows = _solvable_star_field_and_catalog(ra0=10.6847, dec0=41.2688)  # M 31 real
+    monkeypatch.setattr(plate_solve_module, "query_gaia_neighbors", _radius_filtered_gaia_mock(gaia_rows))
+    monkeypatch.setattr(gaia_module, "query_gaia_neighbors", _radius_filtered_gaia_mock(gaia_rows))
+    monkeypatch.setattr(
+        pipeline_module, "resolve_object_coordinates",
+        lambda name: (10.6847, 41.2688, f"SIMBAD: {name}") if name.strip().lower() == "m 31" else None,
+    )
+
+    path = tmp_path / "field_no_header_pointing.fits"
+    _write_fits_with_scale_only_no_pointing(path, data, pixscale=1.0)
+
+    observation, loaded = build_observation([(str(path), "OIII")], observation_id="OBS-INT-WCS-0005", target_name="M 31")
+    candidates, summary = run_generic_discovery(observation, loaded, threshold_sigma=5.0, match_radius_arcsec=3.0)
+
+    assert len(summary.wcs_status) == 1
+    assert summary.wcs_status[0].state == WCS_STATE_AUTO_RESOLVED, summary.wcs_status[0].detail
+    assert "SIMBAD" in summary.wcs_status[0].detail
+    assert summary.n_known > 0, "con el puntero resuelto por SIMBAD, se esperan candidatos KNOWN reales, no DISCOVERY_REVIEW"
 
 
 def test_run_generic_discovery_records_plate_solve_failure_without_crashing(tmp_path, monkeypatch):

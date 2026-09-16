@@ -130,6 +130,63 @@ def test_plate_solve_dialog_resolves_and_applies_wcs_to_view(qapp, main_window, 
     assert main_window._last_result_table is not None
 
 
+def test_plate_solve_dialog_simbad_lookup_fills_ra_dec(qapp, main_window, monkeypatch):
+    """Flujo estilo "Spectrophotometric Color Calibration" de PixInsight:
+    el usuario escribe el nombre real del objeto y pulsa "Buscar en
+    SIMBAD...", que rellena RA/Dec -- sin tocar la red real (mockeado en
+    el punto real de consulta, como el resto de tests de este archivo)."""
+    import qt_app.astrometry.plate_solve_dialog as plate_solve_dialog_module
+    from qt_app.astrometry.plate_solve_dialog import PlateSolveDialog
+
+    def fake_resolve(name):
+        assert name == "M 31"
+        return 10.6847083, 41.26875, "SIMBAD: M 31"
+
+    monkeypatch.setattr(plate_solve_dialog_module, "resolve_object_coordinates", fake_resolve)
+
+    dialog = PlateSolveDialog(np.zeros((50, 50)), {}, main_window)
+    dialog.object_name_edit.setText("M 31")
+    dialog._on_simbad_lookup()
+    deadline_worker = dialog._simbad_worker
+    while deadline_worker is not None and deadline_worker.isRunning():
+        qapp.processEvents()
+    qapp.processEvents()
+
+    assert dialog.ra_spin.value() == pytest.approx(10.6847083, abs=1e-4)
+    assert dialog.dec_spin.value() == pytest.approx(41.26875, abs=1e-4)
+    assert "SIMBAD" in dialog.simbad_status_label.text()
+    dialog.close()
+
+
+def test_plate_solve_dialog_simbad_lookup_reports_failure_honestly(qapp, main_window, monkeypatch):
+    import qt_app.astrometry.plate_solve_dialog as plate_solve_dialog_module
+    from qt_app.astrometry.plate_solve_dialog import PlateSolveDialog
+
+    monkeypatch.setattr(plate_solve_dialog_module, "resolve_object_coordinates", lambda name: None)
+
+    dialog = PlateSolveDialog(np.zeros((50, 50)), {}, main_window)
+    dialog.object_name_edit.setText("Objeto inexistente xyz123")
+    original_ra, original_dec = dialog.ra_spin.value(), dialog.dec_spin.value()
+    dialog._on_simbad_lookup()
+    deadline_worker = dialog._simbad_worker
+    while deadline_worker is not None and deadline_worker.isRunning():
+        qapp.processEvents()
+    qapp.processEvents()
+
+    assert "no pudo resolver" in dialog.simbad_status_label.text()
+    assert dialog.ra_spin.value() == original_ra  # nunca inventa una posición
+    assert dialog.dec_spin.value() == original_dec
+    dialog.close()
+
+
+def test_plate_solve_dialog_prefills_object_name_from_fits_object_header(qapp, main_window):
+    from qt_app.astrometry.plate_solve_dialog import PlateSolveDialog
+
+    dialog = PlateSolveDialog(np.zeros((50, 50)), {"OBJECT": "M 42"}, main_window)
+    assert dialog.object_name_edit.text() == "M 42"
+    dialog.close()
+
+
 def test_plate_solve_dialog_reports_failure_without_touching_view(qapp, main_window, monkeypatch):
     from qt_app.astrometry.plate_solve_dialog import PlateSolveDialog
 
