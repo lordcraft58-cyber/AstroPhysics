@@ -133,6 +133,88 @@ def test_running_measurement_process_does_not_create_new_window(qapp, main_windo
     assert len(main_window.mdi.subWindowList()) == windows_before
 
 
+def test_aperture_photometry_auto_detect_skips_manual_picking_and_fits_curve_of_growth(qapp, main_window):
+    data = _synthetic_field()
+    sub_window = main_window.add_image_window(data, "auto_detect_test.fits")
+    main_window.mdi.setActiveSubWindow(sub_window)
+    qapp.processEvents()
+    view = sub_window.widget()
+
+    default_params = {p.name: p.default for p in main_window._process_by_id["photometry.aperture"].parameters}
+    default_params["auto_detect"] = True
+    default_params["fit_curve_of_growth"] = True
+    default_params["sky_r_in"] = 20.0
+    default_params["sky_r_out"] = 30.0
+    default_params["detect_fwhm_px"] = 7.0  # FWHM real de la fuente inyectada por _synthetic_field (sigma=3.0 px)
+
+    _run_process_and_wait(qapp, main_window, "photometry.aperture", default_params)
+
+    assert view._picking is False  # nunca entró en modo de clic manual
+    assert "completado" in main_window.statusBar().currentMessage().lower() or "detección" in main_window.statusBar().currentMessage().lower()
+    assert main_window._last_result_table is not None
+    assert main_window._last_result_table.columns == ("radius_px", "net_flux", "snr")
+
+
+def test_aperture_photometry_auto_detect_reports_when_no_source_found(qapp, main_window):
+    data = np.full((60, 60), 200.0)  # campo plano, sin fuentes por encima del umbral
+    sub_window = main_window.add_image_window(data, "no_sources_test.fits")
+    main_window.mdi.setActiveSubWindow(sub_window)
+    qapp.processEvents()
+
+    default_params = {p.name: p.default for p in main_window._process_by_id["photometry.aperture"].parameters}
+    default_params["auto_detect"] = True
+
+    main_window._run_process("photometry.aperture", default_params)
+    qapp.processEvents()
+
+    assert "ninguna fuente" in main_window.statusBar().currentMessage().lower()
+    assert main_window._active_worker is None
+
+
+def test_zeropoint_auto_detect_measures_multiple_stars_without_clicks(qapp, main_window, monkeypatch):
+    import math
+
+    from astropy.wcs import WCS
+
+    import qt_app.processes.registry as registry_module
+
+    shape = (101, 101)
+    yy, xx = np.mgrid[0 : shape[0], 0 : shape[1]]
+    star_positions = [(30.0, 30.0, 30000.0), (70.0, 60.0, 20000.0)]
+    data = np.full(shape, 150.0)
+    sigma = 2.2
+    for x0, y0, flux in star_positions:
+        data = data + flux / (2 * math.pi * sigma**2) * np.exp(-(((xx - x0) ** 2 + (yy - y0) ** 2)) / (2 * sigma**2))
+
+    wcs = WCS(naxis=2)
+    wcs.wcs.crpix = [50.0, 50.0]
+    wcs.wcs.cdelt = [-1.0 / 3600.0, 1.0 / 3600.0]
+    wcs.wcs.crval = [150.0, 2.0]
+    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+
+    true_zeropoint = 24.0
+    gaia_rows = []
+    for x0, y0, flux in star_positions:
+        ra, dec = wcs.celestial.all_pix2world(x0, y0, 0)
+        instrumental_mag = -2.5 * math.log10(flux)
+        gaia_rows.append({"ra_deg": float(ra), "dec_deg": float(dec), "mag_g": instrumental_mag + true_zeropoint, "source_id": f"{x0}-{y0}"})
+    monkeypatch.setattr(registry_module, "query_gaia_neighbors", lambda ra, dec, **kwargs: gaia_rows)
+
+    sub_window = main_window.add_image_window(data, "zeropoint_auto_test.fits", wcs=wcs)
+    main_window.mdi.setActiveSubWindow(sub_window)
+    qapp.processEvents()
+    view = sub_window.widget()
+
+    default_params = {p.name: p.default for p in main_window._process_by_id["photometry.zeropoint"].parameters}
+    default_params["auto_detect"] = True
+
+    _run_process_and_wait(qapp, main_window, "photometry.zeropoint", default_params)
+
+    assert view._picking is False  # nunca entró en modo de clic manual
+    assert main_window._last_result_table is not None
+    assert len(main_window._last_result_table.rows) == len(star_positions)
+
+
 def test_running_process_without_active_image_reports_status_and_does_not_crash(qapp, main_window):
     for sub_window in list(main_window.mdi.subWindowList()):
         sub_window.close()

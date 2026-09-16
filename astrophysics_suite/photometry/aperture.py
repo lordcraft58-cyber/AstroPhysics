@@ -199,3 +199,77 @@ def aperture_photometry(
             )
         )
     return measurements
+
+
+@dataclass(frozen=True)
+class GrowthCurveFit:
+    """Ajuste de la curva de crecimiento (flujo neto acumulado en función
+    del radio de apertura) a un modelo de saturación monótono, más el
+    radio de apertura recomendado -- el que maximiza la señal/ruido
+    realmente medida entre los radios probados, criterio estándar de
+    "apertura óptima" de una curva de crecimiento (p. ej. Howell,
+    *Handbook of CCD Astronomy*, cap. 5), no un radio fijo elegido a
+    ciegas."""
+
+    radii_px: tuple[float, ...]
+    net_fluxes: tuple[float, ...]
+    asymptotic_flux: float
+    scale_radius_px: float
+    shape_index: float
+    rms_residual: float
+    optimal_radius_px: float
+    optimal_snr: float
+    flux_fraction_at_optimal: float
+
+
+def _growth_curve_model(radius: np.ndarray, asymptotic_flux: float, scale_radius: float, shape_index: float) -> np.ndarray:
+    return asymptotic_flux * (1.0 - np.exp(-((radius / scale_radius) ** shape_index)))
+
+
+def fit_curve_of_growth(measurements: list[ApertureMeasurement]) -> GrowthCurveFit:
+    """Ajusta la curva de crecimiento real -- flujo neto ya medido por
+    `aperture_photometry` en varios radios de la misma fuente -- a un
+    modelo de saturación monótono `F(r) = F_inf * (1 - exp(-(r/r0)^p))`,
+    y recomienda como radio óptimo el que maximiza la señal/ruido medida
+    (no extrapolada) entre los radios realmente probados."""
+    from scipy.optimize import curve_fit
+
+    if len(measurements) < 4:
+        raise ValueError("se necesitan al menos 4 radios distintos para ajustar una curva de crecimiento")
+
+    radii = np.array([m.radius_px for m in measurements], dtype=np.float64)
+    fluxes = np.array([m.net_flux for m in measurements], dtype=np.float64)
+    if len(set(radii.tolist())) != len(radii):
+        raise ValueError("los radios de las medidas deben ser distintos entre sí")
+
+    order = np.argsort(radii)
+    radii, fluxes = radii[order], fluxes[order]
+
+    initial_guess = (max(float(np.max(fluxes)), 1.0) * 1.2, float(np.median(radii)), 2.0)
+    bounds = ([1e-9, 1e-9, 0.1], [np.inf, np.inf, 20.0])
+    try:
+        popt, _ = curve_fit(_growth_curve_model, radii, fluxes, p0=initial_guess, bounds=bounds, maxfev=10000)
+    except RuntimeError as exc:
+        raise ValueError(f"el ajuste de la curva de crecimiento no convergió: {exc}") from exc
+
+    asymptotic_flux, scale_radius, shape_index = (float(v) for v in popt)
+    residuals = fluxes - _growth_curve_model(radii, *popt)
+    rms_residual = float(np.sqrt(np.mean(residuals**2)))
+
+    valid = [(m.radius_px, m.snr, m.net_flux) for m in measurements if m.snr is not None]
+    if not valid:
+        raise ValueError("ninguna medida tiene señal/ruido válida -- no se puede recomendar un radio óptimo")
+    optimal_radius_px, optimal_snr, optimal_flux = max(valid, key=lambda row: row[1])
+    flux_fraction_at_optimal = optimal_flux / asymptotic_flux if asymptotic_flux > 0 else 0.0
+
+    return GrowthCurveFit(
+        radii_px=tuple(radii.tolist()),
+        net_fluxes=tuple(fluxes.tolist()),
+        asymptotic_flux=asymptotic_flux,
+        scale_radius_px=scale_radius,
+        shape_index=shape_index,
+        rms_residual=rms_residual,
+        optimal_radius_px=float(optimal_radius_px),
+        optimal_snr=float(optimal_snr),
+        flux_fraction_at_optimal=float(flux_fraction_at_optimal),
+    )

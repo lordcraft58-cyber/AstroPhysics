@@ -9,6 +9,7 @@ from astrophysics_suite.photometry.aperture import (
     aperture_coverage_mask,
     aperture_photometry,
     estimate_local_sky,
+    fit_curve_of_growth,
 )
 
 
@@ -92,3 +93,48 @@ def test_aperture_photometry_magnitude_none_for_nonpositive_flux():
     uncertainty = np.sqrt(data)
     measurements = aperture_photometry(data, uncertainty, 10.0, 10.0, radii=[3.0], sky_r_in=6.0, sky_r_out=9.0)
     assert measurements[0].magnitude is None
+
+
+def _isolated_gaussian_star(shape=(101, 101), center=(50.0, 50.0), true_flux=40000.0, sigma=2.8, background=200.0, seed=3):
+    yy, xx = np.mgrid[0 : shape[0], 0 : shape[1]]
+    x0, y0 = center
+    star = true_flux / (2 * math.pi * sigma**2) * np.exp(-(((xx - x0) ** 2 + (yy - y0) ** 2)) / (2 * sigma**2))
+    data = background + star
+    rng = np.random.default_rng(seed)
+    data = data + rng.normal(0, math.sqrt(background), shape)
+    uncertainty = np.sqrt(np.clip(data, 1.0, None))
+    return data, uncertainty
+
+
+def test_fit_curve_of_growth_recovers_asymptotic_flux_and_monotonic_optimum():
+    data, uncertainty = _isolated_gaussian_star()
+    radii = [2.0, 4.0, 6.0, 8.0, 11.0, 15.0, 20.0, 26.0]
+    measurements = aperture_photometry(data, uncertainty, 50.0, 50.0, radii=radii, sky_r_in=30.0, sky_r_out=40.0)
+
+    fit = fit_curve_of_growth(measurements)
+
+    assert fit.asymptotic_flux == pytest.approx(40000.0, rel=0.1)
+    assert fit.optimal_radius_px in radii
+    # el radio óptimo debe capturar la mayor parte del flujo, no un recorte extremo
+    assert 0.5 < fit.flux_fraction_at_optimal <= 1.05
+    assert fit.rms_residual < 0.05 * fit.asymptotic_flux
+    assert fit.scale_radius_px > 0
+
+
+def test_fit_curve_of_growth_optimal_radius_maximizes_measured_snr():
+    data, uncertainty = _isolated_gaussian_star()
+    radii = [2.0, 4.0, 6.0, 8.0, 11.0, 15.0, 20.0, 26.0]
+    measurements = aperture_photometry(data, uncertainty, 50.0, 50.0, radii=radii, sky_r_in=30.0, sky_r_out=40.0)
+
+    fit = fit_curve_of_growth(measurements)
+
+    best_measured = max((m for m in measurements if m.snr is not None), key=lambda m: m.snr)
+    assert fit.optimal_radius_px == pytest.approx(best_measured.radius_px)
+    assert fit.optimal_snr == pytest.approx(best_measured.snr)
+
+
+def test_fit_curve_of_growth_rejects_too_few_radii():
+    data, uncertainty = _isolated_gaussian_star()
+    measurements = aperture_photometry(data, uncertainty, 50.0, 50.0, radii=[4.0, 8.0, 12.0], sky_r_in=30.0, sky_r_out=40.0)
+    with pytest.raises(ValueError):
+        fit_curve_of_growth(measurements)

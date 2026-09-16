@@ -17,7 +17,7 @@ from astrophysics_suite.imtools.cosmic_rays import detect_cosmic_rays
 from astrophysics_suite.imtools.normalize import normalize_percentile
 from astrophysics_suite.imtools.regions import crop
 from astrophysics_suite.imtools.statistics import compute_histogram, compute_image_statistics
-from astrophysics_suite.photometry.aperture import aperture_photometry
+from astrophysics_suite.photometry.aperture import aperture_photometry, fit_curve_of_growth
 from astrophysics_suite.photometry.calibration import fit_zeropoint
 from astrophysics_suite.photometry.psf import GaussianPSF, fit_group_psf_photometry
 from astrophysics_suite.reduction.overscan import subtract_overscan
@@ -56,29 +56,66 @@ def _run_overscan_subtraction(data: np.ndarray, params: dict) -> ProcessResult:
     return ProcessResult(output_data=result.data, summary=summary)
 
 
+def _growth_curve_radii(radius_px: float, sky_r_in: float, n: int = 8) -> list[float]:
+    """Radios de muestreo para la curva de crecimiento alrededor del radio
+    de apertura elegido por el usuario -- acotados para no salir del
+    anillo de cielo (`sky_r_in`), donde la apertura y el fondo dejarían de
+    ser regiones separadas."""
+    r_min = max(1.0, radius_px * 0.3)
+    r_max = max(radius_px * 1.2, min(radius_px * 3.0, sky_r_in * 0.9))
+    if r_max <= r_min:
+        r_max = r_min * 3.0
+    return [float(r) for r in np.geomspace(r_min, r_max, n)]
+
+
 def _run_aperture_photometry_center(data: np.ndarray, params: dict) -> ProcessResult:
     points = params.get("_picked_points") or []
     if not points:
         raise ValueError("no se marcó ninguna posición -- haz clic sobre la fuente antes de medir")
     x0, y0 = points[0]
     uncertainty = np.sqrt(np.clip(data, 1.0, None))  # modelo de ruido Poisson aproximado -- ver nota en la ayuda del proceso
+    radius_px, sky_r_in, sky_r_out = params["radius_px"], params["sky_r_in"], params["sky_r_out"]
 
     measurements = aperture_photometry(
         data, uncertainty, x0, y0,
-        radii=[params["radius_px"]],
-        sky_r_in=params["sky_r_in"],
-        sky_r_out=params["sky_r_out"],
+        radii=[radius_px],
+        sky_r_in=sky_r_in,
+        sky_r_out=sky_r_out,
         zeropoint_mag=params["zeropoint_mag"],
     )
     m = measurements[0]
     mag_text = f"{m.magnitude:.3f} ± {m.magnitude_uncertainty:.3f}" if m.magnitude is not None else "N/D (flujo neto <= 0)"
     snr_text = f"{m.snr:.1f}" if m.snr is not None else "N/D"
     summary = f"Flujo neto: {m.net_flux:.1f} ± {m.net_flux_uncertainty:.1f} ADU  ·  mag={mag_text}  ·  S/N={snr_text}"
-    log_lines = (
+    log_lines = [
         f"Centro de apertura: x={x0:.1f}, y={y0:.1f} (marcado a clic)",
         f"Cielo local: {m.sky_per_pixel:.2f} ± {m.sky_sigma_per_pixel:.2f} ADU/px ({m.n_pixels:.1f} px efectivos de apertura)",
-    )
-    return ProcessResult(output_data=None, summary=summary, log_lines=log_lines)
+    ]
+
+    table = None
+    if params.get("fit_curve_of_growth"):
+        growth_radii = _growth_curve_radii(radius_px, sky_r_in)
+        growth_measurements = aperture_photometry(
+            data, uncertainty, x0, y0, radii=growth_radii, sky_r_in=sky_r_in, sky_r_out=sky_r_out, zeropoint_mag=params["zeropoint_mag"]
+        )
+        try:
+            fit = fit_curve_of_growth(growth_measurements)
+        except ValueError as exc:
+            log_lines.append(f"Curva de crecimiento: no se pudo ajustar ({exc}).")
+        else:
+            log_lines.append(
+                f"Curva de crecimiento: radio óptimo (máx. S/N medida) = {fit.optimal_radius_px:.1f} px "
+                f"(S/N={fit.optimal_snr:.1f}), captura {fit.flux_fraction_at_optimal:.1%} del flujo asintótico "
+                f"ajustado ({fit.asymptotic_flux:.1f} ADU, RMS del ajuste={fit.rms_residual:.2f} ADU)."
+            )
+            table = Table(
+                columns=("radius_px", "net_flux", "snr"),
+                units=("px", "ADU", ""),
+                rows=tuple(
+                    (gm.radius_px, gm.net_flux, gm.snr if gm.snr is not None else float("nan")) for gm in growth_measurements
+                ),
+            )
+    return ProcessResult(output_data=None, summary=summary, log_lines=tuple(log_lines), table=table)
 
 
 def _pixel_to_sky(wcs, x: float, y: float) -> tuple[float, float] | tuple[None, None]:
@@ -325,12 +362,19 @@ def build_process_registry() -> list[ProcessDefinition]:
             process_id="photometry.aperture",
             name="Fotometría de apertura (clic)",
             category="Fotometría",
-            description="Apertura circular con cielo local por anillo -- equivalente a phot. Al pulsar Aplicar, marca la fuente con un clic. Nota: usa un modelo de ruido Poisson aproximado (sin ganancia/lectura reales) mientras el taller no importa la incertidumbre real de calibración.",
+            description="Apertura circular con cielo local por anillo -- equivalente a phot. Al pulsar Aplicar, marca la fuente con un clic (o activa 'Detectar automáticamente' para usar la fuente más brillante detectada, sin clic). Nota: usa un modelo de ruido Poisson aproximado (sin ganancia/lectura reales) mientras el taller no importa la incertidumbre real de calibración.",
             parameters=(
                 ParameterSpec("radius_px", "Radio de apertura (px)", "float", 6.0, minimum=1.0, maximum=200.0),
                 ParameterSpec("sky_r_in", "Radio interior de cielo (px)", "float", 12.0, minimum=1.0, maximum=400.0),
                 ParameterSpec("sky_r_out", "Radio exterior de cielo (px)", "float", 18.0, minimum=2.0, maximum=500.0),
                 ParameterSpec("zeropoint_mag", "Punto cero (mag)", "float", 25.0, minimum=-10.0, maximum=40.0),
+                ParameterSpec(
+                    "fit_curve_of_growth", "Ajustar curva de crecimiento (radio óptimo)", "bool", False,
+                    help_text="Mide en varios radios adicionales alrededor del radio de apertura y recomienda el que maximiza la señal/ruido medida -- no cambia la medida principal, añade un diagnóstico y una tabla exportable (radio, flujo, S/N).",
+                ),
+                ParameterSpec("auto_detect", "Detectar automáticamente (omite clic)", "bool", False, help_text="Usa la fuente más brillante detectada (DAOStarFinder) en vez de pedir un clic manual."),
+                ParameterSpec("detect_fwhm_px", "FWHM esperado para detección (px)", "float", 3.0, minimum=0.5, maximum=50.0),
+                ParameterSpec("detect_threshold_sigma", "Umbral de detección (σ)", "float", 5.0, minimum=1.0, maximum=50.0),
             ),
             run=_run_aperture_photometry_center,
             requires_picking=1,
@@ -339,12 +383,15 @@ def build_process_registry() -> list[ProcessDefinition]:
             process_id="photometry.zeropoint",
             name="Calibración fotométrica (punto cero, Gaia)",
             category="Fotometría",
-            description="Resuelve el punto cero fotométrico real contra Gaia DR3 -- equivalente a photcal/fitparams. Marca varias estrellas de referencia con clic izquierdo, termina con clic derecho. Requiere que la imagen activa tenga WCS real (cargada de un FITS con astrometría, no simulada).",
+            description="Resuelve el punto cero fotométrico real contra Gaia DR3 -- equivalente a photcal/fitparams. Marca varias estrellas de referencia con clic izquierdo, termina con clic derecho (o activa 'Detectar automáticamente' para usar las fuentes más brillantes detectadas, sin clics). Requiere que la imagen activa tenga WCS real (cargada de un FITS con astrometría, no simulada).",
             parameters=(
                 ParameterSpec("radius_px", "Radio de apertura (px)", "float", 6.0, minimum=1.0, maximum=200.0),
                 ParameterSpec("sky_r_in", "Radio interior de cielo (px)", "float", 12.0, minimum=1.0, maximum=400.0),
                 ParameterSpec("sky_r_out", "Radio exterior de cielo (px)", "float", 18.0, minimum=2.0, maximum=500.0),
                 ParameterSpec("match_radius_arcsec", "Radio de emparejamiento (arcsec)", "float", 3.0, minimum=0.1, maximum=30.0),
+                ParameterSpec("auto_detect", "Detectar automáticamente (omite clics)", "bool", False, help_text="Usa hasta 20 de las fuentes más brillantes detectadas (DAOStarFinder) en vez de pedir clics manuales."),
+                ParameterSpec("detect_fwhm_px", "FWHM esperado para detección (px)", "float", 3.0, minimum=0.5, maximum=50.0),
+                ParameterSpec("detect_threshold_sigma", "Umbral de detección (σ)", "float", 5.0, minimum=1.0, maximum=50.0),
             ),
             run=_run_photometric_zeropoint,
             requires_picking=0,

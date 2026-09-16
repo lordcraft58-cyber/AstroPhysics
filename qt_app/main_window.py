@@ -13,6 +13,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import QDockWidget, QFileDialog, QMainWindow, QMdiArea, QMdiSubWindow, QMessageBox, QProgressBar
 
+from astrophysics_suite.detection.point_sources import detect_point_sources_in_array
 from astrophysics_suite.spectroscopy.wavelength import find_arc_lines
 from astrophysics_suite.tables.table import Table
 from qt_app.astrometry.registration_dialog import RegistrationDialog
@@ -394,11 +395,40 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Abre o selecciona una imagen antes de aplicar un proceso.", 5000)
             return
 
+        if process.requires_picking is not None and params.get("auto_detect"):
+            self._run_with_auto_detected_points(process, view, params)
+            return
+
         if process.requires_picking is not None:
             self._start_picking_then_run(process, view, params)
             return
 
         self._start_process_worker(process, view, params)
+
+    def _run_with_auto_detected_points(self, process: ProcessDefinition, view: ImageView, params: dict) -> None:
+        """Alternativa a `_start_picking_then_run` para procesos con
+        `ParameterSpec("auto_detect", ...)`: detecta fuentes reales
+        (DAOStarFinder) en la imagen activa y las usa directamente como
+        `_picked_points`, sin exigir clics manuales -- un radio de
+        `requires_picking=1` usa solo la más brillante; `0` (ilimitado)
+        usa hasta 20, de más a menos brillante."""
+        fwhm_px = float(params.get("detect_fwhm_px", 3.0))
+        threshold_sigma = float(params.get("detect_threshold_sigma", 5.0))
+        sources = detect_point_sources_in_array(view.data, fwhm_px=fwhm_px, threshold_sigma=threshold_sigma)
+        if not sources:
+            self.statusBar().showMessage(
+                "Detección automática: no se encontró ninguna fuente por encima del umbral -- baja el umbral o marca la posición a mano.", 6000
+            )
+            return
+
+        max_points = process.requires_picking if process.requires_picking else 20
+        points = [(x, y) for x, y, _flux in sources[:max_points]]
+        picked_params = dict(params)
+        picked_params["_picked_points"] = points
+        self.statusBar().showMessage(
+            f"Detección automática: {len(points)} fuente(s) usada(s) (de {len(sources)} detectada(s) en total).", 5000
+        )
+        self._start_process_worker(process, view, picked_params)
 
     def _start_picking_then_run(self, process: ProcessDefinition, view: ImageView, params: dict) -> None:
         max_points = process.requires_picking if process.requires_picking else None

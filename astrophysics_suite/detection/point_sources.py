@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
+
 from legacy.AstroPhysicsSuite_v57_3_COMMERCIAL import (
     detect_point_sources as _legacy_detect_point_sources,
 )
@@ -107,3 +109,27 @@ def detect_point_sources(
             )
         )
     return detections
+
+
+def detect_point_sources_in_array(
+    data: np.ndarray,
+    *,
+    fwhm_px: float = 3.0,
+    threshold_sigma: float = 5.0,
+    max_sources: int = 200,
+) -> list[tuple[float, float, float]]:
+    """Detección automática de fuentes puntuales (mismo motor real,
+    DAOStarFinder, que `detect_point_sources`) directamente sobre un
+    array 2D en memoria -- sin pasar por `LoadedImage`/`Detection`, que
+    exigen `observation_id`, banda y proveniencia (pensados para el
+    Discovery Engine, no para un paso previo interactivo de fotometría).
+
+    Devuelve `(x_px, y_px, flux_adu)` ordenado de más a menos brillante --
+    la forma mínima que necesita un flujo de fotometría para ofrecer
+    "detectar automáticamente" como alternativa al clic manual."""
+    array = np.asarray(data, dtype=np.float64)
+    bkg = _legacy_estimate_background(array)
+    raw_sources = _legacy_detect_point_sources(
+        array, bkg, fwhm_px=fwhm_px, threshold_sigma=threshold_sigma, max_sources=max_sources
+    )
+    return [(float(x), float(y), float(flux)) for x, y, flux in raw_sources]

@@ -9,7 +9,7 @@ import math
 import numpy as np
 
 from astrophysics_suite.core.enums import MorphologyClass
-from astrophysics_suite.detection.point_sources import detect_point_sources
+from astrophysics_suite.detection.point_sources import detect_point_sources, detect_point_sources_in_array
 from astrophysics_suite.io.fits_loader import load_image
 from legacy.AstroPhysicsSuite_v57_3_COMMERCIAL import _write_minimal_fits_2d
 
@@ -68,3 +68,33 @@ def test_detect_point_sources_returns_serializable_detections(tmp_path):
     for d in detections:
         restored = Detection.from_dict(d.to_dict())
         assert restored == d
+
+
+def test_detect_point_sources_in_array_finds_injected_stars_sorted_by_brightness():
+    positions = [(30, 30), (70, 45), (50, 80)]
+    amplitudes = [900.0, 2500.0, 500.0]  # deliberadamente desordenadas en brillo
+    yy, xx = np.mgrid[0:128, 0:128]
+    field = np.full((128, 128), 100.0, dtype=np.float64)
+    for (x, y), amp in zip(positions, amplitudes):
+        field += amp * np.exp(-((xx - x) ** 2 + (yy - y) ** 2) / (2 * 1.8**2))
+    rng = np.random.default_rng(7)
+    field += rng.normal(0, 2.0, field.shape)
+
+    sources = detect_point_sources_in_array(field, threshold_sigma=4.0)
+
+    assert len(sources) >= len(positions)
+    found_positions = {(round(x), round(y)) for x, y, _flux in sources}
+    for x, y in positions:
+        assert any(abs(fx - x) <= 1 and abs(fy - y) <= 1 for fx, fy in found_positions)
+
+    # ordenado de más a menos brillante -- la fuente más brillante inyectada (70, 45) debe ir primero
+    brightest_x, brightest_y, _ = sources[0]
+    assert abs(brightest_x - 70) <= 1 and abs(brightest_y - 45) <= 1
+    fluxes = [flux for _, _, flux in sources]
+    assert all(earlier >= later for earlier, later in zip(fluxes, fluxes[1:]))
+
+
+def test_detect_point_sources_in_array_returns_empty_for_flat_field():
+    field = np.full((64, 64), 100.0)
+    sources = detect_point_sources_in_array(field, threshold_sigma=5.0)
+    assert sources == []

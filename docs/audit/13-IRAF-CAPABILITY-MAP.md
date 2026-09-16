@@ -59,13 +59,13 @@ capacidad sin implementar en absoluto).
 
 | Capacidad | Estado actual | Test | GUI | Estado final |
 |---|---|---|---|---|
-| Detección de fuentes (DAOStarFinder real, no un placeholder) | Real, `detection/point_sources.py:47` (`detect_point_sources`) | `tests/unit/detection/test_point_sources.py` | Usado por el Discovery Engine; no expuesto como paso previo interactivo de `photometry.aperture` | **EXPERIMENTAL** (existe, pero desconectado del flujo interactivo de fotometría) |
+| Detección de fuentes (DAOStarFinder real, no un placeholder) | Real, `detection/point_sources.py:47` (`detect_point_sources`) | `tests/unit/detection/test_point_sources.py` | Usado por el Discovery Engine; **y ahora también** por `photometry.aperture`/`photometry.zeropoint` vía `detect_point_sources_in_array` (`detection/point_sources.py`, mismo motor sobre un array en memoria, sin exigir `LoadedImage`) -- casilla "Detectar automáticamente" -- ver Fase 16 | **DISPONIBLE** |
 | Centroidado (momento de segundo orden), FWHM, elipticidad, nitidez | Real, `_legacy_enrich_star_rows` vía `detection/point_sources.py` | ídem | ídem | **DISPONIBLE** (como motor) |
 | Máscara de cobertura de apertura subpíxel (interior/exterior analítico, borde sobremuestreado) | Real, `photometry/aperture.py:17` (`aperture_coverage_mask`) | `tests/unit/photometry/test_aperture.py` | Proceso `photometry.aperture`, cableado | **DISPONIBLE** |
 | Estimación de cielo en anillo con rechazo iterativo sigma-clip (MAD) | Real, `aperture.py:73` (`estimate_local_sky`) | ídem | ídem | **DISPONIBLE** |
 | Fotometría multi-radio (curva de crecimiento cruda), flujo neto, error propagado, magnitud instrumental | Real, `aperture.py:145` (`aperture_photometry`) | ídem | Proceso `photometry.aperture`, **ahora con selección de fuente a clic** (`requires_picking=1`) -- ver Fase 12 | **DISPONIBLE** |
-| Ajuste real de curva de crecimiento / radio óptimo | No implementado (se devuelven las medidas por radio, sin ajuste ni recomendación de radio óptimo) | — | — | **PENDIENTE** |
-| Calibración fotométrica (punto cero resuelto contra estrellas estándar/catálogo) | No implementada -- el punto cero era una constante fija que introducía el usuario, nunca ajustada contra datos | `astrophysics_suite/photometry/calibration.py` (`fit_zeropoint`, mediana robusta con rechazo sigma-clip de outliers) -- ver Fase 12 | `tests/unit/photometry/test_photometric_calibration.py` | Proceso `photometry.zeropoint`, cableado: clic en varias estrellas de referencia -> fotometría instrumental real -> WCS real de la imagen activa -> consulta Gaia DR3 real -> ajuste de punto cero robusto | **DISPONIBLE** |
+| Ajuste real de curva de crecimiento / radio óptimo | No implementada hasta esta ronda | `astrophysics_suite/photometry/aperture.py` (`fit_curve_of_growth`, modelo de saturación `F(r)=F_inf(1-e^{-(r/r0)^p})` vía `scipy.optimize.curve_fit`, radio óptimo = el que maximiza la S/N medida) -- ver Fase 16 | `tests/unit/photometry/test_aperture.py` | Casilla "Ajustar curva de crecimiento (radio óptimo)" en `photometry.aperture` -- mide en varios radios adicionales, reporta el radio recomendado y exporta una tabla (radio, flujo, S/N) | **DISPONIBLE** |
+| Calibración fotométrica (punto cero resuelto contra estrellas estándar/catálogo) | No implementada -- el punto cero era una constante fija que introducía el usuario, nunca ajustada contra datos | `astrophysics_suite/photometry/calibration.py` (`fit_zeropoint`, mediana robusta con rechazo sigma-clip de outliers) -- ver Fase 12 | `tests/unit/photometry/test_photometric_calibration.py` | Proceso `photometry.zeropoint`, cableado: clic en varias estrellas de referencia (o "Detectar automáticamente", ver Fase 16) -> fotometría instrumental real -> WCS real de la imagen activa -> consulta Gaia DR3 real -> ajuste de punto cero robusto | **DISPONIBLE** |
 
 ---
 
@@ -158,7 +158,7 @@ si se decide que hace falta.
 |---|---|---|---|---|
 | `ccdred` | 13 | 0 | 0 | **Cerrado.** Sesión real de LIGHTS, píxeles defectuosos, franjas, iluminación, cielo, clasificación por cabecera y perfiles de instrumento, todos con motor real y camino de uso en la GUI (Fases 10.1-10.2) |
 | Análisis de imagen | 6 | 0 | 0 | **Cerrado.** Aritmética entre dos imágenes, estadísticas+histograma, recorte por clic y normalización por percentiles, todos con motor real y camino de uso en la GUI (Fase 11.1) |
-| `apphot` | 5 | 1 | 1 | **Núcleo cerrado en Fase 12**: selección de fuente a clic y calibración de punto cero real contra Gaia. Quedan pendientes solo el ajuste de curva de crecimiento/radio óptimo y conectar la detección automática como paso previo interactivo |
+| `apphot` | 7 | 0 | 0 | **Cerrado en la Fase 16.** Selección de fuente a clic o por detección automática (DAOStarFinder real), calibración de punto cero real contra Gaia (también con detección automática), y ajuste real de curva de crecimiento con radio óptimo recomendado -- todos con motor real y camino de uso en la GUI |
 | `daophot` | 2 | 2 | 4 | Núcleo real (deblending simultáneo, tres modelos PSF); falta selección/refinamiento/diagnóstico automáticos |
 | Astrometría | 6 | 0 | 3 | **Núcleo cerrado en Fase 13**: ajuste de WCS real (clic + coordenadas a mano, sin "blind solving") y registro por WCS compartido, ambos cableados. Quedan pendientes: registro por pares de estrellas emparejadas entre dos ventanas (interacción no construida), resolución automática contra catálogo, y exportación de posiciones a archivo |
 | Tablas/catálogos | 4 | 0 | 2 | **Exportación cerrada en Fase 14**: `Table` genérica real + CSV, consumida por punto cero y ajuste de WCS. Quedan pendientes, deliberadamente: unificación profunda de los tipos de resultado de cada motor (alto riesgo, no abordada) y abstracción de catálogo con más de un proveedor (YAGNI hasta que haga falta un segundo) |
@@ -216,3 +216,20 @@ recorrido por los seis bloques del orden de prioridad acordado
 (`CCDRED → análisis de imagen → fotometría → astrometría → tablas/catálogos →
 espectroscopía`); los huecos que quedan en cada uno están documentados
 explícitamente arriba, ninguno oculto.
+
+Tras cerrar los seis bloques, se continuó con los huecos ya documentados como
+`PENDIENTE` dentro de bloques que se habían dado por cerrados en su núcleo
+mínimo, siguiendo el mismo orden de prioridad (fotometría antes que
+astrometría/tablas/espectroscopía, cuyos pendientes son deliberadamente de
+mayor riesgo o alcance -- "blind solving", unificación profunda de tipos,
+abstracción de catálogo -- y siguen fuera de alcance). La Fase 16 (ver
+`21-FASE16-APPHOT-CIERRE.md`) cierra los dos huecos que quedaban en `apphot`:
+`fit_curve_of_growth` (`astrophysics_suite/photometry/aperture.py`) ajusta la
+curva de crecimiento real a un modelo de saturación monótono y recomienda el
+radio de apertura que maximiza la señal/ruido medida -- expuesto como casilla
+opcional en `photometry.aperture`, sin cambiar la medida principal ya
+probada; y `detect_point_sources_in_array` (`astrophysics_suite/detection/
+point_sources.py`) conecta el mismo motor DAOStarFinder ya usado por el
+Discovery Engine como alternativa real al clic manual en `photometry.
+aperture` y `photometry.zeropoint` ("Detectar automáticamente"). Con esto,
+`apphot` queda con sus 7 capacidades en `DISPONIBLE`, ninguna `PENDIENTE`.

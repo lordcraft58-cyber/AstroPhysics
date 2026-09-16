@@ -102,6 +102,39 @@ def test_aperture_photometry_process_rejects_no_picked_points():
         raise AssertionError("se esperaba ValueError sin posición marcada")
 
 
+def test_aperture_photometry_process_fits_curve_of_growth_when_requested():
+    shape = (101, 101)
+    yy, xx = np.mgrid[0 : shape[0], 0 : shape[1]]
+    sigma = 2.8
+    data = 200.0 + 40000.0 / (2 * math.pi * sigma**2) * np.exp(-(((xx - 50) ** 2 + (yy - 50) ** 2)) / (2 * sigma**2))
+    process = _get("photometry.aperture")
+    params = _default_params(process)
+    params["_picked_points"] = [(50.0, 50.0)]
+    params["radius_px"] = 6.0
+    params["sky_r_in"] = 30.0
+    params["sky_r_out"] = 40.0
+    params["fit_curve_of_growth"] = True
+
+    result = process.run(data, params)
+
+    assert "Curva de crecimiento" in result.log_lines[-1]
+    assert "radio óptimo" in result.log_lines[-1]
+    assert result.table is not None
+    assert result.table.columns == ("radius_px", "net_flux", "snr")
+    assert len(result.table.rows) >= 4
+
+
+def test_aperture_photometry_process_skips_curve_of_growth_by_default():
+    data = 100.0 + np.zeros((41, 41))
+    process = _get("photometry.aperture")
+    params = _default_params(process)
+    assert params["fit_curve_of_growth"] is False
+    assert params["auto_detect"] is False
+    params["_picked_points"] = [(20.0, 20.0)]
+    result = process.run(data, params)
+    assert result.table is None
+
+
 def test_zeropoint_process_requires_unlimited_picking():
     process = _get("photometry.zeropoint")
     assert process.requires_picking == 0
