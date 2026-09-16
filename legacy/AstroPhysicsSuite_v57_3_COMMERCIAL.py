@@ -11094,6 +11094,8 @@ def launch_gui(oiii=None, ha=None, _test_hook=None):
         "ai_model": tk.StringVar(value=""),
         "ai_vision_model": tk.StringVar(value=""),
         "offline": tk.BooleanVar(value=False),
+        "discovery_snr": tk.StringVar(value="5"),
+        "discovery_max": tk.StringVar(value="2000"),
     }
 
     def log(msg):

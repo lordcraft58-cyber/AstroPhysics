@@ -1,0 +1,43 @@
+name: tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  pytest:
+    name: pytest (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Necesarios para test_python_compatibility.py: el hallazgo P0 de la
+      # Fase 1 solo se detecta si el intérprete mínimo soportado (3.11)
+      # está realmente disponible para invocarse, no solo el de este job.
+      - name: Instala Python 3.10 y 3.11 como intérpretes auxiliares
+        uses: actions/setup-python@v5
+        with:
+          python-version: |
+            3.10
+            3.11
+
+      - name: Instala Python ${{ matrix.python-version }} (intérprete de test)
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Instala tkinter + Xvfb (para el smoke test de GUI)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk xvfb
+
+      - name: Instala dependencias
+        run: pip install -r requirements-test.txt
+
+      - name: Ejecuta la suite completa bajo Xvfb
+        run: xvfb-run --auto-servernum pytest tests/ -v
