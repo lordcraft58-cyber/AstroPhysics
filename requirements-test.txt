@@ -10,3 +10,4 @@ photutils>=1.13
 matplotlib>=3.8
 openpyxl>=3.1
 pytest>=8.0
+astroquery>=0.4  # Gaia/SIMBAD -- ver astrophysics_suite/catalogs/
