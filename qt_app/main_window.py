@@ -239,6 +239,32 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Abre o selecciona una imagen antes de aplicar un proceso.", 5000)
             return
 
+        if process.requires_picking is not None:
+            self._start_picking_then_run(process, view, params)
+            return
+
+        self._start_process_worker(process, view, params)
+
+    def _start_picking_then_run(self, process: ProcessDefinition, view: ImageView, params: dict) -> None:
+        max_points = process.requires_picking if process.requires_picking else None
+        hint = f" ({max_points})" if max_points else ""
+        self.statusBar().showMessage(f"{process.name}: haz clic sobre la imagen para marcar posiciones{hint} -- clic derecho para terminar.")
+        self.properties.apply_button.setEnabled(False)
+
+        def on_picked(points: list[tuple[float, float]]) -> None:
+            view.picking_finished.disconnect(on_picked)
+            if not points:
+                self.properties.apply_button.setEnabled(True)
+                self.statusBar().showMessage("Selección cancelada: no se marcó ninguna posición.", 5000)
+                return
+            picked_params = dict(params)
+            picked_params["_picked_points"] = points
+            self._start_process_worker(process, view, picked_params)
+
+        view.picking_finished.connect(on_picked)
+        view.start_picking(max_points=max_points)
+
+    def _start_process_worker(self, process: ProcessDefinition, view: ImageView, params: dict) -> None:
         self.statusBar().showMessage(f"Ejecutando: {process.name}...")
         self.properties.apply_button.setEnabled(False)
 

@@ -66,16 +66,17 @@ resultado de vuelta a lo que la vista necesita mostrar.
   demostración de la firma real del motor tratando una fila de la imagen como
   espectro 1D.
 
-El resto del catálogo (bias/dark/flat maestros, aritmética de dos imágenes, PSF/
-daophot, traza espectral completa, calibración en longitud de onda, ajuste de WCS,
-registro entre imágenes) aparece listado en el explorador -- para que la cobertura
-completa de IRAF sea visible desde ya -- pero sin `run` todavía
-(`ProcessDefinition.is_wired == False`, mostrado en gris con "(pendiente)" en el
-árbol): cada uno necesita una interacción que el taller no tiene todavía (cargar
-varios fotogramas a la vez, seleccionar posiciones sobre la imagen, una segunda
-imagen de referencia). Se documenta como pendiente en vez de simular una ejecución
-falsa -- la misma disciplina de honestidad epistémica que gobierna todo el proyecto,
-aplicada aquí a la interfaz.
+El resto del catálogo (bias/dark/flat maestros, aritmética de dos imágenes,
+calibración en longitud de onda, ajuste de WCS, registro entre imágenes) aparece
+listado en el explorador -- para que la cobertura completa de IRAF sea visible desde
+ya -- pero sin `run` todavía (`ProcessDefinition.is_wired == False`, mostrado en gris
+con "(pendiente)" en el árbol): cada uno necesita una interacción que el taller no
+tiene todavía (cargar varios fotogramas a la vez, una segunda imagen de referencia).
+Se documenta como pendiente en vez de simular una ejecución falsa -- la misma
+disciplina de honestidad epistémica que gobierna todo el proyecto, aplicada aquí a
+la interfaz. (Fotometría de PSF y trazado espectral, que antes estaban en esta
+lista porque necesitaban selección de posiciones sobre la imagen, están cableados
+desde la oleada descrita en la sección 8.)
 
 ## 4. Verificación
 
@@ -178,8 +179,6 @@ de humo nuevos en `tests/gui_smoke/test_qt_app_reduction_smoke.py`.
 - Aritmética de dos imágenes (`imtools.arithmetic`) -- necesita una vista de
   selección de dos imágenes, misma familia de problema que resolvió esta oleada
   para bias/dark/flat; el patrón ya está establecido para replicarlo.
-- Interacción de selección de posiciones sobre la imagen (clic para centroide) para
-  fotometría de PSF y trazado espectral.
 - Persistencia de "iconos de proceso" guardados con parámetros configurados,
   reutilizables entre sesiones (hoy la configuración vive solo mientras el panel de
   propiedades está abierto).
@@ -193,3 +192,47 @@ de humo nuevos en `tests/gui_smoke/test_qt_app_reduction_smoke.py`.
 correctamente en Linux -- sin PowerShell disponible, RAM/GPU/CPU en "—", disco y
 recomendaciones reales) con captura de pantalla y test de humo nuevo en
 `tests/gui_smoke/test_qt_app_smoke.py::test_diagnostics_dialog_runs_hardware_check_end_to_end`.
+
+## 8. Selección de posiciones a clic (`ImageView`) -- cablea PSF y trazado espectral
+
+Fotometría de PSF (`photometry.psf`, ajuste simultáneo multi-fuente con
+`astrophysics_suite.photometry.psf.fit_group_psf_photometry`) y trazado espectral
+(`spectroscopy.trace`, `astrophysics_suite.spectroscopy.trace.trace_spectrum` +
+extracción óptima/suma) necesitaban una posición inicial marcada sobre la imagen --
+la única interacción que le faltaba al taller respecto al catálogo completo de IRAF
+listado desde la oleada 9.6 original. Resuelto con un modo de selección genérico en
+`ImageView` en vez de dos caminos de código divergentes:
+
+- `ImageView.start_picking(*, max_points=None)` entra en modo selección: clic
+  izquierdo marca una posición (coordenadas de píxel de la imagen, con un marcador
+  circular ámbar visible) y clic derecho termina. Si se pasa `max_points`, termina
+  sola al alcanzarlo -- así `spectroscopy.trace` pide exactamente un clic (el centro
+  inicial de la traza) sin necesitar un botón "listo" aparte, mientras que
+  `photometry.psf` acepta un número ilimitado de estrellas (ajuste simultáneo
+  desmezclado si se solapan) hasta que el usuario termina con el clic derecho.
+  `picking_finished` emite la lista de puntos (vacía si se cancela sin marcar
+  ninguno).
+- `ProcessDefinition.requires_picking: int | None` declara la necesidad: `None` (no
+  pide selección), `0` (ilimitado) o un entero positivo (número exacto). `main_window
+  ._run_process` ramifica sobre este campo -- si pide selección, primero llama a
+  `start_picking(...)` con una pista en la barra de estado y solo lanza el trabajo de
+  fondo real (`_start_process_worker`, la lógica que ya existía) cuando
+  `picking_finished` llega, inyectando los puntos en `params["_picked_points"]`.
+  Cancelar sin marcar nada (lista vacía) no ejecuta ningún proceso.
+- El taller no tiene todavía un widget de gráfico de espectro 1D dedicado, así que el
+  resultado de `spectroscopy.trace` se visualiza como una franja repetida
+  (`np.tile(spectrum.flux, (20, 1))`) abierta como ventana de imagen MDI normal con
+  STF aplicado -- una imagen "de conveniencia" para ver la forma del espectro
+  extraído, no un espectro calibrado real; se documenta así explícitamente en la
+  descripción del proceso, siguiendo la misma disciplina de no simular una capacidad
+  que no existe todavía.
+
+Verificado con capturas de pantalla de principio a fin (clic en dos estrellas
+sintéticas dobles -> marcadores visibles -> clic derecho -> ajuste PSF simultáneo
+real ejecutado en el hilo de fondo -> flujo por estrella correctamente desmezclado
+registrado en la consola) y con pruebas automáticas: 4 tests de lógica pura nuevos en
+`tests/unit/qt_app/test_registry.py` (traducción de parámetros/resultado para ambos
+procesos, incluidos los casos de error por número de puntos incorrecto) y 6 tests de
+humo nuevos en `tests/gui_smoke/test_qt_app_picking_smoke.py` (clic real vía
+`QMouseEvent`, fin automático por `max_points`, cancelación, y los dos flujos
+completos de extremo a extremo incluido el hilo de fondo real).

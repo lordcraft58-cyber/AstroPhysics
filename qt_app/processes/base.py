@@ -53,6 +53,14 @@ class ProcessDefinition:
     función real en esta oleada -- ver docs/audit/11-FASE9-... El
     explorador debe distinguir esto visualmente, nunca simular un
     resultado falso para una entrada sin `run`."""
+    requires_picking: int | None = None
+    """`None`: `run` se ejecuta directamente sobre la imagen activa al
+    pulsar "Aplicar". Un entero >= 1: antes de ejecutar, el usuario debe
+    marcar exactamente ese número de posiciones sobre la imagen (clic
+    izquierdo marca, clic derecho termina antes de tiempo). `0`: número
+    ilimitado de posiciones (clic derecho para terminar) -- p. ej. varias
+    estrellas para un ajuste de PSF simultáneo. Los puntos marcados
+    llegan a `run` en `params["_picked_points"]`."""
 
     @property
     def is_wired(self) -> bool:

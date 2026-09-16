@@ -11,8 +11,10 @@ import numpy as np
 
 from astrophysics_suite.imtools.cosmic_rays import detect_cosmic_rays
 from astrophysics_suite.photometry.aperture import aperture_photometry
+from astrophysics_suite.photometry.psf import GaussianPSF, fit_group_psf_photometry
 from astrophysics_suite.reduction.overscan import subtract_overscan
 from astrophysics_suite.spectroscopy.continuum import fit_continuum
+from astrophysics_suite.spectroscopy.trace import extract_optimal, extract_sum, trace_spectrum
 from qt_app.processes.base import ParameterSpec, ProcessDefinition, ProcessResult
 
 
@@ -66,6 +68,47 @@ def _run_aperture_photometry_center(data: np.ndarray, params: dict) -> ProcessRe
         f"Cielo local: {m.sky_per_pixel:.2f} ± {m.sky_sigma_per_pixel:.2f} ADU/px ({m.n_pixels:.1f} px efectivos de apertura)",
     )
     return ProcessResult(output_data=None, summary=summary, log_lines=log_lines)
+
+
+def _run_psf_photometry(data: np.ndarray, params: dict) -> ProcessResult:
+    points = params.get("_picked_points") or []
+    if not points:
+        raise ValueError("no se marcó ninguna posición -- haz clic sobre al menos una fuente antes de terminar la selección (clic derecho)")
+
+    uncertainty = np.sqrt(np.clip(data, 1.0, None))  # modelo de ruido Poisson aproximado -- misma nota que fotometría de apertura
+    psf_model = GaussianPSF(sigma_x=params["sigma_px"])
+    results = fit_group_psf_photometry(data, uncertainty, psf_model, points, fit_half_size=int(params["fit_half_size"]))
+
+    log_lines = tuple(
+        f"({x:.1f}, {y:.1f})  ->  flujo={r.flux:.1f} ± {r.flux_uncertainty:.1f} ADU" for (x, y), r in zip(points, results)
+    )
+    summary = f"PSF ajustada simultáneamente para {len(results)} fuente(s) (desmezclado incluido si se solapan)."
+    return ProcessResult(output_data=None, summary=summary, log_lines=log_lines)
+
+
+def _run_spectral_trace(data: np.ndarray, params: dict) -> ProcessResult:
+    points = params.get("_picked_points") or []
+    if len(points) != 1:
+        raise ValueError("se necesita exactamente un clic marcando el centro espacial inicial de la traza")
+    x0, y0 = points[0]
+
+    trace = trace_spectrum(data, initial_center_px=y0, fit_degree=int(params["fit_degree"]))
+    uncertainty = np.sqrt(np.clip(data, 1.0, None))
+    extractor = extract_optimal if params["optimal_extraction"] else extract_sum
+    spectrum = extractor(data, uncertainty, trace, aperture_half_width=params["aperture_half_width"])
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        snr = np.where(spectrum.flux_uncertainty > 0, spectrum.flux / spectrum.flux_uncertainty, 0.0)
+    median_snr = float(np.median(snr))
+
+    # el taller todavía no tiene un visor de espectros 1D dedicado -- se
+    # repite el perfil extraído en varias filas para que sea una tira
+    # visible e inspeccionable con STF, en vez de perder el resultado por
+    # falta de un widget de gráfico (ver "Qué queda").
+    strip = np.tile(spectrum.flux, (20, 1))
+    method = "óptima (Horne 1986)" if params["optimal_extraction"] else "suma simple"
+    summary = f"Traza extraída ({method}) desde y={y0:.1f} en x={x0:.1f}; RMS de traza={trace.rms_residual_px:.2f} px, S/N mediana={median_snr:.1f}."
+    return ProcessResult(output_data=strip, summary=summary)
 
 
 def _run_continuum_fit_central_row(data: np.ndarray, params: dict) -> ProcessResult:
@@ -133,7 +176,13 @@ def build_process_registry() -> list[ProcessDefinition]:
             process_id="photometry.psf",
             name="Fotometría de PSF (daophot)",
             category="Fotometría",
-            description="Ajuste simultáneo de PSF para desmezclar fuentes superpuestas. Requiere seleccionar posiciones de fuentes en la imagen -- pendiente de esa interacción en esta primera versión del taller.",
+            description="Ajuste simultáneo de PSF (Gaussiana) para desmezclar fuentes superpuestas -- equivalente a nstar/allstar. Al pulsar Aplicar, marca cada fuente con clic izquierdo sobre la imagen y termina con clic derecho.",
+            parameters=(
+                ParameterSpec("sigma_px", "Sigma de la PSF (px)", "float", 2.0, minimum=0.3, maximum=30.0),
+                ParameterSpec("fit_half_size", "Semiancho de la caja de ajuste (px)", "int", 7, minimum=2, maximum=100),
+            ),
+            run=_run_psf_photometry,
+            requires_picking=0,
         ),
         ProcessDefinition(
             process_id="spectroscopy.continuum",
@@ -150,7 +199,14 @@ def build_process_registry() -> list[ProcessDefinition]:
             process_id="spectroscopy.trace",
             name="Extracción de traza (apall)",
             category="Espectroscopía",
-            description="Traza espacial + extracción por suma u óptima (Horne 1986). Requiere una imagen 2D orientada espectro/espacial e indicar el centro inicial -- pendiente de esa interacción.",
+            description="Traza espacial + extracción por suma u óptima (Horne 1986) -- eje 0 espacial, eje 1 dispersión. Al pulsar Aplicar, marca con un clic el centro espacial inicial de la traza. El resultado se muestra como una tira 1D repetida (el taller todavía no tiene un visor de espectros dedicado).",
+            parameters=(
+                ParameterSpec("fit_degree", "Grado del ajuste de traza", "int", 3, minimum=1, maximum=10),
+                ParameterSpec("aperture_half_width", "Semiancho de apertura (px)", "float", 4.0, minimum=1.0, maximum=100.0),
+                ParameterSpec("optimal_extraction", "Extracción óptima (Horne)", "bool", True),
+            ),
+            run=_run_spectral_trace,
+            requires_picking=1,
         ),
         ProcessDefinition(
             process_id="spectroscopy.wavelength",

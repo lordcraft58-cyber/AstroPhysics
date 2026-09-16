@@ -6,6 +6,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
+import pytest
 
 from qt_app.processes.registry import build_process_registry
 
@@ -88,3 +89,69 @@ def test_continuum_fit_process_runs_on_central_row():
     result = process.run(data, _default_params(process))
     assert result.output_data is None
     assert "Continuo ajustado" in result.summary
+
+
+def test_psf_photometry_process_requires_picking_and_recovers_flux():
+    process = _get("photometry.psf")
+    assert process.requires_picking == 0  # ilimitado
+
+    sigma = 2.0
+    true_flux = 30000.0
+    yy, xx = np.mgrid[0:61, 0:61]
+    data = 100.0 + true_flux / (2 * math.pi * sigma**2) * np.exp(-(((xx - 30) ** 2 + (yy - 30) ** 2)) / (2 * sigma**2))
+
+    params = _default_params(process)
+    params["_picked_points"] = [(30.0, 30.0)]
+    result = process.run(data, params)
+
+    assert result.output_data is None
+    assert len(result.log_lines) == 1
+    assert "flujo=" in result.log_lines[0]
+    logged_flux = float(result.log_lines[0].split("flujo=")[1].split(" ")[0])
+    assert logged_flux == pytest.approx(true_flux, rel=0.05)
+
+
+def test_psf_photometry_process_rejects_no_picked_points():
+    process = _get("photometry.psf")
+    data = np.full((20, 20), 100.0)
+    params = _default_params(process)
+    params["_picked_points"] = []
+    try:
+        process.run(data, params)
+    except ValueError as exc:
+        assert "posición" in str(exc)
+    else:
+        raise AssertionError("se esperaba ValueError sin posiciones marcadas")
+
+
+def test_spectral_trace_process_requires_one_point_and_extracts_strip():
+    process = _get("spectroscopy.trace")
+    assert process.requires_picking == 1
+
+    height, width = 41, 150
+    yy, xx = np.mgrid[0:height, 0:width]
+    flux_per_col = 3000.0
+    profile = np.exp(-(((yy - 20.0) ** 2)) / (2 * 2.0**2))
+    profile /= profile.sum(axis=0, keepdims=True)
+    data = 80.0 + flux_per_col * profile
+
+    process_params = _default_params(process)
+    process_params["_picked_points"] = [(0.0, 20.0)]
+    result = process.run(data, process_params)
+
+    assert result.output_data is not None
+    assert result.output_data.shape == (20, width)
+    assert "Traza extraída" in result.summary
+
+
+def test_spectral_trace_process_rejects_wrong_number_of_points():
+    process = _get("spectroscopy.trace")
+    data = np.full((30, 30), 100.0)
+    params = _default_params(process)
+    params["_picked_points"] = [(1.0, 1.0), (2.0, 2.0)]
+    try:
+        process.run(data, params)
+    except ValueError as exc:
+        assert "un clic" in str(exc)
+    else:
+        raise AssertionError("se esperaba ValueError con más de un punto marcado")
