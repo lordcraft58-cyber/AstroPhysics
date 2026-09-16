@@ -41,9 +41,14 @@ from qt_app.reduction.master_frame_library import MasterFrameLibrary
 from qt_app.reduction.reduce_session_dialog import ReduceSessionDialog, SessionReductionOutcome
 from qt_app.spectroscopy.wavelength_fit_dialog import WavelengthFitDialog
 from qt_app.theme import DARK, build_stylesheet
+from qt_app.tutorial.tutorial_overlay import TutorialOverlay
+from qt_app.tutorial.tutorial_steps import build_tutorial_steps
 from qt_app.workers import CallableWorker, ProcessWorker
+from services.app_preferences import AppPreferencesStore
 from services.discovery_service import DiscoveryJob, DiscoveryParams
 from services.session_state import SessionState
+
+_TUTORIAL_SHOW_ON_STARTUP_KEY = "tutorial_show_on_startup"
 
 APP_TITLE = "AstroPhysics Suite -- Taller de Procesamiento"
 PIPELINE_VERSION = "0.5.0-dev"
@@ -53,8 +58,9 @@ logger = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, *, preferences: AppPreferencesStore | None = None):
         super().__init__()
+        self.preferences = preferences or AppPreferencesStore()
         self.setWindowTitle(APP_TITLE)
         self.resize(1440, 920)
         self.setStyleSheet(build_stylesheet(DARK))
@@ -91,32 +97,32 @@ class MainWindow(QMainWindow):
     def _build_docks(self) -> None:
         self.explorer = ProcessExplorer(self._processes, self)
         self.explorer.process_activated.connect(self._activate_process)
-        explorer_dock = QDockWidget("EXPLORADOR DE PROCESOS", self)
-        explorer_dock.setObjectName("ExplorerDock")
-        explorer_dock.setWidget(self.explorer)
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, explorer_dock)
+        self.explorer_dock = QDockWidget("EXPLORADOR DE PROCESOS", self)
+        self.explorer_dock.setObjectName("ExplorerDock")
+        self.explorer_dock.setWidget(self.explorer)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.explorer_dock)
 
         self.properties = PropertiesDock(self)
         self.properties.run_requested.connect(self._run_process)
-        properties_dock = QDockWidget("PROPIEDADES", self)
-        properties_dock.setObjectName("PropertiesDock")
-        properties_dock.setWidget(self.properties)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, properties_dock)
+        self.properties_dock = QDockWidget("PROPIEDADES", self)
+        self.properties_dock.setObjectName("PropertiesDock")
+        self.properties_dock.setWidget(self.properties)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.properties_dock)
 
         self.console = ConsoleDock(self)
-        console_dock = QDockWidget("CONSOLA", self)
-        console_dock.setObjectName("ConsoleDock")
-        console_dock.setWidget(self.console)
-        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, console_dock)
+        self.console_dock = QDockWidget("CONSOLA", self)
+        self.console_dock.setObjectName("ConsoleDock")
+        self.console_dock.setWidget(self.console)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.console_dock)
 
         self.candidates_dock_widget = CandidatesDock(self.session_state, DARK, self)
         self.candidates_dock_widget.candidate_activated.connect(self._open_candidate_detail)
-        candidates_dock = QDockWidget("CANDIDATOS", self)
-        candidates_dock.setObjectName("CandidatesDock")
-        candidates_dock.setWidget(self.candidates_dock_widget)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, candidates_dock)
-        self.tabifyDockWidget(properties_dock, candidates_dock)
-        properties_dock.raise_()
+        self.candidates_dock = QDockWidget("CANDIDATOS", self)
+        self.candidates_dock.setObjectName("CandidatesDock")
+        self.candidates_dock.setWidget(self.candidates_dock_widget)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.candidates_dock)
+        self.tabifyDockWidget(self.properties_dock, self.candidates_dock)
+        self.properties_dock.raise_()
 
     def _build_status_bar(self) -> None:
         self.discovery_progress = QProgressBar(self)
@@ -126,61 +132,61 @@ class MainWindow(QMainWindow):
 
     # ---------------------------------------------------------------- menú
     def _build_menu(self) -> None:
-        file_menu = self.menuBar().addMenu("&Archivo")
+        self.file_menu = self.menuBar().addMenu("&Archivo")
         open_action = QAction("&Abrir FITS...", self)
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self.open_fits_dialog)
-        file_menu.addAction(open_action)
-        file_menu.addSeparator()
+        self.file_menu.addAction(open_action)
+        self.file_menu.addSeparator()
         exit_action = QAction("&Salir", self)
         exit_action.setShortcut("Ctrl+Q")
         exit_action.triggered.connect(self.close)
-        file_menu.addAction(exit_action)
+        self.file_menu.addAction(exit_action)
 
-        tools_menu = self.menuBar().addMenu("&Herramientas")
+        self.tools_menu = self.menuBar().addMenu("&Herramientas")
         diagnostics_action = QAction("&Diagnóstico de equipo...", self)
         diagnostics_action.triggered.connect(self._open_diagnostics_dialog)
-        tools_menu.addAction(diagnostics_action)
+        self.tools_menu.addAction(diagnostics_action)
         arithmetic_action = QAction("&Aritmética entre imágenes...", self)
         arithmetic_action.triggered.connect(self._open_arithmetic_dialog)
-        tools_menu.addAction(arithmetic_action)
+        self.tools_menu.addAction(arithmetic_action)
         export_table_action = QAction("&Exportar última tabla a CSV...", self)
         export_table_action.triggered.connect(self._export_last_table)
-        tools_menu.addAction(export_table_action)
+        self.tools_menu.addAction(export_table_action)
 
-        reduction_menu = self.menuBar().addMenu("&Reducción")
+        self.reduction_menu = self.menuBar().addMenu("&Reducción")
         build_master_action = QAction("&Construir fotograma maestro...", self)
         build_master_action.triggered.connect(self._open_build_master_frame_dialog)
-        reduction_menu.addAction(build_master_action)
+        self.reduction_menu.addAction(build_master_action)
         load_master_action = QAction("Cargar fotograma &maestro...", self)
         load_master_action.triggered.connect(self._open_load_master_frame_dialog)
-        reduction_menu.addAction(load_master_action)
+        self.reduction_menu.addAction(load_master_action)
         apply_calibration_action = QAction("&Aplicar calibración a la imagen activa...", self)
         apply_calibration_action.triggered.connect(self._open_apply_calibration_dialog)
-        reduction_menu.addAction(apply_calibration_action)
-        reduction_menu.addSeparator()
+        self.reduction_menu.addAction(apply_calibration_action)
+        self.reduction_menu.addSeparator()
         reduce_session_action = QAction("Reducir &sesión de LIGHTS...", self)
         reduce_session_action.triggered.connect(self._open_reduce_session_dialog)
-        reduction_menu.addAction(reduce_session_action)
+        self.reduction_menu.addAction(reduce_session_action)
 
-        astrometry_menu = self.menuBar().addMenu("A&strometría")
+        self.astrometry_menu = self.menuBar().addMenu("A&strometría")
         plate_solve_action = QAction("&Resolver placa automáticamente...", self)
         plate_solve_action.triggered.connect(self._open_plate_solve_dialog)
-        astrometry_menu.addAction(plate_solve_action)
+        self.astrometry_menu.addAction(plate_solve_action)
         wcs_fit_action = QAction("Ajustar WCS &manualmente (clic + coordenadas)...", self)
         wcs_fit_action.triggered.connect(self._open_wcs_fit_flow)
-        astrometry_menu.addAction(wcs_fit_action)
+        self.astrometry_menu.addAction(wcs_fit_action)
         registration_action = QAction("&Registrar por WCS compartido...", self)
         registration_action.triggered.connect(self._open_registration_dialog)
-        astrometry_menu.addAction(registration_action)
+        self.astrometry_menu.addAction(registration_action)
         star_pair_action = QAction("Registrar por &pares de estrellas (clic)...", self)
         star_pair_action.triggered.connect(self._open_star_pair_registration_dialog)
-        astrometry_menu.addAction(star_pair_action)
+        self.astrometry_menu.addAction(star_pair_action)
 
-        spectroscopy_menu = self.menuBar().addMenu("Espectroscop&ía")
+        self.spectroscopy_menu = self.menuBar().addMenu("Espectroscop&ía")
         wavelength_fit_action = QAction("&Calibrar longitud de onda (detectar líneas)...", self)
         wavelength_fit_action.triggered.connect(self._open_wavelength_fit_flow)
-        spectroscopy_menu.addAction(wavelength_fit_action)
+        self.spectroscopy_menu.addAction(wavelength_fit_action)
 
         view_menu = self.menuBar().addMenu("&Vista")
         stf_action = QAction("Alternar STF en la imagen activa", self)
@@ -188,15 +194,25 @@ class MainWindow(QMainWindow):
         stf_action.triggered.connect(self._toggle_active_stf)
         view_menu.addAction(stf_action)
 
-        discovery_menu = self.menuBar().addMenu("&Descubrimiento")
+        self.discovery_menu = self.menuBar().addMenu("&Descubrimiento")
         new_observation_action = QAction("&Nueva observación...", self)
         new_observation_action.setShortcut("Ctrl+N")
         new_observation_action.triggered.connect(self._open_new_observation_dialog)
-        discovery_menu.addAction(new_observation_action)
+        self.discovery_menu.addAction(new_observation_action)
         self.cancel_discovery_action = QAction("&Cancelar análisis", self)
         self.cancel_discovery_action.setEnabled(False)
         self.cancel_discovery_action.triggered.connect(self._cancel_discovery)
-        discovery_menu.addAction(self.cancel_discovery_action)
+        self.discovery_menu.addAction(self.cancel_discovery_action)
+
+        help_menu = self.menuBar().addMenu("A&yuda")
+        tutorial_action = QAction("&Tutorial guiado", self)
+        tutorial_action.triggered.connect(self._open_tutorial)
+        help_menu.addAction(tutorial_action)
+        self.tutorial_on_startup_action = QAction("Mostrar tutorial al &iniciar", self)
+        self.tutorial_on_startup_action.setCheckable(True)
+        self.tutorial_on_startup_action.setChecked(self.preferences.get(_TUTORIAL_SHOW_ON_STARTUP_KEY, "true") == "true")
+        self.tutorial_on_startup_action.toggled.connect(self._set_tutorial_show_on_startup)
+        help_menu.addAction(self.tutorial_on_startup_action)
 
     # ---------------------------------------------------------------- imágenes
     def open_fits_dialog(self) -> None:
@@ -526,7 +542,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Longitud de onda calibrada para {view.title} (RMS={solution.rms_residual:.4f}).", 6000)
 
     def _open_build_master_frame_dialog(self) -> None:
-        dialog = BuildMasterFrameDialog(self.master_frame_library, self)
+        dialog = BuildMasterFrameDialog(self.master_frame_library, self, preferences=self.preferences)
         if dialog.exec() == BuildMasterFrameDialog.DialogCode.Accepted:
             logger.info("Fotograma maestro construido: %s", dialog.name_edit.text().strip())
 
@@ -877,3 +893,30 @@ class MainWindow(QMainWindow):
 
         self._candidate_detail_windows[candidate_id] = sub_window
         sub_window.destroyed.connect(lambda: self._candidate_detail_windows.pop(candidate_id, None))
+
+    # ---------------------------------------------------------------- tutorial guiado
+    def maybe_show_tutorial_on_startup(self) -> None:
+        """Llamado por el punto de entrada real (`qt_app/__main__.py`)
+        tras `show()` -- nunca desde `__init__`, para que construir un
+        `MainWindow` (como hacen todas las pruebas) nunca dispare por sí
+        solo una ventana emergente. Aparece la primera vez (preferencia
+        sin fijar todavía) y deja de aparecer en cuanto el tutorial se
+        completa o se salta, hasta que el usuario reactive "Mostrar
+        tutorial al iniciar"."""
+        if self.preferences.get(_TUTORIAL_SHOW_ON_STARTUP_KEY, "true") == "true":
+            self._open_tutorial()
+
+    def _open_tutorial(self) -> None:
+        overlay = TutorialOverlay(self, build_tutorial_steps(), on_finished=self._on_tutorial_finished)
+        overlay.setGeometry(self.rect())
+        overlay.show()
+        overlay.raise_()
+
+    def _on_tutorial_finished(self) -> None:
+        self.preferences.set(_TUTORIAL_SHOW_ON_STARTUP_KEY, "false")
+        self.tutorial_on_startup_action.blockSignals(True)
+        self.tutorial_on_startup_action.setChecked(False)
+        self.tutorial_on_startup_action.blockSignals(False)
+
+    def _set_tutorial_show_on_startup(self, checked: bool) -> None:
+        self.preferences.set(_TUTORIAL_SHOW_ON_STARTUP_KEY, "true" if checked else "false")

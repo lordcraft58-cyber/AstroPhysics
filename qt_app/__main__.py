@@ -15,6 +15,7 @@ def main() -> None:
     app.setApplicationName("AstroPhysics Suite")
     window = MainWindow()
     window.show()
+    window.maybe_show_tutorial_on_startup()
     sys.exit(app.exec())
 
 
