@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from astrophysics_suite.io.fits_loader import build_observation, load_image
+from astrophysics_suite.io.fits_loader import AmbiguousCubeError, build_observation, load_image, probe_fits_shape
 from legacy.AstroPhysicsSuite_v57_3_COMMERCIAL import _write_minimal_fits_2d
 
 
@@ -105,3 +105,68 @@ def test_load_image_handles_bzero_bscale_fits_without_memmap_error(tmp_path):
     loaded = load_image(str(path), band="OIII")  # no debe lanzar ValueError de memmap
 
     np.testing.assert_array_equal(loaded.legacy_image.data.astype(np.uint16), raw_values)
+
+
+def _write_cube_fits(path, shape):
+    """FITS real con más de 2 ejes -- `_write_minimal_fits_2d` solo
+    escribe 2D, así que estas pruebas necesitan astropy directamente."""
+    from astropy.io import fits
+
+    data = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
+    fits.PrimaryHDU(data).writeto(path)
+    return data
+
+
+def test_open_3d_fits_without_plane_raises_ambiguous_cube_error(tmp_path):
+    """Bug real reportado en uso: "no me deja abrir imágenes de 3
+    dimensiones". Antes del selector de plano de la GUI, esto era todo lo
+    que un FITS 3D/4D podía hacer -- lanzar, sin ningún camino de vuelta.
+    Verificado que sigue lanzando `AmbiguousCubeError` (comportamiento
+    correcto y deliberado: nunca elegir un plano en silencio) para poder
+    probar por separado que ahora SÍ hay una forma real de continuar
+    (`plane=` explícito, ver el test siguiente)."""
+    path = tmp_path / "cube_HA.fits"
+    _write_cube_fits(path, (5, 24, 24))
+
+    with pytest.raises(AmbiguousCubeError):
+        load_image(str(path), band="HA")
+
+
+def test_load_image_with_explicit_plane_selects_correct_2d_slice(tmp_path):
+    path = tmp_path / "cube_HA.fits"
+    data = _write_cube_fits(path, (5, 24, 24))
+
+    loaded = load_image(str(path), band="HA", plane=2)
+
+    assert loaded.legacy_image.data.shape == (24, 24)
+    np.testing.assert_array_equal(loaded.legacy_image.data, data[2])
+    assert loaded.legacy_image.original_shape == (5, 24, 24)
+    assert loaded.legacy_image.selected_plane == (2,)
+    assert loaded.legacy_image.cube_plane_is_explicit is True
+
+
+def test_load_image_with_explicit_plane_tuple_selects_correct_slice_for_4d_cube(tmp_path):
+    path = tmp_path / "cube4d.fits"
+    data = _write_cube_fits(path, (3, 4, 16, 16))
+
+    loaded = load_image(str(path), band="", plane=(1, 2))
+
+    assert loaded.legacy_image.data.shape == (16, 16)
+    np.testing.assert_array_equal(loaded.legacy_image.data, data[1, 2])
+
+
+def test_probe_fits_shape_reads_shape_without_loading_pixels(tmp_path):
+    path = tmp_path / "cube_OIII.fits"
+    _write_cube_fits(path, (7, 30, 20))
+
+    shape = probe_fits_shape(str(path))
+
+    assert shape == (7, 30, 20)
+
+
+def test_probe_fits_shape_matches_2d_fits(tmp_path):
+    data = np.full((16, 16), 50.0, dtype=np.float32)
+    path = tmp_path / "flat_OIII.fits"
+    _write_minimal_fits_2d(path, data)
+
+    assert probe_fits_shape(str(path)) == (16, 16)

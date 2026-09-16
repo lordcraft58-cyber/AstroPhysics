@@ -16,9 +16,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from legacy.AstroPhysicsSuite_v57_3_COMMERCIAL import load_fits, sha256_file
+from legacy.AstroPhysicsSuite_v57_3_COMMERCIAL import AmbiguousCubeError, load_fits, sha256_file
 
 from astrophysics_suite.models.observation import ImageRef, Observation
+
+__all__ = ["AmbiguousCubeError", "LoadedImage", "build_observation", "load_image", "probe_fits_shape"]
 
 
 @dataclass(frozen=True)
@@ -31,14 +33,20 @@ class LoadedImage:
     no debe filtrarse a `models/` ni a ningún contrato de la Fase 4."""
 
 
-def load_image(path: str, *, band: str, role: str = "science") -> LoadedImage:
+def load_image(path: str, *, band: str, role: str = "science", plane: int | tuple[int, ...] | None = None) -> LoadedImage:
     """Carga un FITS real y construye su `ImageRef` tipado.
 
     Lanza lo mismo que `load_fits` (incluida `AmbiguousCubeError` para
     cubos 3D/4D sin plano explícito) -- este wrapper no oculta esos
-    errores ni decide por el llamador.
+    errores ni decide por el llamador. `plane` se pasa tal cual a
+    `load_fits` -- un entero si el cubo tiene un solo eje sobrante, o una
+    tupla si tiene varios (ver `AmbiguousCubeError` para el mensaje que
+    indica cuántos hacen falta). La GUI (`qt_app.main_window.open_fits`)
+    captura `AmbiguousCubeError` en el primer intento sin `plane`, pide el
+    índice al usuario, y reintenta con `plane` explícito -- nunca elige
+    un plano por su cuenta.
     """
-    legacy_image = load_fits(path)
+    legacy_image = load_fits(path, plane=plane)
     image_ref = ImageRef(
         path=str(Path(path).resolve()),
         band=band,
@@ -48,6 +56,28 @@ def load_image(path: str, *, band: str, role: str = "science") -> LoadedImage:
         sha256=sha256_file(Path(path)),
     )
     return LoadedImage(image_ref=image_ref, legacy_image=legacy_image)
+
+
+def probe_fits_shape(path: str, *, hdu: int | None = None) -> tuple[int, ...]:
+    """Forma completa (posiblemente N-dimensional) del HDU de imagen sin
+    cargar los píxeles -- solo lee el header. Pensado para que la GUI
+    pueda preguntar al usuario qué plano de un cubo 3D/4D quiere ver
+    (`AmbiguousCubeError`) sin tener que parsear la forma del propio
+    mensaje de la excepción."""
+    from astropy.io import fits
+
+    with fits.open(str(path), memmap=True, lazy_load_hdus=True) as hdul:
+        idx = hdu
+        if idx is None:
+            for i, h in enumerate(hdul):
+                if getattr(h, "is_image", False) and h.header.get("NAXIS", 0) >= 2:
+                    idx = i
+                    break
+        if idx is None:
+            raise ValueError(f"{path}: no hay HDU de imagen 2D")
+        header = hdul[idx].header
+        naxis = int(header["NAXIS"])
+        return tuple(int(header[f"NAXIS{i}"]) for i in range(naxis, 0, -1))
 
 
 def build_observation(

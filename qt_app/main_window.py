@@ -29,6 +29,7 @@ from qt_app.docks.console_dock import ConsoleDock
 from qt_app.docks.process_explorer import ProcessExplorer
 from qt_app.docks.properties_dock import PropertiesDock
 from qt_app.imtools.arithmetic_dialog import ArithmeticDialog
+from qt_app.io.cube_plane_dialog import CubePlaneDialog
 from qt_app.mdi.image_window import ImageView
 from qt_app.processes.base import ProcessDefinition
 from qt_app.processes.registry import build_process_registry
@@ -196,15 +197,40 @@ class MainWindow(QMainWindow):
             self.open_fits(path)
 
     def open_fits(self, path: str) -> QMdiSubWindow | None:
-        from astrophysics_suite.io.fits_loader import load_image
+        from astrophysics_suite.io.fits_loader import AmbiguousCubeError, load_image, probe_fits_shape
 
         try:
             loaded = load_image(path, band="", role="science")
+        except AmbiguousCubeError:
+            # FITS con más de 2 ejes (cubo 3D/4D): `load_fits` se niega a
+            # elegir un plano por su cuenta -- se pide el índice al
+            # usuario y se reintenta con `plane=` explícito, nunca se
+            # asume el primero.
+            try:
+                shape = probe_fits_shape(path)
+            except Exception as exc:  # noqa: BLE001 -- error real al inspeccionar el cubo, debe ser visible
+                logger.error("No se pudo inspeccionar el cubo %s: %s", path, exc)
+                QMessageBox.critical(self, "Abrir FITS", f"No se pudo leer la forma de «{Path(path).name}»:\n\n{exc}")
+                return None
+            dialog = CubePlaneDialog(shape, self)
+            if dialog.exec() != CubePlaneDialog.DialogCode.Accepted:
+                return None
+            plane = dialog.selected_plane()
+            try:
+                loaded = load_image(path, band="", role="science", plane=plane)
+            except Exception as exc:  # noqa: BLE001 -- error de carga real: debe ser visible, nunca fallar en silencio
+                logger.error("No se pudo abrir %s con plano %s: %s", path, plane, exc)
+                QMessageBox.critical(self, "Abrir FITS", f"No se pudo abrir «{Path(path).name}» con el plano {plane}:\n\n{exc}")
+                return None
         except Exception as exc:  # noqa: BLE001 -- error de carga real: debe ser visible, nunca fallar en silencio
             logger.error("No se pudo abrir %s: %s", path, exc)
             QMessageBox.critical(self, "Abrir FITS", f"No se pudo abrir «{Path(path).name}»:\n\n{exc}")
             return None
-        return self.add_image_window(loaded.legacy_image.data, Path(path).name, wcs=loaded.legacy_image.wcs)
+
+        title = Path(path).name
+        if loaded.legacy_image.selected_plane is not None:
+            title = f"{title} [plano {loaded.legacy_image.selected_plane} de {loaded.legacy_image.original_shape}]"
+        return self.add_image_window(loaded.legacy_image.data, title, wcs=loaded.legacy_image.wcs)
 
     def add_image_window(self, data, title: str, *, wcs=None) -> QMdiSubWindow:
         view = ImageView(data, title, self, wcs=wcs)

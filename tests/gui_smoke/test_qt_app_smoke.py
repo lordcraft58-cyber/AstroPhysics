@@ -349,6 +349,66 @@ def test_open_fits_with_bzero_bscale_file_succeeds(qapp, main_window, tmp_path):
     np.testing.assert_array_equal(sub_window.widget().data.astype(np.uint16), raw_values)
 
 
+def test_open_3d_fits_prompts_for_plane_and_opens_correct_slice(qapp, main_window, tmp_path, monkeypatch):
+    """Bug real reportado en uso: "no me deja abrir imágenes de 3
+    dimensiones". `load_fits` se niega deliberadamente a elegir un plano
+    por su cuenta (`AmbiguousCubeError`) -- antes de este flujo, eso
+    significaba que un FITS 3D/4D simplemente no se podía abrir nunca
+    desde la GUI. Ahora `open_fits` captura la excepción y pide el índice
+    con `CubePlaneDialog`."""
+    from astropy.io import fits
+
+    from qt_app.io.cube_plane_dialog import CubePlaneDialog
+
+    cube = np.arange(5 * 24 * 24, dtype=np.float32).reshape(5, 24, 24)
+    path = tmp_path / "cube_HA.fits"
+    fits.PrimaryHDU(cube).writeto(path)
+
+    captured = {}
+    original_exec = CubePlaneDialog.exec
+
+    def _capture_and_accept(self):
+        captured["shape"] = self._extra_axes
+        for spin in self._spinboxes:
+            spin.setValue(3)  # elige el plano 3 de 5, a propósito distinto del 0 por defecto
+        return CubePlaneDialog.DialogCode.Accepted
+
+    CubePlaneDialog.exec = _capture_and_accept
+    try:
+        sub_window = main_window.open_fits(str(path))
+        qapp.processEvents()
+    finally:
+        CubePlaneDialog.exec = original_exec
+
+    assert captured["shape"] == 1  # un solo eje sobrante para un cubo 3D
+    assert sub_window is not None
+    assert sub_window in main_window.mdi.subWindowList()
+    np.testing.assert_array_equal(sub_window.widget().data, cube[3])
+    assert "plano" in sub_window.windowTitle().lower()
+
+
+def test_open_3d_fits_cancelled_at_plane_dialog_opens_no_window(qapp, main_window, tmp_path):
+    from astropy.io import fits
+
+    from qt_app.io.cube_plane_dialog import CubePlaneDialog
+
+    cube = np.zeros((4, 20, 20), dtype=np.float32)
+    path = tmp_path / "cube_cancel.fits"
+    fits.PrimaryHDU(cube).writeto(path)
+
+    windows_before = len(main_window.mdi.subWindowList())
+    original_exec = CubePlaneDialog.exec
+    CubePlaneDialog.exec = lambda self: CubePlaneDialog.DialogCode.Rejected
+    try:
+        result = main_window.open_fits(str(path))
+        qapp.processEvents()
+    finally:
+        CubePlaneDialog.exec = original_exec
+
+    assert result is None
+    assert len(main_window.mdi.subWindowList()) == windows_before
+
+
 def test_open_fits_shows_error_dialog_instead_of_failing_silently(qapp, main_window, tmp_path, monkeypatch):
     from qt_app import main_window as main_window_module
 
