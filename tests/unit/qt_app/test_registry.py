@@ -155,3 +155,69 @@ def test_spectral_trace_process_rejects_wrong_number_of_points():
         assert "un clic" in str(exc)
     else:
         raise AssertionError("se esperaba ValueError con más de un punto marcado")
+
+
+def test_crop_process_requires_exactly_two_points():
+    process = _get("imtools.crop")
+    assert process.requires_picking == 2
+
+    data = np.arange(100).reshape(10, 10).astype(np.float64)
+    params = _default_params(process)
+    params["_picked_points"] = [(2.0, 3.0), (6.0, 7.0)]  # (x, y): columnas 2-6, filas 3-7
+    result = process.run(data, params)
+
+    assert result.output_data is not None
+    assert result.output_data.shape == (5, 5)  # filas 3..7 inclusive, columnas 2..6 inclusive
+    np.testing.assert_array_equal(result.output_data, data[3:8, 2:7])
+
+
+def test_crop_process_works_regardless_of_click_order():
+    process = _get("imtools.crop")
+    data = np.arange(100).reshape(10, 10).astype(np.float64)
+    params = _default_params(process)
+    params["_picked_points"] = [(6.0, 7.0), (2.0, 3.0)]  # esquinas invertidas
+    result = process.run(data, params)
+
+    np.testing.assert_array_equal(result.output_data, data[3:8, 2:7])
+
+
+def test_crop_process_rejects_wrong_number_of_points():
+    process = _get("imtools.crop")
+    data = np.zeros((10, 10))
+    params = _default_params(process)
+    params["_picked_points"] = [(1.0, 1.0)]
+    try:
+        process.run(data, params)
+    except ValueError as exc:
+        assert "dos clics" in str(exc)
+    else:
+        raise AssertionError("se esperaba ValueError con un solo punto marcado")
+
+
+def test_normalize_process_maps_to_zero_one_range():
+    process = _get("imtools.normalize")
+    rng = np.random.default_rng(1)
+    data = rng.normal(1000.0, 50.0, (40, 40))
+    params = _default_params(process)
+
+    result = process.run(data, params)
+
+    assert result.output_data is not None
+    assert result.output_data.shape == data.shape
+    assert result.output_data.min() >= -0.5  # percentiles 1/99 pueden dejar algún valor fuera de [0,1] por diseño
+    assert result.output_data.max() <= 1.5
+
+
+def test_statistics_process_reports_known_values_and_builds_histogram_image():
+    process = _get("imtools.statistics")
+    data = np.arange(1, 101, dtype=np.float64).reshape(10, 10)
+    params = _default_params(process)
+    params["bins"] = 10
+
+    result = process.run(data, params)
+
+    assert result.output_data is not None
+    assert result.output_data.shape == (100, 10)  # imagen de barras: alta x contenedores
+    assert "media=50.50" in result.summary
+    assert "n=100" in result.summary
+    assert len(result.log_lines) == 2

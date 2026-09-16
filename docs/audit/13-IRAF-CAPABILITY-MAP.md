@@ -46,12 +46,12 @@ capacidad sin implementar en absoluto).
 
 | Capacidad | Estado actual | Test | GUI | Estado final |
 |---|---|---|---|---|
-| Aritmética entre imágenes con propagación de error (+ − × ÷, unidades, máscaras) | Real, `imtools/arithmetic.py:23` (`UncertainImage`) | `tests/unit/imtools/test_arithmetic.py` | Proceso `imtools.arithmetic` listado, **sin `run=`** (necesita una vista de selección de dos imágenes que la GUI no tiene) | **PENDIENTE** |
+| Aritmética entre imágenes con propagación de error (+ − × ÷, unidades, máscaras) | Real, `imtools/arithmetic.py:23` (`UncertainImage`) | `tests/unit/imtools/test_arithmetic.py` | Diálogo "Aritmética entre imágenes..." (menú Herramientas) -- selector de las dos ventanas MDI abiertas -- ver Fase 11.1 | **DISPONIBLE** |
 | Eliminación de rayos cósmicos (L.A.Cosmic real: Laplaciano submuestreado, imagen de estructura fina, doble umbral, crecimiento de máscara, iterativo) | Real, `imtools/cosmic_rays.py:71` | `tests/unit/imtools/test_cosmic_rays.py` | Proceso `imtools.cosmic_rays`, cableado | **DISPONIBLE** |
 | S/N por imagen a partir del modelo de ruido CCD | Real, `UncertainImage.from_counts`/`.snr()` (`arithmetic.py:50/150`) | ídem | Reutilizado internamente por otros procesos, sin panel propio | **DISPONIBLE** (como bloque interno) |
-| Estadística/histograma de imagen completa como utilidad genérica reutilizable | No existe un módulo dedicado (cada motor calcula lo que necesita internamente, p. ej. STF en `qt_app/mdi/stf.py`) | — | — | **PENDIENTE** |
-| Máscaras/regiones/recortes genéricos (no ligados a una apertura fotométrica ni al recorte de overscan) | No existe como utilidad independiente | — | — | **PENDIENTE** |
-| Normalización de imagen genérica | Solo existe dentro de `build_master_flat` (normalización a mediana 1.0); no hay utilidad genérica | `tests/unit/reduction/test_master_frames.py` | — | **PENDIENTE** (como utilidad genérica) |
+| Estadística/histograma de imagen completa como utilidad genérica reutilizable | No existía un módulo dedicado | `astrophysics_suite/imtools/statistics.py` (`compute_image_statistics`/`compute_histogram`) -- ver Fase 11.1 | `tests/unit/imtools/test_statistics.py` | Proceso `imtools.statistics`, cableado (histograma mostrado como imagen de barras por falta de un widget de gráfico dedicado, misma disciplina que la tira 1D de `spectroscopy.trace`) | **DISPONIBLE** |
+| Máscaras/regiones/recortes genéricos (no ligados a una apertura fotométrica ni al recorte de overscan) | No existía como utilidad independiente | `astrophysics_suite/imtools/regions.py` (`crop`/`rectangular_mask`/`circular_mask`) -- ver Fase 11.1 | `tests/unit/imtools/test_regions.py` | Proceso `imtools.crop`, cableado (dos clics marcan las esquinas opuestas, reutilizando el mismo mecanismo genérico de selección de posiciones de la Fase 9.6 §8) | **DISPONIBLE** |
+| Normalización de imagen genérica | Solo existía dentro de `build_master_flat` (normalización a mediana 1.0) | `astrophysics_suite/imtools/normalize.py` (`normalize_minmax`/`normalize_percentile`/`normalize_sigma_clip`) -- ver Fase 11.1 | `tests/unit/imtools/test_normalize.py` | Proceso `imtools.normalize` (percentiles), cableado; `normalize_minmax`/`normalize_sigma_clip` disponibles como motor, no expuestos individualmente en la GUI | **DISPONIBLE** |
 
 ---
 
@@ -148,7 +148,7 @@ en la Fase 10.1 (que se centra en cerrar `ccdred`), pero debe abordarse antes de
 | Bloque | DISPONIBLE | EXPERIMENTAL | PENDIENTE | Veredicto |
 |---|---|---|---|---|
 | `ccdred` | 13 | 0 | 0 | **Cerrado.** Sesión real de LIGHTS, píxeles defectuosos, franjas, iluminación, cielo, clasificación por cabecera y perfiles de instrumento, todos con motor real y camino de uso en la GUI (Fases 10.1-10.2) |
-| Análisis de imagen | 3 | 0 | 3 | Cubre lo esencial (aritmética con error, L.A.Cosmic real); faltan utilidades genéricas de inspección |
+| Análisis de imagen | 6 | 0 | 0 | **Cerrado.** Aritmética entre dos imágenes, estadísticas+histograma, recorte por clic y normalización por percentiles, todos con motor real y camino de uso en la GUI (Fase 11.1) |
 | `apphot` | 3 | 2 | 2 | Motor sólido; selección de fuente en la GUI sigue fija al centro |
 | `daophot` | 2 | 2 | 4 | Núcleo real (deblending simultáneo, tres modelos PSF); falta selección/refinamiento/diagnóstico automáticos |
 | Astrometría | 4 | 0 | 4 | Motores sólidos y honestos ante fallos de WCS; **ninguno wireado en la GUI todavía** |
@@ -166,6 +166,11 @@ franjas). La Fase 10.2 (ver `15-FASE10.2-CCDRED-CIERRE.md`) cierra los cuatro hu
 que quedaban documentados como `PENDIENTE`: iluminación, cielo, clasificación de
 fotogramas por cabecera y perfiles de instrumento. Con esto, el bloque `ccdred`
 queda completo -- las 13 capacidades de la tabla anterior en `DISPONIBLE`, ninguna
-`PENDIENTE` -- y el siguiente bloque a abrir, según el orden acordado, es análisis de
-imagen (estadística/histograma genérico, máscaras/regiones/recortes independientes
-de fotometría u overscan, normalización genérica).
+`PENDIENTE`. La Fase 11.1 (ver `16-FASE11-ANALISIS-IMAGEN.md`) cierra a continuación
+el bloque de análisis de imagen -- las cuatro capacidades que quedaban `PENDIENTE`
+(aritmética entre imágenes, estadística/histograma genérico, máscaras/regiones/
+recortes independientes, normalización genérica), todas con motor real y camino de
+uso en la GUI. El siguiente bloque a abrir, según el orden acordado, es `apphot`:
+selección de fuente en la GUI sigue fija al centro de la imagen en vez de un clic o
+una detección automática, y no hay calibración fotométrica (punto cero) resuelta
+contra un catálogo.

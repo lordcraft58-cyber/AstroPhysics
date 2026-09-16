@@ -10,6 +10,9 @@ from __future__ import annotations
 import numpy as np
 
 from astrophysics_suite.imtools.cosmic_rays import detect_cosmic_rays
+from astrophysics_suite.imtools.normalize import normalize_percentile
+from astrophysics_suite.imtools.regions import crop
+from astrophysics_suite.imtools.statistics import compute_histogram, compute_image_statistics
 from astrophysics_suite.photometry.aperture import aperture_photometry
 from astrophysics_suite.photometry.psf import GaussianPSF, fit_group_psf_photometry
 from astrophysics_suite.reduction.overscan import subtract_overscan
@@ -121,6 +124,53 @@ def _run_continuum_fit_central_row(data: np.ndarray, params: dict) -> ProcessRes
     return ProcessResult(output_data=None, summary=summary)
 
 
+def _run_crop(data: np.ndarray, params: dict) -> ProcessResult:
+    points = params.get("_picked_points") or []
+    if len(points) != 2:
+        raise ValueError("se necesitan exactamente dos clics marcando las esquinas opuestas del recorte")
+    (x0, y0), (x1, y1) = points
+    row_start, row_end = sorted((int(round(y0)), int(round(y1))))
+    col_start, col_end = sorted((int(round(x0)), int(round(x1))))
+    cropped = crop(data, (slice(row_start, row_end + 1), slice(col_start, col_end + 1)))
+    summary = f"Recorte a {cropped.shape[1]}x{cropped.shape[0]} px (filas {row_start}:{row_end + 1}, columnas {col_start}:{col_end + 1})."
+    return ProcessResult(output_data=cropped, summary=summary)
+
+
+def _run_normalize_percentile(data: np.ndarray, params: dict) -> ProcessResult:
+    low, high = params["low_percentile"], params["high_percentile"]
+    normalized = normalize_percentile(data, low=low, high=high)
+    summary = f"Normalizada por percentiles [{low:.1f}, {high:.1f}] -> rango aproximado [0, 1] (robusta frente a outliers, a diferencia de min/máx)."
+    return ProcessResult(output_data=normalized, summary=summary)
+
+
+def _run_image_statistics(data: np.ndarray, params: dict) -> ProcessResult:
+    stats = compute_image_statistics(data)
+    bins = int(params["bins"])
+    hist = compute_histogram(data, bins=bins)
+
+    # el taller todavía no tiene un widget de histograma dedicado -- se
+    # dibuja como una imagen de barras (misma disciplina que la tira 1D de
+    # `spectroscopy.trace`), en vez de perder el histograma por falta de
+    # un widget de gráfico.
+    bar_height = 100
+    max_count = int(hist.counts.max()) if hist.counts.max() > 0 else 1
+    bar_chart = np.zeros((bar_height, bins), dtype=np.float64)
+    for col, count in enumerate(hist.counts):
+        filled = int(round((count / max_count) * bar_height))
+        if filled > 0:
+            bar_chart[bar_height - filled :, col] = 1.0
+
+    summary = (
+        f"media={stats.mean:.2f}  mediana={stats.median:.2f}  std={stats.std:.2f}  "
+        f"MAD-sigma={stats.mad_sigma:.2f}  min={stats.minimum:.2f}  max={stats.maximum:.2f}  n={stats.n_pixels}"
+    )
+    log_lines = (
+        f"Percentiles: 1%={stats.percentile_1:.2f}  5%={stats.percentile_5:.2f}  95%={stats.percentile_95:.2f}  99%={stats.percentile_99:.2f}",
+        f"Histograma: {bins} contenedores entre {hist.bin_edges[0]:.2f} y {hist.bin_edges[-1]:.2f} (mostrado como imagen de barras en una nueva ventana).",
+    )
+    return ProcessResult(output_data=bar_chart, summary=summary, log_lines=log_lines)
+
+
 def build_process_registry() -> list[ProcessDefinition]:
     return [
         ProcessDefinition(
@@ -153,11 +203,37 @@ def build_process_registry() -> list[ProcessDefinition]:
             ),
             run=_run_cosmic_ray_removal,
         ),
+        # La aritmética entre dos imágenes necesita elegir una SEGUNDA ventana
+        # MDI, algo que no encaja en "un proceso transforma la imagen activa"
+        # (ProcessDefinition.run) -- se resuelve con un diálogo dedicado en el
+        # menú "Herramientas" (qt_app/imtools/arithmetic_dialog.py), mismo
+        # patrón que bias/dark/flat maestros en "Reducción".
         ProcessDefinition(
-            process_id="imtools.arithmetic",
-            name="Aritmética de imágenes",
+            process_id="imtools.crop",
+            name="Recortar (imcopy)",
             category="Utilidades de imagen",
-            description="Suma/resta/producto/cociente con propagación de incertidumbre. Pendiente de una vista de dos imágenes en esta primera versión del taller.",
+            description="Recorta la imagen a la región marcada -- clic para cada esquina opuesta del rectángulo.",
+            run=_run_crop,
+            requires_picking=2,
+        ),
+        ProcessDefinition(
+            process_id="imtools.normalize",
+            name="Normalización por percentiles",
+            category="Utilidades de imagen",
+            description="Reescala la imagen a [0, 1] usando percentiles como extremos en vez de mínimo/máximo -- mucho menos sensible a un solo píxel extremo (saturación, rayo cósmico) que una normalización min/máx clásica.",
+            parameters=(
+                ParameterSpec("low_percentile", "Percentil inferior", "float", 1.0, minimum=0.0, maximum=49.0),
+                ParameterSpec("high_percentile", "Percentil superior", "float", 99.0, minimum=51.0, maximum=100.0),
+            ),
+            run=_run_normalize_percentile,
+        ),
+        ProcessDefinition(
+            process_id="imtools.statistics",
+            name="Estadísticas e histograma",
+            category="Utilidades de imagen",
+            description="Media, mediana, desviación estándar y robusta (MAD), percentiles y rango -- equivalente a imstatistics. El histograma se muestra como una imagen de barras en una ventana nueva (el taller no tiene todavía un widget de gráfico dedicado).",
+            parameters=(ParameterSpec("bins", "Contenedores del histograma", "int", 64, minimum=4, maximum=512),),
+            run=_run_image_statistics,
         ),
         ProcessDefinition(
             process_id="photometry.aperture",

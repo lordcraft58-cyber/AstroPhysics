@@ -20,6 +20,7 @@ from qt_app.diagnostics_dialog import DiagnosticsDialog
 from qt_app.docks.console_dock import ConsoleDock
 from qt_app.docks.process_explorer import ProcessExplorer
 from qt_app.docks.properties_dock import PropertiesDock
+from qt_app.imtools.arithmetic_dialog import ArithmeticDialog
 from qt_app.mdi.image_window import ImageView
 from qt_app.processes.base import ProcessDefinition
 from qt_app.processes.registry import build_process_registry
@@ -124,6 +125,9 @@ class MainWindow(QMainWindow):
         diagnostics_action = QAction("&Diagnóstico de equipo...", self)
         diagnostics_action.triggered.connect(self._open_diagnostics_dialog)
         tools_menu.addAction(diagnostics_action)
+        arithmetic_action = QAction("&Aritmética entre imágenes...", self)
+        arithmetic_action.triggered.connect(self._open_arithmetic_dialog)
+        tools_menu.addAction(arithmetic_action)
 
         reduction_menu = self.menuBar().addMenu("&Reducción")
         build_master_action = QAction("&Construir fotograma maestro...", self)
@@ -193,6 +197,25 @@ class MainWindow(QMainWindow):
 
     def _open_diagnostics_dialog(self) -> None:
         dialog = DiagnosticsDialog(self)
+        dialog.exec()
+
+    def _image_windows_by_title(self) -> dict[str, object]:
+        windows: dict[str, object] = {}
+        for sub_window in self.mdi.subWindowList():
+            widget = sub_window.widget()
+            if isinstance(widget, ImageView):
+                windows[sub_window.windowTitle()] = widget.data
+        return windows
+
+    def _open_arithmetic_dialog(self) -> None:
+        windows = self._image_windows_by_title()
+        if len(windows) < 2:
+            self.statusBar().showMessage("Abre al menos dos imágenes antes de hacer aritmética entre ellas.", 5000)
+            return
+        active = self._active_image_view()
+        active_title = active.title if active is not None else ""
+        dialog = ArithmeticDialog(windows, active_title, self)
+        dialog.computed.connect(lambda data, title: self.add_image_window(data, title))
         dialog.exec()
 
     def _open_build_master_frame_dialog(self) -> None:
