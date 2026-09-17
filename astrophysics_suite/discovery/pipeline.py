@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import math
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Callable
 
@@ -38,7 +38,7 @@ from astrophysics_suite.artifacts.artifact_screen import FieldStatistics, comput
 from astrophysics_suite.artifacts.morphology_screen import classify_morphology
 from astrophysics_suite.astrometry import blind_solve
 from astrophysics_suite.astrometry.plate_solve import PlateSolveResult, estimate_approx_pointing_from_header, solve_plate
-from astrophysics_suite.astrometry.wcs_fit import rescale_wcs_for_binning, wcs_solution_to_astropy
+from astrophysics_suite.astrometry.wcs_fit import angular_separation_deg, rescale_wcs_for_binning, wcs_solution_to_astropy
 from astrophysics_suite.catalogs.local_cache import CatalogCache
 from astrophysics_suite.imtools.debayer import bayer_pattern_from_header, debayer_to_luminance, describe_bayer_agreement
 from astrophysics_suite.catalogs.gaia import identify_detection
@@ -342,6 +342,99 @@ class _TrackContext:
     field_stats: FieldStatistics
 
 
+def _find_cross_band_reference_matches(
+    tracks: list[SourceTrack], *, match_radius_arcsec: float,
+) -> dict[str, dict[str, EpochDetection]]:
+    """Empareja, por posición celeste real, las referencias de trazas de
+    BANDAS DISTINTAS que caen en el mismo punto del cielo.
+
+    `source_tracks.group_detections_into_tracks` agrupa deliberadamente
+    solo DENTRO de cada banda (ver el comentario en `run_generic_
+    discovery`): fundir bandas distintas en una misma traza confundiría
+    "mismo objeto, visto en dos filtros" con "mismo objeto, visto en dos
+    épocas", que es justo lo que la variabilidad/el movimiento no deben
+    mezclar. Esta función es un emparejamiento aparte, solo para
+    reconstruir el flujo real multibanda de una fuente física a partir
+    de las referencias YA elegidas de cada traza -- nunca toca la
+    agrupación temporal en sí."""
+    references = [(track, track.reference) for track in tracks if track.reference.detection.position.has_sky_coordinates]
+    matches: dict[str, dict[str, EpochDetection]] = {}
+    for track, ref in references:
+        ra, dec = ref.detection.position.ra_deg, ref.detection.position.dec_deg
+        companions: dict[str, EpochDetection] = {ref.band: ref}
+        for other_track, other_ref in references:
+            if other_track is track or other_ref.band in companions:
+                continue
+            other_ra, other_dec = other_ref.detection.position.ra_deg, other_ref.detection.position.dec_deg
+            if angular_separation_deg(ra, dec, other_ra, other_dec) * 3600.0 <= match_radius_arcsec:
+                companions[other_ref.band] = other_ref
+        matches[track.track_id] = companions
+    return matches
+
+
+def _aggregate_multi_band_characterization(
+    band_companions: dict[str, EpochDetection], reference_characterization: CharacterizationResult, processed_by_id: dict[str, _ProcessedSource],
+) -> CharacterizationResult:
+    """Con >= 2 bandas emparejadas por posición real
+    (`_find_cross_band_reference_matches`), agrega el flujo medido en
+    CADA banda -- antes `characterization.band_flux`/`band_ratios`
+    solo reflejaban la banda de la época de referencia (`detection.
+    bands` es siempre de un solo elemento, ver `detection/point_
+    sources.py`), así que `band_ratios` quedaba vacío en TODA ejecución
+    real del pipeline genérico con más de una banda, y con ello la
+    dimensión espectral del vector de anomalía y la relación OIII/Hα
+    que espera `physics/observables.py` nunca tenían con qué
+    activarse. Con una sola banda (el caso dominante hoy), devuelve
+    `reference_characterization` sin tocar -- cero cambio de
+    comportamiento."""
+    if len(band_companions) < 2:
+        return reference_characterization
+
+    band_flux: dict[str, Quantity] = {}
+    for band, epoch_det in band_companions.items():
+        source = processed_by_id.get(epoch_det.detection.detection_id)
+        if source is None:
+            continue
+        flux = source.characterization.band_flux.get(band)
+        if flux is not None and flux.is_available and flux.value is not None:
+            band_flux[band] = flux
+
+    if len(band_flux) < 2:
+        return reference_characterization
+
+    def _ratio(name: str, numerator: Quantity, denominator: Quantity) -> Quantity | None:
+        if denominator.value is None or denominator.value == 0 or numerator.value is None:
+            return None
+        ratio = float(numerator.value) / float(denominator.value)
+        ratio_error = None
+        if numerator.error is not None and denominator.error is not None and numerator.value != 0:
+            relative = math.sqrt((numerator.error / numerator.value) ** 2 + (denominator.error / denominator.value) ** 2)
+            ratio_error = abs(ratio) * relative
+        return Quantity(
+            value=ratio, error=ratio_error, unit="dimensionless", kind=ValueKind.OBSERVED, method="multi_band_flux_ratio",
+            notes=(f"{name}: {numerator.value:.4g} {numerator.unit} / {denominator.value:.4g} {denominator.unit}",),
+        )
+
+    band_ratios: dict[str, Quantity] = {}
+    bands_sorted = sorted(band_flux)
+    for index, band_a in enumerate(bands_sorted):
+        for band_b in bands_sorted[index + 1 :]:
+            key = f"{band_a}/{band_b}"
+            ratio = _ratio(key, band_flux[band_a], band_flux[band_b])
+            if ratio is not None:
+                band_ratios[key] = ratio
+
+    # Alias con la orientación canónica que espera `physics/observables.
+    # py` (`"OIII/HA"`) -- el orden alfabético genérico de arriba daría
+    # "HA/OIII", que ese motor nunca busca.
+    if "OIII" in band_flux and "HA" in band_flux:
+        oiii_ha = _ratio("OIII/HA", band_flux["OIII"], band_flux["HA"])
+        if oiii_ha is not None:
+            band_ratios["OIII/HA"] = oiii_ha
+
+    return replace(reference_characterization, band_flux=band_flux, band_ratios=band_ratios)
+
+
 _MIN_ZEROPOINT_STARS = 5
 """Mismo mínimo que `compute_field_statistics` exige para sus propias
 estadísticas de campo (`artifacts/artifact_screen.py`): por debajo de
@@ -588,6 +681,16 @@ def run_generic_discovery(
         )
         tracks.extend(tracking.tracks)
 
+    # Emparejamiento aparte, solo por posición (ver el docstring de
+    # `_find_cross_band_reference_matches`): reconstruye qué trazas de
+    # bandas distintas son la MISMA fuente física, sin tocar la
+    # agrupación temporal de arriba. Con una sola banda en toda la
+    # observación no hay nada que cruzar -- se salta el barrido O(n²).
+    cross_band_matches = (
+        _find_cross_band_reference_matches(tracks, match_radius_arcsec=match_radius_arcsec)
+        if len(epoch_detections_by_band) >= 2 else {}
+    )
+
     # --- Pase A, por cada traza física: variabilidad/movimiento (si hay
     # >= 2 épocas) e identificación (una sola vez, sobre la época de
     # referencia). El vector de anomalía y el Candidate se construyen
@@ -661,6 +764,9 @@ def run_generic_discovery(
         check_cancelled()
         reference_detection = ctx.reference_detection
         reference = ctx.reference
+        multi_band_characterization = _aggregate_multi_band_characterization(
+            cross_band_matches.get(ctx.track.track_id, {}), reference.characterization, processed_by_id,
+        )
 
         expected_band_flux: dict[str, Quantity] = {}
         zeropoint_fit = zeropoint_fit_by_image.get(reference.image_index)
@@ -690,7 +796,7 @@ def run_generic_discovery(
 
         anomaly = build_anomaly_vector(
             detection_id=reference_detection.detection_id,
-            characterization=reference.characterization,
+            characterization=multi_band_characterization,
             temporal=ctx.temporal,
             motion=ctx.motion,
             field_median_fwhm_px=ctx.field_stats.median_fwhm_px,
@@ -722,7 +828,7 @@ def run_generic_discovery(
                 position=reference.characterization.position,
                 morphology=reference_detection.morphology,
                 size=reference.characterization.fwhm,
-                flux=reference.characterization.band_flux,
+                flux=multi_band_characterization.band_flux,
                 snr=snr,
                 bands=reference_detection.bands,
                 catalog_matches=ctx.catalog_matches,

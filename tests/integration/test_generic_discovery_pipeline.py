@@ -713,3 +713,54 @@ def test_run_generic_discovery_leaves_photometric_anomaly_not_available_with_too
         assert candidate.anomaly_evidence is not None
         assert not candidate.anomaly_evidence.photometric.is_available
         assert "esperado" in candidate.anomaly_evidence.photometric.reference or "flujo" in candidate.anomaly_evidence.photometric.reference
+
+
+def test_run_generic_discovery_aggregates_real_band_flux_and_ratios_across_registered_multi_band_images(tmp_path):
+    """Cuando dos imágenes de bandas distintas del MISMO campo llevan un
+    WCS real (registradas, no solo apiladas sin resolver), `source_tracks`
+    ya agrupaba la misma fuente física entre ellas -- pero el `Candidate`
+    resultante solo llevaba el flujo de la banda de su época de
+    referencia. Confirma que ahora `Candidate.flux` trae AMBAS bandas
+    reales, y que `anomaly_evidence.spectral` refleja que sí hay
+    relaciones medidas (aunque siga NOT_AVAILABLE por falta de una
+    expectativa física, que este pipeline genérico no inventa)."""
+    from astropy.io import fits
+    from astropy.wcs import WCS
+
+    shape = (80, 80)
+    wcs = WCS(naxis=2)
+    wcs.wcs.crpix = [40.0, 40.0]
+    wcs.wcs.cdelt = [-1.0 / 3600.0, 1.0 / 3600.0]
+    wcs.wcs.crval = [210.0, -8.0]
+    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    header = wcs.to_header()
+
+    oiii = _star_field(shape, [(40, 40)], amplitude=2500.0, seed=21)
+    ha = _star_field(shape, [(40, 40)], amplitude=900.0, seed=22)
+
+    oiii_path = tmp_path / "field_OIII.fits"
+    ha_path = tmp_path / "field_HA.fits"
+    fits.PrimaryHDU(oiii, header=header).writeto(oiii_path)
+    fits.PrimaryHDU(ha, header=header).writeto(ha_path)
+
+    observation, loaded = build_observation(
+        [(str(oiii_path), "OIII"), (str(ha_path), "HA")], observation_id="OBS-INT-MULTIBAND", target_name="Campo multibanda registrado",
+    )
+    candidates, summary = run_generic_discovery(observation, loaded, threshold_sigma=4.0)
+
+    with_both_bands = [c for c in candidates if "OIII" in c.flux and "HA" in c.flux]
+    assert with_both_bands, [c.flux for c in candidates]
+
+    candidate = with_both_bands[0]
+    assert candidate.flux["OIII"].value != candidate.flux["HA"].value
+    assert candidate.flux["OIII"].value > candidate.flux["HA"].value  # amplitud inyectada mayor en OIII
+
+    assert candidate.anomaly_evidence is not None
+    spectral = candidate.anomaly_evidence.spectral
+    assert not spectral.is_available
+    assert "relaciones medidas" in spectral.reference
+    assert "ninguna expectativa" in spectral.reference
+
+    from astrophysics_suite.models.candidate import Candidate
+
+    assert Candidate.from_dict(candidate.to_dict()) == candidate
