@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>AstroPhysics Suite</title>
-<meta name="description" content="AstroPhysics Suite: software de detección y análisis de fuentes astronómicas para aficionados, con cruce de catálogos y detección de anomalías con IA.">
+<meta name="description" content="AstroPhysics Suite: estación de descubrimiento astrofísico que reimplementa el núcleo de IRAF en Python y lo expone en un taller Qt, con panel de candidatos y datos trazables.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500;600;700&family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -100,9 +100,10 @@
   }
   p{ margin: 0; }
   a{ color: inherit; }
+  button{ font: inherit; }
   .mono{ font-family: "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
   .wrap{
-    max-width: 1120px;
+    max-width: 1160px;
     margin: 0 auto;
     padding-inline: 24px;
   }
@@ -152,9 +153,23 @@
     white-space: nowrap;
   }
   .brand svg{ flex: none; }
+  .status-pill{
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.62rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 3px 9px 3px 7px;
+  }
+  .status-pill::before{ content:""; width:6px; height:6px; border-radius:50%; background: var(--accent); }
   .nav-links{
     display: flex;
-    gap: 28px;
+    gap: 26px;
     font-size: 0.9rem;
     color: var(--ink-2);
   }
@@ -175,32 +190,19 @@
     cursor: pointer;
     white-space: nowrap;
   }
-  .btn-primary{
-    background: var(--accent);
-    color: var(--accent-ink);
-  }
+  .btn-primary{ background: var(--accent); color: var(--accent-ink); }
   .btn-primary:hover{ filter: brightness(1.06); }
-  .btn-ghost{
-    background: transparent;
-    border-color: var(--border);
-    color: var(--ink);
-  }
+  .btn-ghost{ background: transparent; border-color: var(--border); color: var(--ink); }
   .btn-ghost:hover{ border-color: var(--ink-3); }
   .btn-sm{ padding: 8px 14px; font-size: 0.82rem; }
-  @media (max-width: 760px){
+  @media (max-width: 780px){
     .nav-links{ display: none; }
   }
 
   /* ---------- hero ---------- */
-  .hero{
-    position: relative;
-    overflow: hidden;
-    background: var(--bg-hero);
-    border-bottom: 1px solid var(--border);
-  }
+  .hero{ position: relative; overflow: hidden; background: var(--bg-hero); border-bottom: 1px solid var(--border); }
   .starfield{
-    position: absolute;
-    inset: 0;
+    position: absolute; inset: 0;
     background-image:
       radial-gradient(1.6px 1.6px at 12% 22%, var(--ink-3) 60%, transparent 61%),
       radial-gradient(1.4px 1.4px at 28% 68%, var(--ink-3) 60%, transparent 61%),
@@ -216,9 +218,7 @@
     opacity: 0.55;
   }
   .starfield::after{
-    content: "";
-    position: absolute;
-    inset: 0;
+    content: ""; position: absolute; inset: 0;
     background-image:
       radial-gradient(2px 2px at 24% 30%, var(--accent) 55%, transparent 56%),
       radial-gradient(2px 2px at 78% 48%, var(--cyan) 55%, transparent 56%),
@@ -226,288 +226,133 @@
     opacity: 0.7;
     animation: twinkle 5s ease-in-out infinite;
   }
-  @keyframes twinkle{
-    0%, 100%{ opacity: 0.25; }
-    50%{ opacity: 0.85; }
-  }
-  .orbit-line{
-    position: absolute;
-    right: -8%;
-    top: -12%;
-    width: 620px;
-    max-width: 70%;
-    height: auto;
-    color: var(--accent);
-    opacity: 0.22;
-  }
-  .hero-inner{
-    position: relative;
-    padding-block: 76px 64px;
-    display: grid;
-    gap: 18px;
-    max-width: 720px;
-  }
-  .hero h1{
-    font-size: clamp(2rem, 4.6vw, 3.1rem);
-    letter-spacing: -0.01em;
-  }
-  .hero-sub{
-    color: var(--ink-2);
-    font-size: 1.05rem;
-    max-width: 58ch;
-  }
-  .hero-ctas{
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
-    margin-top: 6px;
-  }
-  .hero-meta{
-    margin-top: 10px;
-    color: var(--ink-3);
-    font-size: 0.8rem;
-    letter-spacing: 0.02em;
-  }
+  @keyframes twinkle{ 0%,100%{ opacity:0.25; } 50%{ opacity:0.85; } }
+  .orbit-line{ position:absolute; right:-8%; top:-12%; width:620px; max-width:70%; height:auto; color:var(--accent); opacity:0.22; }
+  .hero-inner{ position: relative; padding-block: 72px 60px; display: grid; gap: 18px; max-width: 760px; }
+  .hero h1{ font-size: clamp(1.9rem, 4.2vw, 2.9rem); letter-spacing: -0.01em; }
+  .hero-sub{ color: var(--ink-2); font-size: 1.03rem; max-width: 62ch; }
+  .hero-ctas{ display: flex; flex-wrap: wrap; gap: 12px; margin-top: 6px; }
+  .hero-meta{ margin-top: 10px; color: var(--ink-3); font-size: 0.78rem; letter-spacing: 0.01em; }
 
-  section{ padding-block: 64px; }
-  .section-head{
-    display: grid;
-    gap: 10px;
-    max-width: 62ch;
-    margin-bottom: 34px;
-  }
-  .section-head h2{ font-size: clamp(1.5rem, 2.6vw, 2rem); }
+  section{ padding-block: 60px; }
+  .section-head{ display: grid; gap: 10px; max-width: 66ch; margin-bottom: 32px; }
+  .section-head h2{ font-size: clamp(1.4rem, 2.4vw, 1.9rem); }
   .section-head p{ color: var(--ink-2); }
 
-  /* ---------- console / demo ---------- */
+  /* ---------- candidate console ---------- */
   .console{ background: var(--bg); border-bottom: 1px solid var(--border); }
-  .console-panel{
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    box-shadow: 0 20px 40px -28px var(--shadow-lg);
-    overflow: hidden;
-  }
-  .console-bar{
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 12px 18px;
-    border-bottom: 1px solid var(--border);
-    background: var(--panel-2);
-  }
+  .console-panel{ background: var(--panel); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 20px 40px -28px var(--shadow-lg); overflow: hidden; }
+  .console-bar{ display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--border); background: var(--panel-2); }
   .console-bar .mono{ font-size: 0.76rem; color: var(--ink-3); }
   .console-dots{ display: flex; gap: 6px; }
   .console-dots span{ width: 8px; height: 8px; border-radius: 50%; background: var(--border); }
-  .candidate-grid{
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-    gap: 1px;
-    background: var(--border);
-  }
-  .candidate{
-    background: var(--panel);
-    padding: 18px;
-    display: grid;
-    gap: 10px;
-  }
-  .candidate-top{
-    display: flex;
-    align-items: flex-start;
-    gap: 12px;
-  }
-  .thumb{
-    flex: none;
-    width: 52px;
-    height: 52px;
-    border-radius: 9px;
-    background: var(--ink);
-    position: relative;
-    overflow: hidden;
-    box-shadow: inset 0 0 0 1px var(--border);
-  }
+  .candidate-grid{ display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1px; background: var(--border); }
+  .candidate{ background: var(--panel); padding: 18px; display: grid; gap: 10px; }
+  .candidate-top{ display: flex; align-items: flex-start; gap: 12px; }
+  .thumb{ flex: none; width: 52px; height: 52px; border-radius: 9px; background: var(--ink); position: relative; overflow: hidden; box-shadow: inset 0 0 0 1px var(--border); }
   .thumb::before{
-    content: "";
-    position: absolute;
-    inset: 0;
+    content:""; position:absolute; inset:0;
     background-image:
       radial-gradient(1px 1px at 20% 30%, #fff 60%, transparent 61%),
       radial-gradient(1px 1px at 70% 20%, #fff 60%, transparent 61%),
       radial-gradient(1px 1px at 40% 80%, #fff 60%, transparent 61%),
       radial-gradient(1px 1px at 85% 65%, #fff 60%, transparent 61%);
-    opacity: 0.5;
+    opacity:0.5;
   }
-  .thumb::after{
-    content: "";
-    position: absolute;
-    inset: 0;
-    background: radial-gradient(circle at 50% 50%, var(--glow, var(--accent)) 0%, transparent 62%);
-    opacity: 0.85;
-  }
+  .thumb::after{ content:""; position:absolute; inset:0; background: radial-gradient(circle at 50% 50%, var(--glow, var(--accent)) 0%, transparent 62%); opacity:0.85; }
   .candidate-id{ font-size: 0.88rem; font-weight: 600; }
-  .candidate-coords{ font-size: 0.74rem; color: var(--ink-3); }
-  .badge{
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-family: "IBM Plex Mono", monospace;
-    font-size: 0.66rem;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    padding: 4px 8px;
-    border-radius: 999px;
-    width: fit-content;
-  }
+  .candidate-coords{ font-size: 0.72rem; color: var(--ink-3); }
+  .badge-row{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .badge{ display: inline-flex; align-items: center; gap: 6px; font-family: "IBM Plex Mono", monospace; font-size: 0.64rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; padding: 4px 8px; border-radius: 999px; width: fit-content; }
   .badge::before{ content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-  .badge-nuevo{ background: var(--accent-soft); color: var(--accent); }
-  .badge-conocido{ background: var(--cyan-soft); color: var(--cyan); }
-  .badge-anomalia{ background: var(--coral-soft); color: var(--coral); }
-  .badge-movimiento{ background: var(--indigo-soft); color: var(--indigo); }
-  .candidate-fields{
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 6px 12px;
-    font-size: 0.78rem;
-  }
-  .field label{
-    display: block;
-    color: var(--ink-3);
-    font-size: 0.66rem;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    margin-bottom: 2px;
-  }
-  .field .mono{ font-size: 0.8rem; color: var(--ink); }
+  .badge-known{ background: var(--cyan-soft); color: var(--cyan); }
+  .badge-transient{ background: var(--accent-soft); color: var(--accent); }
+  .badge-anomalous{ background: var(--coral-soft); color: var(--coral); }
+  .badge-moving{ background: var(--indigo-soft); color: var(--indigo); }
+  .state-code{ font-size: 0.64rem; color: var(--ink-3); }
+  .candidate-fields{ display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; font-size: 0.78rem; }
+  .field label{ display: block; color: var(--ink-3); font-size: 0.64rem; letter-spacing: 0.04em; text-transform: uppercase; margin-bottom: 2px; }
+  .field .mono{ font-size: 0.78rem; color: var(--ink); }
   .candidate-note{ font-size: 0.78rem; color: var(--ink-2); }
-  .console-foot{
-    padding: 12px 18px;
-    font-size: 0.76rem;
-    color: var(--ink-3);
-    border-top: 1px solid var(--border);
-    background: var(--panel-2);
-  }
+  .review-row{ display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 2px; }
+  .review-state{ font-family:"IBM Plex Mono",monospace; font-size:0.62rem; letter-spacing:0.05em; text-transform:uppercase; color: var(--ink-3); }
+  .review-actions{ display: flex; gap: 6px; }
+  .review-btn{ display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel-2); color: var(--ink-3); }
+  .review-btn.keep{ color: var(--cyan); }
+  .review-btn.discard{ color: var(--coral); }
+  .review-btn.flag{ color: var(--accent); }
+  .console-foot{ padding: 12px 18px; font-size: 0.76rem; color: var(--ink-3); border-top: 1px solid var(--border); background: var(--panel-2); }
 
-  /* ---------- features ---------- */
-  .feature-grid{
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
-    gap: 16px;
-  }
-  .feature-card{
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 22px;
-    display: grid;
-    gap: 12px;
-    align-content: start;
-  }
-  .feature-icon{
-    width: 38px;
-    height: 38px;
-    border-radius: 9px;
-    background: var(--accent-soft);
-    color: var(--accent);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  .feature-card h3{ font-size: 1rem; font-family: "Manrope", sans-serif; font-weight: 700; }
-  .feature-card p{ color: var(--ink-2); font-size: 0.9rem; }
+  /* ---------- engines ---------- */
+  .feature-grid{ display: grid; grid-template-columns: repeat(auto-fill, minmax(255px, 1fr)); gap: 16px; }
+  .feature-card{ background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; display: grid; gap: 10px; align-content: start; }
+  .feature-icon{ width: 36px; height: 36px; border-radius: 9px; background: var(--accent-soft); color: var(--accent); display: flex; align-items: center; justify-content: center; }
+  .feature-card h3{ font-size: 0.96rem; font-family: "Manrope", sans-serif; font-weight: 700; }
+  .feature-card p{ color: var(--ink-2); font-size: 0.86rem; }
+  .feature-card .module{ font-size: 0.66rem; color: var(--ink-3); }
 
-  /* ---------- pipeline ---------- */
-  .pipeline{ background: var(--bg-hero); border-block: 1px solid var(--border); }
-  .pipeline-flow{
-    display: flex;
-    align-items: stretch;
-    gap: 0;
-    flex-wrap: wrap;
-  }
-  .pipeline-step{
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 16px;
-    flex: 1 1 150px;
-    display: grid;
-    gap: 6px;
-    align-content: start;
-  }
-  .pipeline-step .mono{ font-size: 0.7rem; color: var(--ink-3); }
-  .pipeline-step h3{ font-size: 0.92rem; font-family: "Manrope", sans-serif; font-weight: 700; }
-  .pipeline-step p{ font-size: 0.8rem; color: var(--ink-2); }
-  .pipeline-arrow{
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex: 0 0 34px;
-    color: var(--ink-3);
-  }
-  @media (max-width: 820px){
-    .pipeline-flow{ flex-direction: column; }
-    .pipeline-arrow{ flex-direction: row; transform: rotate(90deg); flex: 0 0 24px; align-self: center; }
-  }
+  .culmination{ margin-top: 18px; background: linear-gradient(135deg, var(--panel), var(--panel-2)); border: 1px solid var(--border); border-radius: 14px; padding: 26px; display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
+  .culmination .feature-icon{ background: var(--cyan-soft); color: var(--cyan); }
+  .culmination-text{ flex: 1 1 320px; display: grid; gap: 8px; }
+  .culmination-text p{ color: var(--ink-2); font-size: 0.92rem; }
 
-  .disclaimer{
-    margin-top: 30px;
-    border-left: 3px solid var(--accent);
-    padding: 12px 16px;
-    background: var(--accent-soft);
-    border-radius: 0 8px 8px 0;
-    font-size: 0.85rem;
-    color: var(--ink-2);
-  }
+  /* ---------- rigor / quantity ---------- */
+  .rigor-grid{ display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 32px; align-items: start; }
+  @media (max-width: 860px){ .rigor-grid{ grid-template-columns: 1fr; } }
+  .rigor-copy{ display: grid; gap: 14px; }
+  .rigor-copy p{ color: var(--ink-2); font-size: 0.95rem; }
+  .rigor-copy strong{ color: var(--ink); }
+  .quantity-card{ background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 18px; display: grid; gap: 12px; }
+  .quantity-card .mono{ font-size: 0.78rem; }
+  .quantity-row{ display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-block: 8px; border-top: 1px solid var(--border); }
+  .quantity-row:first-of-type{ border-top: none; padding-top: 0; }
+  .quantity-label{ font-size: 0.8rem; color: var(--ink-2); }
+  .quantity-value{ display: flex; align-items: center; gap: 8px; }
+  .kind-tag{ font-size: 0.6rem; padding: 3px 7px; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.04em; font-family: "IBM Plex Mono", monospace; }
+  .kind-observed{ background: var(--cyan-soft); color: var(--cyan); }
+  .kind-proxy{ background: var(--indigo-soft); color: var(--indigo); }
+  .kind-model{ background: var(--accent-soft); color: var(--accent); }
+  .kind-hypothesis{ background: var(--coral-soft); color: var(--coral); }
+  .quantity-foot{ font-size: 0.72rem; color: var(--ink-3); border-top: 1px solid var(--border); padding-top: 10px; }
+
+  /* ---------- workshop mockup ---------- */
+  .workshop{ background: var(--panel); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: 0 20px 40px -28px var(--shadow-lg); }
+  .workshop-bar{ display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--panel-2); border-bottom: 1px solid var(--border); }
+  .workshop-bar .mono{ font-size: 0.72rem; color: var(--ink-3); }
+  .workshop-body{ display: grid; grid-template-columns: 168px 1fr 190px; min-height: 240px; }
+  @media (max-width: 760px){ .workshop-body{ grid-template-columns: 1fr; } .workshop-dock{ border-right: none !important; border-left: none !important; border-bottom: 1px solid var(--border); } }
+  .workshop-dock{ padding: 14px; border-right: 1px solid var(--border); background: var(--bg-hero); display: grid; gap: 10px; align-content: start; }
+  .workshop-dock:last-child{ border-right: none; border-left: 1px solid var(--border); }
+  .workshop-dock-title{ font-size: 0.64rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); }
+  .process-item{ display: flex; align-items: center; gap: 8px; font-size: 0.78rem; color: var(--ink-2); padding: 6px 8px; border-radius: 6px; background: var(--panel); border: 1px solid var(--border); }
+  .process-item span.dot{ width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; }
+  .mini-candidate{ display: grid; gap: 4px; padding: 8px; border-radius: 8px; background: var(--panel); border: 1px solid var(--border); }
+  .mini-candidate .mono{ font-size: 0.68rem; }
+  .workshop-canvas{ padding: 18px; display: grid; place-items: center; text-align: center; color: var(--ink-3); font-size: 0.8rem; background: repeating-linear-gradient(45deg, var(--panel), var(--panel) 12px, var(--bg-hero) 12px, var(--bg-hero) 24px); }
+  .workshop-canvas strong{ display:block; color: var(--ink-2); font-size: 0.86rem; margin-bottom: 4px; }
+  .workshop-console{ padding: 10px 14px; background: #0a0e18; color: #8fe3c0; font-family: "IBM Plex Mono", monospace; font-size: 0.74rem; overflow-x: auto; white-space: nowrap; }
+
+  /* ---------- pipeline chain ---------- */
+  .chain{ display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .chain-node{ background: var(--panel); border: 1px solid var(--border); border-radius: 999px; padding: 9px 15px; font-size: 0.8rem; font-weight: 700; white-space: nowrap; }
+  .chain-node.final{ background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+  .chain-arrow{ color: var(--ink-3); flex: none; }
+  .philosophy-quote{ margin-top: 18px; font-size: 0.86rem; color: var(--ink-3); font-style: italic; }
+
+  .disclaimer{ margin-top: 26px; border-left: 3px solid var(--accent); padding: 12px 16px; background: var(--accent-soft); border-radius: 0 8px 8px 0; font-size: 0.85rem; color: var(--ink-2); }
 
   /* ---------- pricing ---------- */
-  .pricing-card{
-    max-width: 460px;
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 16px;
-    padding: 30px;
-    box-shadow: 0 24px 48px -32px var(--shadow-lg);
-    display: grid;
-    gap: 18px;
-  }
-  .price-tag{
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-  }
-  .price-tag .amount{ font-family: "Unbounded", sans-serif; font-size: 1.6rem; font-weight: 600; }
-  .price-tag .period{ color: var(--ink-3); font-size: 0.85rem; }
-  .pricing-list{
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: grid;
-    gap: 10px;
-    font-size: 0.92rem;
-  }
-  .pricing-list li{
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
-  }
+  .pricing-card{ max-width: 480px; background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 30px; box-shadow: 0 24px 48px -32px var(--shadow-lg); display: grid; gap: 18px; }
+  .price-tag .amount{ font-family: "Unbounded", sans-serif; font-size: 1.4rem; font-weight: 600; }
+  .pricing-list{ list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; font-size: 0.9rem; }
+  .pricing-list li{ display: flex; align-items: flex-start; gap: 10px; }
   .pricing-list svg{ flex: none; margin-top: 3px; color: var(--cyan); }
   .pricing-note{ font-size: 0.78rem; color: var(--ink-3); }
 
-  /* ---------- footer ---------- */
-  footer{
-    border-top: 1px solid var(--border);
-    padding-block: 32px;
-  }
-  footer .wrap{
-    display: flex;
-    flex-wrap: wrap;
-    gap: 16px;
-    align-items: center;
-    justify-content: space-between;
-  }
+  footer{ border-top: 1px solid var(--border); padding-block: 32px; }
+  footer .wrap{ display: flex; flex-wrap: wrap; gap: 16px; align-items: center; justify-content: space-between; }
   .footer-brand{ font-family: "Unbounded", sans-serif; font-weight: 600; font-size: 0.9rem; }
-  .footer-fine{ color: var(--ink-3); font-size: 0.78rem; max-width: 48ch; }
+  .footer-fine{ color: var(--ink-3); font-size: 0.78rem; max-width: 50ch; }
 </style>
 </head>
 <body>
@@ -523,12 +368,12 @@
       AstroPhysics Suite
     </a>
     <nav class="nav-links">
-      <a href="#funciones">Funciones</a>
-      <a href="#demo">Panel</a>
-      <a href="#como-funciona">Cómo funciona</a>
+      <a href="#motores">Motores</a>
+      <a href="#taller">Taller</a>
+      <a href="#proceso">Proceso</a>
       <a href="#precio">Precio</a>
     </nav>
-    <a class="btn btn-primary btn-sm" href="#precio">Conseguir licencia</a>
+    <a class="btn btn-primary btn-sm" href="#precio">Acceso anticipado</a>
   </div>
 </header>
 
@@ -541,29 +386,30 @@
     </svg>
     <div class="wrap">
       <div class="hero-inner">
-        <span class="eyebrow">Software de análisis astrofísico</span>
-        <h1>Encuentra lo que tus imágenes ya sabían y nadie había visto.</h1>
-        <p class="hero-sub">AstroPhysics Suite procesa tus observaciones, detecta cada fuente real, las cruza contra catálogos profesionales y usa IA para señalar candidatos genuinamente inusuales — listos para que tú los confirmes.</p>
+        <span class="status-pill">En reingeniería activa</span>
+        <span class="eyebrow">Estación de descubrimiento astrofísico</span>
+        <h1>El núcleo de IRAF, reescrito, con un motor de descubrimiento detrás.</h1>
+        <p class="hero-sub">AstroPhysics Suite reimplementa en Python moderno la reducción CCD, la fotometría de apertura y PSF, la astrometría y la espectroscopía clásicas — y las expone en un taller Qt al estilo PixInsight. De tus imágenes en bruto a un candidato científico auditable, con revisión humana siempre al final. Nunca un descubrimiento automático.</p>
         <div class="hero-ctas">
-          <a class="btn btn-primary" href="#demo">Ver el panel de detección</a>
-          <a class="btn btn-ghost" href="#como-funciona">Cómo funciona</a>
+          <a class="btn btn-primary" href="#taller">Ver el taller</a>
+          <a class="btn btn-ghost" href="#proceso">Cómo funciona</a>
         </div>
-        <p class="hero-meta mono">Cruce con Gaia DR3 · SIMBAD · catálogos adicionales</p>
+        <p class="hero-meta mono">FITS · Gaia DR3 · SIMBAD · L.A.Cosmic · WCS (ccmap) · onedspec/twodspec</p>
       </div>
     </div>
   </section>
 
-  <section class="console" id="demo">
+  <section class="console" id="candidatos">
     <div class="wrap">
       <div class="section-head">
-        <span class="eyebrow">Panel de detección</span>
-        <h2>Así se presenta un lote de resultados</h2>
-        <p>Cada imagen procesada genera una lista de fuentes ordenadas por relevancia, con toda la evidencia junto a cada candidato.</p>
+        <span class="eyebrow">Panel de candidatos</span>
+        <h2>Así llega cada fuente a tu revisión</h2>
+        <p>El Discovery Engine no declara descubrimientos: asigna un <span class="mono">IdentificationState</span> y deja el candidato en estado <span class="mono">PENDING</span> — conservar, descartar o marcar es siempre tuyo.</p>
       </div>
       <div class="console-panel">
         <div class="console-bar">
           <div class="console-dots"><span></span><span></span><span></span></div>
-          <span class="mono">lote_2024-11-03 · NGC 6820 · 4 detecciones</span>
+          <span class="mono">proyecto_ngc6820 · lote_2024-11-03 · 4 candidatos</span>
         </div>
         <div class="candidate-grid">
           <article class="candidate">
@@ -574,12 +420,23 @@
                 <div class="candidate-coords mono">07h 45m 12.3s +21° 08′ 55″</div>
               </div>
             </div>
-            <span class="badge badge-nuevo">Nuevo</span>
-            <div class="candidate-fields">
-              <div class="field"><label>Flujo</label><span class="mono">1.42×10⁻¹⁶</span></div>
-              <div class="field"><label>S/N</label><span class="mono">18.4</span></div>
+            <div class="badge-row">
+              <span class="badge badge-transient">Candidato transitorio</span>
+              <span class="state-code mono">TRANSIENT_CANDIDATE</span>
             </div>
-            <p class="candidate-note">Sin coincidencia en catálogo — candidato no catalogado.</p>
+            <div class="candidate-fields">
+              <div class="field"><label>Flujo</label><span class="mono">1.42e-16 ± 0.08e-16</span></div>
+              <div class="field"><label>S/N</label><span class="mono">18.4 · OBSERVED</span></div>
+            </div>
+            <p class="candidate-note">Sin coincidencia en Gaia/SIMBAD dentro del radio de búsqueda.</p>
+            <div class="review-row">
+              <span class="review-state mono">PENDING</span>
+              <div class="review-actions">
+                <span class="review-btn keep" title="Conservar (KEPT)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span>
+                <span class="review-btn discard" title="Descartar (REJECTED)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg></span>
+                <span class="review-btn flag" title="Marcar (FLAGGED)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3v18"/><path d="M5 4h11l-2.5 3.5L16 11H5"/></svg></span>
+              </div>
+            </div>
           </article>
 
           <article class="candidate">
@@ -590,12 +447,23 @@
                 <div class="candidate-coords mono">07h 45m 31.1s +21° 07′ 02″</div>
               </div>
             </div>
-            <span class="badge badge-conocido">Conocido</span>
+            <div class="badge-row">
+              <span class="badge badge-known">Conocido</span>
+              <span class="state-code mono">KNOWN</span>
+            </div>
             <div class="candidate-fields">
               <div class="field"><label>Catálogo</label><span class="mono">Gaia DR3</span></div>
-              <div class="field"><label>Δ mag</label><span class="mono">0.34</span></div>
+              <div class="field"><label>Separación</label><span class="mono">0.62″</span></div>
             </div>
-            <p class="candidate-note">Variable ya catalogada — cambio de brillo confirmado entre épocas.</p>
+            <p class="candidate-note">Variable ya catalogada — cambio de magnitud confirmado entre épocas.</p>
+            <div class="review-row">
+              <span class="review-state mono">KEPT</span>
+              <div class="review-actions">
+                <span class="review-btn keep" title="Conservar (KEPT)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span>
+                <span class="review-btn discard" title="Descartar (REJECTED)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg></span>
+                <span class="review-btn flag" title="Marcar (FLAGGED)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3v18"/><path d="M5 4h11l-2.5 3.5L16 11H5"/></svg></span>
+              </div>
+            </div>
           </article>
 
           <article class="candidate">
@@ -606,12 +474,23 @@
                 <div class="candidate-coords mono">07h 44m 58.7s +21° 09′ 41″</div>
               </div>
             </div>
-            <span class="badge badge-anomalia">Anomalía IA</span>
-            <div class="candidate-fields">
-              <div class="field"><label>Hα / [O III]</label><span class="mono">atípica</span></div>
-              <div class="field"><label>S/N</label><span class="mono">11.2</span></div>
+            <div class="badge-row">
+              <span class="badge badge-anomalous">Anómalo</span>
+              <span class="state-code mono">ANOMALOUS</span>
             </div>
-            <p class="candidate-note">Morfología y relación de líneas fuera de lo esperado para su clase.</p>
+            <div class="candidate-fields">
+              <div class="field"><label>Hα / [O III]</label><span class="mono">tensión alta</span></div>
+              <div class="field"><label>Método</label><span class="mono">MODEL_INFERENCE</span></div>
+            </div>
+            <p class="candidate-note">El Physical Engine marca tensión entre la relación de líneas observada y el modelo esperado.</p>
+            <div class="review-row">
+              <span class="review-state mono">FLAGGED</span>
+              <div class="review-actions">
+                <span class="review-btn keep" title="Conservar (KEPT)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span>
+                <span class="review-btn discard" title="Descartar (REJECTED)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg></span>
+                <span class="review-btn flag" title="Marcar (FLAGGED)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3v18"/><path d="M5 4h11l-2.5 3.5L16 11H5"/></svg></span>
+              </div>
+            </div>
           </article>
 
           <article class="candidate">
@@ -622,143 +501,252 @@
                 <div class="candidate-coords mono">07h 45m 06.4s +21° 08′ 12″</div>
               </div>
             </div>
-            <span class="badge badge-movimiento">Movimiento</span>
+            <div class="badge-row">
+              <span class="badge badge-moving">En movimiento</span>
+              <span class="state-code mono">MOVING_SOURCE_CANDIDATE</span>
+            </div>
             <div class="candidate-fields">
               <div class="field"><label>Desplaz.</label><span class="mono">2.1″</span></div>
               <div class="field"><label>Épocas</label><span class="mono">3</span></div>
             </div>
             <p class="candidate-note">Desplazamiento consistente entre tomas — posible objeto menor del sistema solar.</p>
+            <div class="review-row">
+              <span class="review-state mono">PENDING</span>
+              <div class="review-actions">
+                <span class="review-btn keep" title="Conservar (KEPT)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span>
+                <span class="review-btn discard" title="Descartar (REJECTED)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg></span>
+                <span class="review-btn flag" title="Marcar (FLAGGED)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3v18"/><path d="M5 4h11l-2.5 3.5L16 11H5"/></svg></span>
+              </div>
+            </div>
           </article>
         </div>
-        <div class="console-foot">* Datos de ejemplo, generados para mostrar el formato del panel.</div>
+        <div class="console-foot">* Datos de ejemplo generados para mostrar el formato del panel de revisión.</div>
       </div>
     </div>
   </section>
 
-  <section id="funciones">
+  <section id="motores">
     <div class="wrap">
       <div class="section-head">
-        <span class="eyebrow">Capacidades</span>
-        <h2>Un pipeline completo, de la imagen al candidato</h2>
-        <p>Todo lo necesario para pasar de un lote de imágenes a una lista de candidatos documentados, en un mismo flujo de trabajo.</p>
+        <span class="eyebrow">Motores</span>
+        <h2>Diez motores, un mismo pipeline</h2>
+        <p>Cada paquete de <span class="mono">astrophysics_suite/</span> resuelve una única responsabilidad. Nada de tres pipelines paralelos: una sola ruta, de la imagen al candidato.</p>
       </div>
       <div class="feature-grid">
 
         <article class="feature-card">
           <div class="feature-icon">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><line x1="12" y1="4" x2="12" y2="7"/><line x1="12" y1="17" x2="12" y2="20"/><line x1="4" y1="12" x2="7" y2="12"/><line x1="17" y1="12" x2="20" y2="12"/></svg>
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="9" width="14" height="10" rx="1.3"/><path d="M7 9V6a1.3 1.3 0 0 1 1.3-1.3h9.4A1.3 1.3 0 0 1 19 6v7.5"/></svg>
+          </div>
+          <h3>Reducción CCD</h3>
+          <p>Overscan, combinación de bias/dark/flat, máscara de píxeles defectuosos y franjas — el <span class="mono">ccdred</span> de IRAF.</p>
+          <span class="module mono">reduction/</span>
+        </article>
+
+        <article class="feature-card">
+          <div class="feature-icon">
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 5 14h6l-1 8 9-13h-6l0-7z"/></svg>
+          </div>
+          <h3>Rayos cósmicos y aritmética</h3>
+          <p>Rechazo de rayos cósmicos (L.A.Cosmic) y operaciones que propagan la incertidumbre de cada píxel.</p>
+          <span class="module mono">imtools/</span>
+        </article>
+
+        <article class="feature-card">
+          <div class="feature-icon">
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><line x1="12" y1="4" x2="12" y2="7"/><line x1="12" y1="17" x2="12" y2="20"/><line x1="4" y1="12" x2="7" y2="12"/><line x1="17" y1="12" x2="20" y2="12"/></svg>
           </div>
           <h3>Detección de fuentes</h3>
-          <p>Localiza fuentes puntuales y extendidas, filtrando ruido, hot pixels y rayos cósmicos para quedarte solo con detecciones reales.</p>
+          <p>Localiza fuentes y clasifica morfología: puntual, extendida, blob, filamento, arco, concha, jet…</p>
+          <span class="module mono">detection/</span>
         </article>
 
         <article class="feature-card">
           <div class="feature-icon">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><ellipse cx="12" cy="5.5" rx="7.5" ry="2.5"/><path d="M4.5 5.5v13c0 1.4 3.4 2.5 7.5 2.5s7.5-1.1 7.5-2.5v-13"/><path d="M4.5 12c0 1.4 3.4 2.5 7.5 2.5s7.5-1.1 7.5-2.5"/></svg>
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16l-6 9v6l-4-2v-4z"/></svg>
           </div>
-          <h3>Cruce con catálogos</h3>
-          <p>Identifica objetos conocidos cruzando cada detección con Gaia DR3, SIMBAD y catálogos adicionales al instante.</p>
+          <h3>Rechazo de artefactos</h3>
+          <p>Ruido, hot pixels, saturación, defectos de PSF, reflejos, gradientes, donuts, trazas de satélite.</p>
+          <span class="module mono">artifacts/</span>
         </article>
 
         <article class="feature-card">
           <div class="feature-icon">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M20 20V8"/></svg>
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><ellipse cx="12" cy="5.5" rx="7.5" ry="2.5"/><path d="M4.5 5.5v13c0 1.4 3.4 2.5 7.5 2.5s7.5-1.1 7.5-2.5v-13"/><path d="M4.5 12c0 1.4 3.4 2.5 7.5 2.5s7.5-1.1 7.5-2.5"/></svg>
           </div>
-          <h3>Caracterización multibanda</h3>
-          <p>Mide posición, tamaño, flujo, señal/ruido, morfología, color y propiedades multibanda de cada fuente detectada.</p>
+          <h3>Identificación en catálogos</h3>
+          <p>Cruce contra Gaia DR3 y SIMBAD con separación angular y magnitud de cada coincidencia.</p>
+          <span class="module mono">catalogs/</span>
         </article>
 
         <article class="feature-card">
           <div class="feature-icon">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="12" height="12" rx="1.5"/><rect x="9" y="11" width="12" height="12" rx="1.5"/></svg>
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7.5" stroke-dasharray="2 3"/></svg>
           </div>
-          <h3>Comparación entre épocas</h3>
-          <p>Compara observaciones de distintas fechas para detectar movimiento, variabilidad, apariciones y cambios de forma.</p>
+          <h3>Fotometría de apertura y PSF</h3>
+          <p>Medición de flujo por apertura y ajuste PSF — equivalente funcional a <span class="mono">apphot/daophot</span>.</p>
+          <span class="module mono">photometry/</span>
         </article>
 
         <article class="feature-card">
           <div class="feature-icon">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="3,14 8,14 10,7 13,19 16,10 18,14 21,14"/></svg>
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4 4v16M4 4h16M4 12h16M12 4v16"/><circle cx="15" cy="8" r="1.4" fill="currentColor" stroke="none"/></svg>
           </div>
-          <h3>Anomalías físicas</h3>
-          <p>Evalúa relaciones como Hα/[O III] y otras firmas espectrales cuando los datos lo permiten, señalando lo atípico.</p>
+          <h3>Astrometría</h3>
+          <p>Ajuste de WCS (<span class="mono">ccmap</span>) y registro/reproyección entre tomas con precisión de subpíxel.</p>
+          <span class="module mono">astrometry/</span>
         </article>
 
         <article class="feature-card">
           <div class="feature-icon">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="13" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="19" r="2"/><line x1="7.6" y1="7.2" x2="10.6" y2="11.6"/><line x1="16.4" y1="7.2" x2="13.4" y2="11.6"/><line x1="10.6" y1="14.4" x2="7.6" y2="17.8"/><line x1="13.4" y1="14.4" x2="16.4" y2="17.8"/></svg>
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><line x1="4" y1="18" x2="4" y2="10"/><line x1="8" y1="18" x2="8" y2="5"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="16" y1="18" x2="16" y2="7"/><line x1="20" y1="18" x2="20" y2="14"/></svg>
           </div>
-          <h3>Detección de patrones con IA</h3>
-          <p>Un modelo de IA revisa cada detección en busca de patrones visuales, físicos o temporales poco habituales.</p>
+          <h3>Espectroscopía 1D/2D</h3>
+          <p>Traza, calibración en longitud de onda y en flujo, ajuste de continuo — <span class="mono">onedspec/twodspec</span>.</p>
+          <span class="module mono">spectroscopy/</span>
         </article>
 
         <article class="feature-card">
           <div class="feature-icon">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="1.5"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><path d="M8 16l2 2 4-4"/></svg>
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="3,14 8,14 10,7 13,19 16,10 18,14 21,14"/></svg>
           </div>
-          <h3>Candidatos para revisión</h3>
-          <p>Reúne toda la evidencia y genera una lista de candidatos priorizados y documentados, lista para revisión humana.</p>
+          <h3>Física y anomalías</h3>
+          <p>Inferencia física por fuente y tensión entre lo observado y el modelo — p. ej. Hα/[O III] atípico.</p>
+          <span class="module mono">physics/ · anomaly/</span>
         </article>
 
+        <article class="feature-card">
+          <div class="feature-icon">
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="12" height="12" rx="1.5"/><rect x="9" y="11" width="12" height="12" rx="1.5"/></svg>
+          </div>
+          <h3>Comparación temporal</h3>
+          <p>Variabilidad y movimiento entre épocas, con la evidencia de cada cambio documentada.</p>
+          <span class="module mono">temporal/</span>
+        </article>
+
+      </div>
+
+      <div class="culmination">
+        <div class="feature-icon">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="1.5"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><path d="M8 16l2 2 4-4"/></svg>
+        </div>
+        <div class="culmination-text">
+          <h3>Evidencia y candidato científico</h3>
+          <p>El <span class="mono">evidence/</span> funde lo que aportan los demás motores en una <span class="mono">EvidenceChain</span> versionada; <span class="mono">discovery/</span> orquesta los nueve motores en una ruta real <span class="mono">Observation → list[Candidate]</span>. Un <span class="mono">Candidate</span> es inmutable: revisarlo no lo sobrescribe, produce uno nuevo que conserva todo el historial.</p>
+          <span class="module mono">evidence/ · discovery/</span>
+        </div>
       </div>
     </div>
   </section>
 
-  <section class="pipeline" id="como-funciona">
+  <section id="rigor" style="background:var(--bg-hero); border-block:1px solid var(--border);">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">Rigor científico</span>
+        <h2>Cada número, trazable</h2>
+        <p>Ningún motor devuelve un float suelto. Todo valor viaja como <span class="mono">Quantity</span>: valor, incertidumbre, unidad, método — y su estatus epistémico.</p>
+      </div>
+      <div class="rigor-grid">
+        <div class="rigor-copy">
+          <p><strong>Un valor nunca miente sobre lo que es.</strong> El tipo <span class="mono">ValueKind</span> distingue una medición directa (<span class="mono">OBSERVED</span>) de un proxy simple (<span class="mono">PROXY</span>), una inferencia de modelo (<span class="mono">MODEL_INFERENCE</span>) o una hipótesis aún no confirmada (<span class="mono">HYPOTHESIS</span>) — y si el dato no existe, el sistema lo declara <span class="mono">NOT_AVAILABLE</span> en vez de inventar un número.</p>
+          <p><strong>Nada se sobrescribe.</strong> Un <span class="mono">Candidate</span> es inmutable: cada revisión humana produce una nueva versión que conserva el historial completo de por qué se conservó, descartó o marcó — perder ese historial sería tan grave como perder el candidato.</p>
+          <p>Es la misma disciplina que exige un catálogo profesional, aplicada a lo que encuentras en tu propio equipo.</p>
+        </div>
+        <div class="quantity-card">
+          <span class="module mono">Quantity · candidato AS-2044-121</span>
+          <div class="quantity-row">
+            <span class="quantity-label">Flujo</span>
+            <div class="quantity-value"><span class="mono">1.42e-16 ± 0.08e-16 erg/s/cm²</span><span class="kind-tag kind-observed">observed</span></div>
+          </div>
+          <div class="quantity-row">
+            <span class="quantity-label">Razón Hα/[O III]</span>
+            <div class="quantity-value"><span class="mono">0.34 ± 0.05</span><span class="kind-tag kind-proxy">proxy</span></div>
+          </div>
+          <div class="quantity-row">
+            <span class="quantity-label">Edad de Sedov</span>
+            <div class="quantity-value"><span class="mono">2.1e3 ± 4e2 yr</span><span class="kind-tag kind-model">model_inference</span></div>
+          </div>
+          <div class="quantity-row">
+            <span class="quantity-label">Naturaleza sugerida</span>
+            <div class="quantity-value"><span class="mono">remanente de choque</span><span class="kind-tag kind-hypothesis">hypothesis</span></div>
+          </div>
+          <p class="quantity-foot">* Ilustración del contrato de datos, con valores de ejemplo.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="taller">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">Taller Qt</span>
+        <h2>Un shell al estilo PixInsight</h2>
+        <p>MDI, explorador de procesos arrastrable, STF no destructivo, consola integrada — y el flujo de revisión de candidatos en el mismo taller, sobre el Discovery Engine.</p>
+      </div>
+      <div class="workshop">
+        <div class="workshop-bar">
+          <div class="console-dots"><span></span><span></span><span></span></div>
+          <span class="mono">AstroPhysics Suite — Taller · proyecto_ngc6820</span>
+        </div>
+        <div class="workshop-body">
+          <div class="workshop-dock">
+            <span class="workshop-dock-title">Explorador de procesos</span>
+            <div class="process-item"><span class="dot"></span>CosmicRayRejection</div>
+            <div class="process-item"><span class="dot"></span>Overscan</div>
+            <div class="process-item"><span class="dot"></span>AperturePhotometry</div>
+            <div class="process-item"><span class="dot"></span>ContinuumFit</div>
+          </div>
+          <div class="workshop-canvas">
+            <div>
+              <strong>Vista MDI</strong>
+              STF no destructivo sobre NGC 6820
+            </div>
+          </div>
+          <div class="workshop-dock">
+            <span class="workshop-dock-title">Candidatos</span>
+            <div class="mini-candidate">
+              <span class="mono">AS-2044-117</span>
+              <span class="state-code mono">TRANSIENT_CANDIDATE</span>
+            </div>
+            <div class="mini-candidate">
+              <span class="mono">AS-2044-121</span>
+              <span class="state-code mono">ANOMALOUS</span>
+            </div>
+          </div>
+        </div>
+        <div class="workshop-console mono">$ discovery run --project ngc6820 --engines 9 → 4 candidatos · 0 errores</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="proceso" style="background:var(--bg-hero); border-block:1px solid var(--border);">
     <div class="wrap">
       <div class="section-head">
         <span class="eyebrow">Proceso</span>
-        <h2>De la imagen al candidato, en seis pasos</h2>
-        <p>El mismo pipeline se ejecuta sobre cada lote de imágenes que cargas.</p>
+        <h2>La filosofía del proyecto, en una línea</h2>
+        <p>Así la resume el propio proyecto — y así se ejecuta, motor a motor, cada vez que procesas un lote.</p>
       </div>
-      <div class="pipeline-flow">
-        <div class="pipeline-step">
-          <span class="mono">01</span>
-          <h3>Carga de imágenes</h3>
-          <p>Importa tus tomas (FITS y otros formatos habituales).</p>
-        </div>
-        <div class="pipeline-arrow" aria-hidden="true">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="12" x2="19" y2="12"/><polyline points="13,6 19,12 13,18"/></svg>
-        </div>
-        <div class="pipeline-step">
-          <span class="mono">02</span>
-          <h3>Detección de fuentes</h3>
-          <p>Filtra ruido y artefactos, aísla las fuentes reales.</p>
-        </div>
-        <div class="pipeline-arrow" aria-hidden="true">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="12" x2="19" y2="12"/><polyline points="13,6 19,12 13,18"/></svg>
-        </div>
-        <div class="pipeline-step">
-          <span class="mono">03</span>
-          <h3>Cruce con catálogos</h3>
-          <p>Consulta Gaia, SIMBAD y catálogos adicionales.</p>
-        </div>
-        <div class="pipeline-arrow" aria-hidden="true">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="12" x2="19" y2="12"/><polyline points="13,6 19,12 13,18"/></svg>
-        </div>
-        <div class="pipeline-step">
-          <span class="mono">04</span>
-          <h3>Caracterización</h3>
-          <p>Flujo, color, morfología y propiedades multibanda.</p>
-        </div>
-        <div class="pipeline-arrow" aria-hidden="true">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="12" x2="19" y2="12"/><polyline points="13,6 19,12 13,18"/></svg>
-        </div>
-        <div class="pipeline-step">
-          <span class="mono">05</span>
-          <h3>Épocas + IA</h3>
-          <p>Compara tomas y señala variabilidad y anomalías.</p>
-        </div>
-        <div class="pipeline-arrow" aria-hidden="true">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="12" x2="19" y2="12"/><polyline points="13,6 19,12 13,18"/></svg>
-        </div>
-        <div class="pipeline-step">
-          <span class="mono">06</span>
-          <h3>Candidatos priorizados</h3>
-          <p>Lista documentada, lista para tu revisión.</p>
-        </div>
+      <div class="chain">
+        <span class="chain-node">Imágenes</span>
+        <svg class="chain-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="12" x2="19" y2="12"/><polyline points="13,6 19,12 13,18"/></svg>
+        <span class="chain-node">Detección</span>
+        <svg class="chain-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="12" x2="19" y2="12"/><polyline points="13,6 19,12 13,18"/></svg>
+        <span class="chain-node">Identificación</span>
+        <svg class="chain-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="12" x2="19" y2="12"/><polyline points="13,6 19,12 13,18"/></svg>
+        <span class="chain-node">Caracterización</span>
+        <svg class="chain-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="12" x2="19" y2="12"/><polyline points="13,6 19,12 13,18"/></svg>
+        <span class="chain-node">Comparación</span>
+        <svg class="chain-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="12" x2="19" y2="12"/><polyline points="13,6 19,12 13,18"/></svg>
+        <span class="chain-node">Anomalías</span>
+        <svg class="chain-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="12" x2="19" y2="12"/><polyline points="13,6 19,12 13,18"/></svg>
+        <span class="chain-node">Evidencias</span>
+        <svg class="chain-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="12" x2="19" y2="12"/><polyline points="13,6 19,12 13,18"/></svg>
+        <span class="chain-node final">Candidato científico</span>
+        <svg class="chain-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="12" x2="19" y2="12"/><polyline points="13,6 19,12 13,18"/></svg>
+        <span class="chain-node final">Revisión humana</span>
       </div>
-      <p class="disclaimer">Todo candidato generado por AstroPhysics Suite requiere verificación antes de considerarse un hallazgo confirmado: la herramienta prioriza y documenta evidencia, la última palabra es siempre humana.</p>
+      <p class="philosophy-quote">"IMÁGENES → DETECCIÓN → IDENTIFICACIÓN → CARACTERIZACIÓN → COMPARACIÓN → ANOMALÍAS → EVIDENCIAS → CANDIDATO CIENTÍFICO → REVISIÓN HUMANA" — filosofía central del proyecto.</p>
+      <p class="disclaimer">Ningún candidato sale marcado como hallazgo. El Discovery Engine documenta evidencia y asigna un estado — <span class="mono">KNOWN</span>, <span class="mono">ANOMALOUS</span>, <span class="mono">TRANSIENT_CANDIDATE</span>… — pero la decisión de conservar, descartar o marcar es siempre humana.</p>
     </div>
   </section>
 
@@ -766,36 +754,22 @@
     <div class="wrap">
       <div class="section-head">
         <span class="eyebrow">Licencia</span>
-        <h2>Un pago único. Acceso completo.</h2>
-        <p>Pensado para observadores aficionados que quieren ir más allá del catálogo, sin cuotas recurrentes.</p>
+        <h2>Un pago único. Acceso completo cuando esté listo.</h2>
+        <p>El proyecto está en reingeniería activa (ver auditoría técnica en <span class="mono">docs/audit/</span>). El acceso anticipado te reserva la licencia al precio de lanzamiento.</p>
       </div>
       <div class="pricing-card">
         <div>
-          <div class="price-tag">
-            <span class="amount">Licencia personal</span>
-          </div>
+          <div class="price-tag"><span class="amount">Licencia personal</span></div>
           <p class="pricing-note">Pago único · sin suscripción</p>
         </div>
         <ul class="pricing-list">
-          <li>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
-            Pipeline completo de detección y caracterización
-          </li>
-          <li>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
-            Cruce con Gaia DR3, SIMBAD y catálogos adicionales
-          </li>
-          <li>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
-            Comparación entre épocas y detección de anomalías con IA
-          </li>
-          <li>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
-            Actualizaciones incluidas, sin coste adicional
-          </li>
+          <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>Los nueve motores del Discovery Engine, de imagen a candidato</li>
+          <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>Núcleo IRAF propio: reducción, fotometría, astrometría, espectroscopía</li>
+          <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>Taller Qt con flujo completo de revisión de candidatos</li>
+          <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>Instalador para Windows (en construcción) y actualizaciones incluidas</li>
         </ul>
-        <a class="btn btn-primary" href="mailto:hola@astrophysicssuite.app?subject=Quiero%20mi%20licencia%20de%20AstroPhysics%20Suite">Solicitar licencia</a>
-        <p class="pricing-note">Te escribimos con el precio y la fecha de disponibilidad.</p>
+        <a class="btn btn-primary" href="mailto:hola@astrophysicssuite.app?subject=Acceso%20anticipado%20a%20AstroPhysics%20Suite">Solicitar acceso anticipado</a>
+        <p class="pricing-note">Te escribimos con el precio final y la fecha de disponibilidad.</p>
       </div>
     </div>
   </section>
@@ -804,7 +778,7 @@
 <footer>
   <div class="wrap">
     <span class="footer-brand">AstroPhysics Suite</span>
-    <span class="footer-fine">Herramienta de apoyo al descubrimiento para astrónomos aficionados. Los resultados son candidatos, no confirmaciones oficiales. © 2026.</span>
+    <span class="footer-fine">Estación de descubrimiento astrofísico en desarrollo activo. Genera candidatos científicos auditables, nunca descubrimientos automáticos — la revisión final es siempre humana. © 2026.</span>
   </div>
 </footer>
 
