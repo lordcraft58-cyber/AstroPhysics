@@ -3,7 +3,10 @@ sintético real con una fuente inyectada, medida con measure_source_quality
 heredado y traducida a CharacterizationResult."""
 from __future__ import annotations
 
+import math
+
 import numpy as np
+import pytest
 
 from astrophysics_suite.core.enums import ValueKind
 from astrophysics_suite.core.provenance import Provenance
@@ -101,3 +104,83 @@ def test_characterize_point_source_flags_saturation_as_a_real_measurement(tmp_pa
 
     assert result.extra["saturated"].value == 1.0
     assert result.extra["saturated"].unit == "boolean"
+
+
+def _gaussian_field_with_known_flux(shape, x0, y0, *, true_flux, sigma, background):
+    """A diferencia de `_star_field` (parametrizada por amplitud de pico),
+    esta parametriza por flujo TOTAL conocido -- misma convención que
+    `tests/unit/photometry/test_aperture.py::_isolated_gaussian_star`, para
+    poder comprobar que `characterize_point_source` recupera un flujo real,
+    no solo que produce *algún* número."""
+    yy, xx = np.mgrid[0 : shape[0], 0 : shape[1]]
+    amplitude = true_flux / (2 * math.pi * sigma**2)
+    field = background + amplitude * np.exp(-(((xx - x0) ** 2 + (yy - y0) ** 2)) / (2 * sigma**2))
+    return field.astype(np.float32)
+
+
+def test_characterize_point_source_recovers_a_known_injected_flux_by_real_aperture_photometry(tmp_path):
+    # Campo grande para que la apertura (3x FWHM) y su anillo de cielo
+    # (hasta 9x FWHM) quepan enteros lejos del borde -- si no, la
+    # estimación de cielo se contaminaría con píxeles fuera de imagen.
+    true_flux = 500_000.0
+    sigma = 2.5
+    field = _gaussian_field_with_known_flux((150, 150), 75, 75, true_flux=true_flux, sigma=sigma, background=200.0)
+    path = tmp_path / "field_HA.fits"
+    _write_minimal_fits_2d(path, field)
+    loaded = load_image(str(path), band="HA")
+
+    result = characterize_point_source(loaded, _detection_at(75, 75))
+
+    assert result.fwhm is not None
+    assert "HA" in result.band_flux
+    flux = result.band_flux["HA"]
+    # radio = 3x FWHM ~= 7x sigma -> por debajo del 1e-10 del flujo total de
+    # una gaussiana queda fuera de la apertura (Howell, cap. 5): tolerancia
+    # del 3% cubre además la incertidumbre en el propio FWHM medido.
+    assert flux.value == pytest.approx(true_flux, rel=0.03)
+    assert flux.error is not None and flux.error > 0.0
+    assert flux.unit == "adu"
+    assert flux.method == "aperture_photometry"
+    assert flux.kind is ValueKind.OBSERVED
+    assert flux.notes and "apertura" in flux.notes[0]
+
+
+def test_characterize_point_source_leaves_band_flux_empty_when_fwhm_is_not_available(tmp_path):
+    # Mismo escenario que el test de NOT_AVAILABLE de arriba (cutout
+    # demasiado pequeño): sin FWHM medida no hay con qué dimensionar una
+    # apertura con criterio, así que band_flux debe quedar vacío -- nunca
+    # un flujo inventado con un radio arbitrario.
+    field = _star_field((64, 64), 32, 32)
+    path = tmp_path / "field_HA.fits"
+    _write_minimal_fits_2d(path, field)
+    loaded = load_image(str(path), band="HA")
+
+    result = characterize_point_source(loaded, _detection_at(32, 32), cutout_size=3)
+
+    assert result.fwhm is None
+    assert result.band_flux == {}
+
+
+def test_characterize_point_source_still_measures_a_real_partial_aperture_near_the_edge(tmp_path):
+    # Fuente cerca del borde: `aperture_photometry` recorta la apertura a
+    # la imagen real en vez de rechazar la medida -- menos píxeles
+    # efectivos, pero un flujo real, no None.
+    field = _star_field((30, 30), 2, 2, sigma=2.2)
+    path = tmp_path / "field_HA.fits"
+    _write_minimal_fits_2d(path, field)
+    loaded = load_image(str(path), band="HA")
+
+    result = characterize_point_source(loaded, _detection_at(2, 2))
+
+    assert "HA" in result.band_flux
+    flux = result.band_flux["HA"]
+    assert flux.value > 0.0
+    assert "efectivos" in flux.notes[0]
+
+
+def test_measure_aperture_flux_returns_none_for_a_source_entirely_outside_the_image():
+    from astrophysics_suite.photometry.quality import _measure_aperture_flux
+
+    data = np.full((30, 30), 100.0, dtype=np.float32)
+
+    assert _measure_aperture_flux(data, x_px=1000.0, y_px=1000.0, fwhm_px=5.0) is None

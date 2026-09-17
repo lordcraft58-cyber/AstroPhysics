@@ -21,7 +21,7 @@ import pytest
 
 PySide6 = pytest.importorskip("PySide6", reason="PySide6 no instalado en este entorno")
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel  # noqa: E402
 
 
 def _display_available() -> bool:
@@ -147,6 +147,35 @@ def test_review_flow_updates_session_state_and_disables_buttons(qapp, main_windo
     assert len(updated.review_notes) == 1
     assert not detail_widget.keep_button.isEnabled()
     assert not detail_widget.reject_button.isEnabled()
+
+
+def test_candidate_detail_shows_real_flux_measured_by_aperture_photometry(qapp, main_window, tmp_path):
+    # Cierre del motor de fotometría de apertura (Fase 5, GUI): la fila
+    # "Flujo (banda)" de la sección de resumen existía desde antes pero
+    # nunca mostraba nada porque `candidate.flux` llegaba vacío -- esto
+    # confirma que ahora sí renderiza un número real, no que el widget
+    # simplemente existe.
+    from legacy.AstroPhysicsSuite_v57_3_COMMERCIAL import _write_minimal_fits_2d
+
+    field = _star_field((96, 96), [(30, 30), (60, 60)])
+    path = tmp_path / "field_OIII.fits"
+    _write_minimal_fits_2d(path, field)
+    _run_discovery_and_wait(qapp, main_window, "Campo flujo", [(str(path), "OIII")])
+    assert main_window.session_state.candidates
+
+    candidate = main_window.session_state.candidates[0]
+    assert "OIII" in candidate.flux, "el propio candidato debe traer ya el flujo medido"
+
+    main_window._open_candidate_detail(candidate.candidate_id)
+    qapp.processEvents()
+    detail_widget = main_window._candidate_detail_windows[candidate.candidate_id].widget()
+
+    labels = detail_widget.findChildren(QLabel)
+    texts = [label.text() for label in labels]
+    assert "Flujo (OIII)" in texts, texts
+    flux_value_label = labels[texts.index("Flujo (OIII)") + 1]
+    assert "NO DISPONIBLE" not in flux_value_label.text()
+    assert "adu" in flux_value_label.text()
 
 
 def test_new_observation_dialog_rejects_empty_target_name(qapp, main_window):

@@ -79,6 +79,36 @@ def test_run_generic_discovery_end_to_end(tmp_path):
         assert Candidate.from_dict(candidate.to_dict()) == candidate
 
 
+def test_run_generic_discovery_populates_candidate_flux_from_real_aperture_photometry(tmp_path):
+    # Cierre del motor de fotometría de apertura: antes de conectarlo en
+    # `characterize_point_source`, `Candidate.flux` llegaba SIEMPRE vacío
+    # a este punto -- este test comprueba la transferencia real
+    # Characterization -> Candidate, no solo que el campo exista.
+    positions = [(40, 40), (100, 60), (70, 120)]
+    field = _star_field((160, 160), positions, amplitude=3000.0, sigma=2.0)
+    path = tmp_path / "field_OIII.fits"
+    _write_minimal_fits_2d(path, field, pixel_scale_arcsec=1.0)
+
+    observation, loaded = build_observation(
+        [(str(path), "OIII")], observation_id="OBS-INT-FLUX", target_name="Campo sintético con flujo conocido"
+    )
+
+    candidates, summary = run_generic_discovery(observation, loaded, threshold_sigma=4.0)
+
+    assert summary.n_candidates == len(positions)
+    for candidate in candidates:
+        assert "OIII" in candidate.flux, candidate.flux
+        flux = candidate.flux["OIII"]
+        assert flux.value > 0.0
+        assert flux.error is not None and flux.error > 0.0
+        assert flux.unit == "adu"
+        assert flux.method == "aperture_photometry"
+        # El propio candidato serializa y reconstruye el flujo sin pérdida.
+        from astrophysics_suite.models.candidate import Candidate
+
+        assert Candidate.from_dict(candidate.to_dict()) == candidate
+
+
 def test_run_generic_discovery_on_empty_field_produces_no_candidates(tmp_path):
     field = np.full((64, 64), 100.0, dtype=np.float32)
     path = tmp_path / "empty.fits"

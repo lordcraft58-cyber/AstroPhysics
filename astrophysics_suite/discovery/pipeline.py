@@ -595,6 +595,7 @@ def run_generic_discovery(
                 position=reference.characterization.position,
                 morphology=reference_detection.morphology,
                 size=reference.characterization.fwhm,
+                flux=reference.characterization.band_flux,
                 snr=snr,
                 bands=reference_detection.bands,
                 catalog_matches=catalog_matches,
