@@ -146,17 +146,65 @@ Cuando el usuario tenga WSL2 con astroconda/IRAF instalado:
    alternativa seleccionable en `BuildMasterFrameDialog`/
    `ApplyCalibrationDialog` (pendiente, fuera de esta ronda).
 
-## 7. Alcance de esta ronda: solo reducción CCD
+## 7. Alcance: los cuatro subsistemas históricamente basados en IRAF
 
 El encargo original pedía reescribir "toda la parte de iraf que hemos
 implementado antes", lo cual abarca cuatro subsistemas históricamente
 implementados con IRAF como referencia funcional (nunca envuelto):
-reducción CCD (`reduction/`), fotometría (`photometry/aperture.py`,
-`photometry/psf.py`, PSF con `daophot`), astrometría
-(`astrometry/wcs_fit.py`, `astrometry/registration.py`) y
-espectroscopía (`spectroscopy/`: trazado, calibración en longitud de
-onda, flujo, continuo). Esta ronda cubre únicamente reducción CCD
-(`zerocombine`/`darkcombine`/`flatcombine`/`ccdproc`), la base sobre la
-que se apoyan los otros tres. Los otros tres subsistemas siguen usando
-exclusivamente sus reimplementaciones propias (numpy/scipy/photutils),
-sin backend pyraf todavía -- pendiente, no iniciado.
+reducción CCD, fotometría, astrometría y espectroscopía. Los cuatro
+siguen ahora el mismo patrón (detección `HAS_PYRAF`, guard explícito
+`_require_pyraf()` antes de tocar cualquier símbolo real de `iraf`,
+`check_pyraf_environment()`, tests con el mismo esquema
+honesto-sin-pyraf / `@requires_real_pyraf`), y los cuatro están
+igualmente **sin cablear en la GUI** -- ningún diálogo usa estos
+backends todavía, por el mismo motivo de la sección 3.
+
+- **`reduction/pyraf_backend.py`** -- `zerocombine`/`darkcombine`/
+  `flatcombine`/`ccdproc` (paquete `noao.imred.ccdred`). Ver secciones
+  1-6 de este documento.
+- **`photometry/pyraf_backend.py`** -- `phot` (fotometría de apertura),
+  `daofind` (detección de fuentes puntuales, ambos de
+  `digiphot.apphot`), y el encadenado real `pstselect` → `psf` →
+  `allstar` (fotometría PSF real, `digiphot.daophot`).
+- **`astrometry/pyraf_backend.py`** -- `ccmap` (ajuste de WCS real a
+  partir de correspondencias x/y↔ra/dec, `images.imcoords`) y
+  `wregister` (registro de imágenes contra el WCS de una referencia,
+  `images.immatch`).
+- **`spectroscopy/pyraf_backend.py`** -- `apall` (trazado + extracción
+  en un paso, `twodspec.apextract`), `reidentify` + `dispcor`
+  (calibración en longitud de onda a partir de una solución de
+  referencia ya identificada -- ver la nota específica en el docstring
+  del módulo sobre por qué `identify` en sí no es automatizable),
+  `standard` + `sensfunc` + `calibrate` (calibración de flujo), y
+  `continuum` (ajuste/normalización de continuo) -- los cuatro de
+  `noao.onedspec`.
+
+Los cuatro backends comparten la misma advertencia de verificación de
+la sección 2: escritos siguiendo la sintaxis real y documentada de sus
+respectivas tareas IRAF, pero sin poder ejecutarse contra una
+instalación real en este sandbox. Un ejemplo concreto de por qué esa
+verificación real importa está en la sección 4: un bug de diseño real
+(no cosmético) que solo se descubrió al ejecutar de verdad las pruebas
+"honestas sin pyraf" del primer backend (reducción), y que se evitó
+desde el principio en los otros tres replicando el guard corregido
+(`_require_pyraf()` como primera instrucción de cada función pública,
+nunca como parte de una expresión de argumento evaluada antes).
+
+### Estado de verificación de los tres backends nuevos
+
+`tests/unit/photometry/test_photometry_pyraf_backend.py` (7 pruebas),
+`tests/unit/astrometry/test_astrometry_pyraf_backend.py` (6 pruebas),
+`tests/unit/spectroscopy/test_spectroscopy_pyraf_backend.py` (6
+pruebas): en total 19 pruebas más, con el mismo desglose que la
+reducción -- las que verifican el comportamiento honesto sin pyraf
+corren de verdad en este sandbox y pasan (incluida
+`test_register_images_pyraf_requires_at_least_one_input`, que confirma
+que sin pyraf real el fallo es `PyrafUnavailableError` incluso con una
+lista de entradas vacía, porque el guard se comprueba antes que
+cualquier otra validación); las que requieren IRAF real
+(`@requires_real_pyraf`) se saltan limpiamente y no se han ejecutado
+todavía contra una instalación real.
+
+Suite completa tras añadir los cuatro backends, sin regresiones:
+`aps-test` 421 passed / 35 skipped / 1 xfailed; `aps-gui` 516 passed /
+20 skipped / 1 xfailed.
