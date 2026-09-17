@@ -187,3 +187,52 @@ def test_wcs_solution_from_astropy_accepts_explicit_crpix():
     solution = wcs_solution_from_astropy(wcs, crpix_px=(50.0, 60.0))
 
     assert solution.crpix_px == (50.0, 60.0)
+
+
+def test_rescale_wcs_for_binning_matches_the_real_superpixel_centre():
+    """El demosaico SuperPixel (`imtools/debayer.py`) binifica 2x2: el
+    píxel de salida (i,j) cubre los de entrada (2i,2j)..(2i+1,2j+1), cuyo
+    centro está en (2j+0.5, 2i+0.5). El WCS reescalado debe dar
+    exactamente esa posición celeste.
+
+    No se puede usar `wcs[::2, ::2]` de astropy para esto: con matriz CD
+    (lo normal en un FITS ya resuelto) deja la escala SIN cambiar -- con
+    un light real de M 31 eso daba un error de ~857 segundos de arco."""
+    from astropy.wcs import WCS
+
+    from astrophysics_suite.astrometry.wcs_fit import rescale_wcs_for_binning
+
+    wcs = WCS(naxis=2)
+    wcs.wcs.crpix = [512.0, 400.0]
+    wcs.wcs.crval = [10.9131301993, 41.2120838282]
+    wcs.wcs.cd = [[0.000245450853875, 0.000149121982691], [-0.00014909406634, 0.000245457021999]]
+    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+
+    binned = rescale_wcs_for_binning(wcs, 2)
+
+    original_scale = np.sqrt(abs(np.linalg.det(wcs.pixel_scale_matrix)))
+    binned_scale = np.sqrt(abs(np.linalg.det(binned.pixel_scale_matrix)))
+    assert binned_scale == pytest.approx(original_scale * 2.0, rel=1e-9), "la escala de píxel debe DOBLARSE al binificar 2x2"
+
+    for i, j in [(10, 10), (200, 150), (400, 380)]:
+        expected_ra, expected_dec = wcs.all_pix2world(2 * j + 0.5, 2 * i + 0.5, 0)
+        got_ra, got_dec = binned.all_pix2world(j, i, 0)
+        assert float(got_ra) == pytest.approx(float(expected_ra), abs=1e-9)
+        assert float(got_dec) == pytest.approx(float(expected_dec), abs=1e-9)
+
+
+def test_rescale_wcs_for_binning_leaves_the_original_untouched():
+    from astropy.wcs import WCS
+
+    from astrophysics_suite.astrometry.wcs_fit import rescale_wcs_for_binning
+
+    wcs = WCS(naxis=2)
+    wcs.wcs.crpix = [100.0, 100.0]
+    wcs.wcs.cdelt = [-1.0 / 3600.0, 1.0 / 3600.0]
+    wcs.wcs.crval = [10.0, 5.0]
+    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    original_crpix = list(wcs.wcs.crpix)
+
+    rescale_wcs_for_binning(wcs, 2)
+
+    assert list(wcs.wcs.crpix) == original_crpix, "reescalar nunca debe mutar el WCS de entrada"

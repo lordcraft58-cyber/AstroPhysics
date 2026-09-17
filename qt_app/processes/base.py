@@ -21,16 +21,27 @@ class ParameterSpec:
     name: str
     label: str
     kind: str
-    """"float", "int" o "bool"."""
+    """"float", "int", "bool" o "choice" (una de varias opciones fijas,
+    en `choices`)."""
     default: Any
     minimum: float | int | None = None
     maximum: float | int | None = None
     decimals: int = 3
     help_text: str = ""
+    choices: tuple[str, ...] = ()
+    """Opciones válidas cuando `kind == "choice"` -- la GUI las muestra
+    como desplegable. Vacío para cualquier otro tipo."""
 
     def __post_init__(self) -> None:
-        if self.kind not in ("float", "int", "bool"):
-            raise ValueError(f"kind debe ser 'float', 'int' o 'bool'; recibido {self.kind!r}")
+        if self.kind not in ("float", "int", "bool", "choice"):
+            raise ValueError(f"kind debe ser 'float', 'int', 'bool' o 'choice'; recibido {self.kind!r}")
+        if self.kind == "choice":
+            if not self.choices:
+                raise ValueError(f"el parámetro {self.name!r} es de tipo 'choice' pero no declara ninguna opción en `choices`")
+            if self.default not in self.choices:
+                raise ValueError(f"el valor por defecto {self.default!r} de {self.name!r} no está entre sus opciones {self.choices}")
+        elif self.choices:
+            raise ValueError(f"el parámetro {self.name!r} declara `choices` pero su tipo es {self.kind!r}, no 'choice'")
 
 
 @dataclass(frozen=True)

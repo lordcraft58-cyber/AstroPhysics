@@ -14,6 +14,14 @@ from legacy.AstroPhysicsSuite_v57_3_COMMERCIAL import angular_separation_arcsec
 
 from astrophysics_suite.catalogs.gaia import query_gaia_neighbors
 from astrophysics_suite.imtools.cosmic_rays import detect_cosmic_rays
+from astrophysics_suite.imtools.debayer import (
+    BAYER_PATTERNS,
+    bayer_pattern_from_header,
+    debayer_bilinear,
+    debayer_superpixel,
+    debayer_to_luminance,
+    describe_bayer_agreement,
+)
 from astrophysics_suite.imtools.normalize import normalize_percentile
 from astrophysics_suite.imtools.regions import crop
 from astrophysics_suite.imtools.statistics import compute_histogram, compute_image_statistics
@@ -32,6 +40,57 @@ from astrophysics_suite.spectroscopy.continuum import fit_continuum
 from astrophysics_suite.spectroscopy.trace import extract_optimal, extract_sum, trace_spectrum
 from astrophysics_suite.tables.table import Table
 from qt_app.processes.base import ParameterSpec, ProcessDefinition, ProcessResult
+
+
+def _run_debayer(data: np.ndarray, params: dict) -> ProcessResult:
+    header = params.get("_header") or {}
+    requested = str(params.get("pattern", "auto")).strip().upper()
+    if requested in ("AUTO", ""):
+        pattern = bayer_pattern_from_header(header)
+        if pattern is None:
+            raise ValueError(
+                "La cabecera de esta imagen no declara BAYERPAT, así que no se puede saber si es un mosaico de color "
+                "ni con qué orientación. Elige el patrón a mano si sabes cuál es -- nunca se asume uno por defecto, "
+                "porque un patrón equivocado produce colores y fotometría silenciosamente incorrectos."
+            )
+        pattern_source = f"declarado en la cabecera ({pattern})"
+    else:
+        if requested not in BAYER_PATTERNS:
+            raise ValueError(f"Patrón de Bayer no reconocido: {requested!r} (esperado uno de {', '.join(BAYER_PATTERNS)}, o 'auto').")
+        pattern = requested
+        pattern_source = f"elegido a mano ({pattern})"
+
+    agreement = describe_bayer_agreement(data, header)
+    method = str(params.get("method", "luminancia")).strip().lower()
+    if method.startswith("lum"):
+        output = debayer_to_luminance(data, pattern)
+        summary = (
+            f"Mosaico {pattern} -> luminancia {output.shape[1]}x{output.shape[0]} px por SuperPixel "
+            f"(patrón {pattern_source}). Ningún valor interpolado: cada píxel es una suma de medidas reales del sensor "
+            f"-- es el método correcto para detección y fotometría. La escala de píxel se DUPLICA."
+        )
+    elif method.startswith("super"):
+        output = debayer_superpixel(data, pattern)
+        summary = (
+            f"Mosaico {pattern} -> RGB {output.shape[1]}x{output.shape[0]} px por SuperPixel (patrón {pattern_source}). "
+            f"Ningún valor interpolado. La escala de píxel se DUPLICA."
+        )
+    elif method.startswith("bilin"):
+        output = debayer_bilinear(data, pattern)
+        summary = (
+            f"Mosaico {pattern} -> RGB {output.shape[1]}x{output.shape[0]} px por interpolación bilineal (patrón "
+            f"{pattern_source}). AVISO: la mayoría de los valores de salida son INTERPOLADOS, no medidos -- vale para "
+            f"ver la imagen, no para fotometría (usa SuperPixel o Luminancia para medir)."
+        )
+    else:
+        raise ValueError(f"Método de demosaico no reconocido: {method!r} (esperado 'luminancia', 'superpixel' o 'bilineal').")
+
+    log_lines = [agreement.detail]
+    if not agreement.agree:
+        log_lines.append(
+            "El resultado puede tener los colores intercambiados. Comprueba el patrón antes de usar esta imagen para medir."
+        )
+    return ProcessResult(output_data=output, summary=summary, log_lines=tuple(log_lines))
 
 
 def _run_cosmic_ray_removal(data: np.ndarray, params: dict) -> ProcessResult:
@@ -378,6 +437,23 @@ def build_process_registry() -> list[ProcessDefinition]:
         # encajan en "un proceso transforma la imagen activa" (ProcessDefinition.run),
         # así que se resuelven con diálogos dedicados en el menú "Reducción" del
         # propio menú principal (qt_app/reduction/), no como entradas de este árbol.
+        ProcessDefinition(
+            process_id="imtools.debayer",
+            name="Demosaico de mosaico de color (OSC/Bayer)",
+            category="Utilidades de imagen",
+            description=(
+                "Convierte el mosaico CFA/Bayer de una cámara de color (OSC) en una imagen utilizable. "
+                "'Luminancia' y 'SuperPixel' NO interpolan ningún valor (cada píxel de salida es una medida real del "
+                "sensor) y son los correctos para detección y fotometría; 'Bilineal' conserva la resolución completa "
+                "interpolando los canales que faltan -- se ve mejor, pero la mayoría de sus valores son inventados por "
+                "interpolación y falsean la fotometría. Luminancia y SuperPixel duplican la escala de píxel."
+            ),
+            parameters=(
+                ParameterSpec("method", "Método", "choice", "luminancia", choices=("luminancia", "superpixel", "bilineal")),
+                ParameterSpec("pattern", "Patrón", "choice", "auto", choices=("auto", *BAYER_PATTERNS)),
+            ),
+            run=_run_debayer,
+        ),
         ProcessDefinition(
             process_id="imtools.cosmic_rays",
             name="Rayos cósmicos (L.A.Cosmic)",

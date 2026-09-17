@@ -17,6 +17,9 @@ import astrophysics_suite.discovery.pipeline as pipeline_module
 from astrophysics_suite.astrometry.wcs_fit import angular_separation_deg, gnomonic_deproject
 from astrophysics_suite.core.enums import IdentificationState
 from astrophysics_suite.discovery.pipeline import (
+    CFA_STATE_DEBAYERED,
+    CFA_STATE_DISABLED,
+    CFA_STATE_NOT_CFA,
     WCS_STATE_AUTO_RESOLVED,
     WCS_STATE_PRESENT,
     WCS_STATE_SOLVE_FAILED,
@@ -297,3 +300,93 @@ def test_run_generic_discovery_reports_wcs_present_and_never_calls_solve_plate(t
     assert summary.wcs_status[0].state == WCS_STATE_PRESENT
     assert summary.n_candidates > 0
     assert all(c.identification_state is IdentificationState.UNMATCHED for c in candidates)
+
+
+def _write_bayer_mosaic_fits(path, *, positions, shape=(160, 160), pattern="RGGB"):
+    """FITS real de cámara OSC: estrellas gaussianas reales muestreadas a
+    través de un mosaico de Bayer (cada píxel mide UN color), con el
+    `BAYERPAT` real en la cabecera -- como los lights reales del usuario
+    (ZWO ASI533MC Pro)."""
+    from astropy.io import fits
+
+    rng = np.random.default_rng(11)
+    scene = np.full(shape, 1000.0, dtype=np.float64)
+    yy, xx = np.mgrid[0 : shape[0], 0 : shape[1]]
+    for x, y in positions:
+        scene += 9000.0 * np.exp(-(((xx - x) ** 2 + (yy - y) ** 2) / (2 * 2.2**2)))
+    scene += rng.normal(0.0, 12.0, shape)
+
+    # Respuesta real por canal: el mosaico atenúa cada píxel según su filtro.
+    response = {"R": 0.55, "G": 1.0, "B": 0.45}
+    mosaic = np.zeros(shape, dtype=np.float64)
+    for index, channel in enumerate(pattern):
+        row, col = index // 2, index % 2
+        mosaic[row::2, col::2] = scene[row::2, col::2] * response[channel]
+
+    header = fits.Header()
+    header["BAYERPAT"] = pattern
+    header["PIXSCALE"] = 1.0
+    fits.PrimaryHDU(mosaic.astype(np.float32), header=header).writeto(path)
+
+
+def test_run_generic_discovery_debayers_a_real_cfa_mosaic_and_says_so(tmp_path, monkeypatch):
+    """Laguna real encontrada con los lights OSC de M 31 del usuario: sin
+    demosaicar, la detección corre sobre el mosaico de Bayer crudo y
+    pierde la mayoría de las estrellas (45 detectadas frente a 416 tras
+    demosaicar, en el mismo light real). Discovery debe demosaicar ANTES
+    de detectar, y decir explícitamente que lo ha hecho."""
+    monkeypatch.setattr(gaia_module, "query_gaia_neighbors", lambda *a, **k: [])
+
+    positions = [(40, 40), (100, 62), (120, 130), (70, 110)]
+    path = tmp_path / "osc_light.fits"
+    _write_bayer_mosaic_fits(path, positions=positions)
+
+    observation, loaded = build_observation([(str(path), "L")], observation_id="OBS-CFA-0001", target_name="Campo OSC")
+    candidates, summary = run_generic_discovery(observation, loaded, threshold_sigma=4.0)
+
+    assert len(summary.cfa_status) == 1
+    status = summary.cfa_status[0]
+    assert status.state == CFA_STATE_DEBAYERED, status.detail
+    assert "RGGB" in status.detail
+    assert "SuperPixel" in status.detail
+    assert summary.n_detected > 0
+
+
+def test_run_generic_discovery_finds_more_real_sources_after_debayering(tmp_path, monkeypatch):
+    """La comprobación que de verdad importa: demosaicar no es cosmético
+    -- sobre el mismo mosaico real, detectar tras demosaicar encuentra
+    más estrellas reales que sobre el mosaico crudo."""
+    monkeypatch.setattr(gaia_module, "query_gaia_neighbors", lambda *a, **k: [])
+
+    positions = [(40, 40), (100, 62), (120, 130), (70, 110), (30, 120), (140, 45)]
+    path = tmp_path / "osc_light_compare.fits"
+    _write_bayer_mosaic_fits(path, positions=positions)
+
+    observation, loaded = build_observation([(str(path), "L")], observation_id="OBS-CFA-0002", target_name="Campo OSC")
+    _, with_debayer = run_generic_discovery(observation, loaded, threshold_sigma=4.0, auto_debayer=True)
+
+    observation2, loaded2 = build_observation([(str(path), "L")], observation_id="OBS-CFA-0003", target_name="Campo OSC")
+    _, without_debayer = run_generic_discovery(observation2, loaded2, threshold_sigma=4.0, auto_debayer=False)
+
+    assert without_debayer.cfa_status[0].state == CFA_STATE_DISABLED
+    assert with_debayer.n_detected >= without_debayer.n_detected, (
+        f"demosaicar debe detectar al menos tantas fuentes reales como el mosaico crudo "
+        f"(con demosaico: {with_debayer.n_detected}, sin: {without_debayer.n_detected})"
+    )
+
+
+def test_run_generic_discovery_leaves_a_mono_image_untouched(tmp_path, monkeypatch):
+    """Una imagen sin BAYERPAT no debe tocarse: nunca se asume un patrón
+    'porque es el más común' -- eso rompería cualquier cámara monocroma."""
+    monkeypatch.setattr(gaia_module, "query_gaia_neighbors", lambda *a, **k: [])
+
+    field = _star_field((120, 120), [(40, 40), (80, 70)])
+    path = tmp_path / "mono.fits"
+    _write_minimal_fits_2d(path, field, pixel_scale_arcsec=1.0)
+
+    observation, loaded = build_observation([(str(path), "OIII")], observation_id="OBS-CFA-0004", target_name="Campo mono")
+    shape_before = loaded[observation.images[0].path].legacy_image.data.shape
+    _, summary = run_generic_discovery(observation, loaded, threshold_sigma=4.0)
+
+    assert summary.cfa_status[0].state == CFA_STATE_NOT_CFA
+    assert loaded[observation.images[0].path].legacy_image.data.shape == shape_before, "una imagen monocroma no debe binificarse"

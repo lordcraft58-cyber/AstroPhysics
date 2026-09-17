@@ -26,6 +26,23 @@ CATALOG_NAME = "Gaia DR3"
 _gaia_availability_state = threading.local()
 
 
+def _query_local_cache(
+    ra_deg: float, dec_deg: float, *, radius_arcsec: float, mag_limit: float, max_rows: int,
+) -> tuple[list[dict], bool]:
+    """Consulta la caché local en disco. Nunca lanza: si la caché no
+    existe, está corrupta o no se puede leer, se comporta exactamente
+    como "este campo no está descargado" y la consulta sigue por red --
+    un problema con la caché nunca debe impedir un análisis."""
+    try:
+        from astrophysics_suite.catalogs.local_cache import CatalogCache
+
+        return CatalogCache("gaia").query_neighbors(
+            ra_deg, dec_deg, radius_arcsec=radius_arcsec, mag_limit=mag_limit, max_rows=max_rows,
+        )
+    except Exception:
+        return [], False
+
+
 def last_gaia_availability() -> tuple[bool, str]:
     """`(disponible, detalle)` de la última consulta real a Gaia en este
     hilo -- usado por `identify_detection` para no confundir "se consultó
@@ -47,7 +64,19 @@ def query_gaia_neighbors(
     pudo hablar con Gaia -- una lista vacía por sí sola no distingue "sin
     fuentes en el radio" de "el servicio no respondió", y esa distinción
     es la que necesita `identify_detection` para no declarar UNMATCHED
-    sin haber consultado de verdad."""
+    sin haber consultado de verdad.
+
+    **La caché local va primero**: si el campo ya se descargó a disco
+    (ver `catalogs/local_cache.py`), se sirve desde ahí y no se toca la
+    red -- así un análisis con 1320 detecciones hace 0 consultas en vez
+    de 1320, y funciona sin internet. Solo si esa posición NO está
+    cubierta por ninguna descarga previa se consulta el servicio real."""
+    cached_rows, covered = _query_local_cache(ra_deg, dec_deg, radius_arcsec=radius_arcsec, mag_limit=mag_limit, max_rows=max_rows)
+    if covered:
+        _gaia_availability_state.available = True
+        _gaia_availability_state.detail = ""
+        return cached_rows
+
     result = _legacy_crossmatch_gaia_safe(ra_deg, dec_deg, radius_arcsec=radius_arcsec, mag_limit=mag_limit, max_rows=max_rows)
     available = result.get("state") == "OBSERVABLE" and bool(result.get("gaia_available"))
     _gaia_availability_state.available = available

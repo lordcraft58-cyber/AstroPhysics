@@ -192,6 +192,10 @@ class MainWindow(QMainWindow):
         star_pair_action = QAction("Registrar por &pares de estrellas (clic)...", self)
         star_pair_action.triggered.connect(self._open_star_pair_registration_dialog)
         self.astrometry_menu.addAction(star_pair_action)
+        self.astrometry_menu.addSeparator()
+        self.catalog_cache_action = QAction("&Descargar catálogo del campo (trabajar sin red)...", self)
+        self.catalog_cache_action.triggered.connect(self._open_catalog_cache_dialog)
+        self.astrometry_menu.addAction(self.catalog_cache_action)
 
         self.spectroscopy_menu = self.menuBar().addMenu("Espectroscop&ía")
         wavelength_fit_action = QAction("&Calibrar longitud de onda (detectar líneas)...", self)
@@ -474,6 +478,20 @@ class MainWindow(QMainWindow):
             target_title, reference_title, transform.rms_residual_px, transform.n_points, model,
         )
         self.statusBar().showMessage(f"Registro por pares completado (RMS={transform.rms_residual_px:.2f} px, {transform.n_points} par(es)).", 6000)
+
+    def _open_catalog_cache_dialog(self) -> None:
+        """Descarga el catálogo del campo a disco -- funciona con o sin
+        imagen abierta: con una imagen con WCS, el campo se pre-rellena
+        solo; sin ella, se puede indicar el objeto por nombre."""
+        from qt_app.catalogs.catalog_cache_dialog import CatalogCacheDialog
+
+        view = self._active_image_view()
+        wcs = view.wcs if view is not None else None
+        shape = view.data.shape if view is not None else None
+        object_name = ""
+        if view is not None and view.header:
+            object_name = str(view.header.get("OBJECT", "") or "").strip()
+        CatalogCacheDialog(wcs, shape, object_name, self).exec()
 
     def _open_plate_solve_dialog(self) -> None:
         view = self._active_image_view()
@@ -822,6 +840,7 @@ class MainWindow(QMainWindow):
 
         params = dict(params)
         params["_wcs"] = view.wcs
+        params["_header"] = view.header
 
         worker = ProcessWorker(process.run, view.data, params, self)
         worker.finished_ok.connect(lambda result, p=process, v=view: self._on_process_finished(p, v, result))

@@ -21,7 +21,8 @@ from typing import Callable
 
 from astrophysics_suite.artifacts.morphology_screen import classify_morphology
 from astrophysics_suite.astrometry.plate_solve import estimate_approx_pointing_from_header, solve_plate
-from astrophysics_suite.astrometry.wcs_fit import wcs_solution_to_astropy
+from astrophysics_suite.astrometry.wcs_fit import rescale_wcs_for_binning, wcs_solution_to_astropy
+from astrophysics_suite.imtools.debayer import bayer_pattern_from_header, debayer_to_luminance, describe_bayer_agreement
 from astrophysics_suite.catalogs.gaia import identify_detection
 from astrophysics_suite.catalogs.simbad import resolve_object_coordinates
 from astrophysics_suite.core.enums import QualityLevel, ValueKind
@@ -55,6 +56,18 @@ WCS_STATE_AUTO_RESOLVED = "WCS_RESUELTO_Y_VALIDADO_AUTOMATICAMENTE"
 WCS_STATE_SOLVE_FAILED = "PLATE_SOLVING_FALLIDO"
 WCS_STATE_SOLVE_NOT_RUN = "PLATE_SOLVING_NO_EJECUTADO"
 
+# Estados reales del mosaico de color (CFA/Bayer) de cada imagen. Un
+# sensor OSC entrega un mosaico donde cada píxel mide UN solo color:
+# detectar y medir sobre él directamente sesga fondo, flujo y PSF (ver
+# docs/audit/35-DEBAYERING-OSC.md, con la comprobación real sobre lights
+# de M 31: 45 fuentes sobre el mosaico crudo frente a 416 tras
+# demosaicar). Como con el WCS, el motivo concreto llega siempre a la
+# GUI -- nunca se demosaica (ni se deja de hacer) en silencio.
+CFA_STATE_DEBAYERED = "MOSAICO_DEMOSAICADO"
+CFA_STATE_NOT_CFA = "SIN_MOSAICO_DECLARADO"
+CFA_STATE_DISABLED = "DEMOSAICO_DESACTIVADO"
+CFA_STATE_FAILED = "DEMOSAICO_FALLIDO"
+
 
 @dataclass(frozen=True)
 class ImageWCSStatus:
@@ -73,6 +86,20 @@ class ImageWCSStatus:
 
 
 @dataclass(frozen=True)
+class ImageCFAStatus:
+    """Qué se hizo con el mosaico de color de una imagen antes de
+    detectar fuentes -- consumido por la GUI igual que `ImageWCSStatus`."""
+
+    path: str
+    band: str
+    state: str
+    """Uno de `CFA_STATE_*`."""
+    detail: str
+    """Mensaje legible: patrón usado, si los datos lo respaldan o no, y
+    la nueva escala de píxel tras el demosaico."""
+
+
+@dataclass(frozen=True)
 class DiscoveryRunSummary:
     """El resumen que el usuario final ve tras un escaneo -- ver el
     encargo original: "N fuentes detectadas, M identificadas, X no
@@ -87,6 +114,7 @@ class DiscoveryRunSummary:
     n_unmatched: int
     n_discovery_review: int
     wcs_status: tuple[ImageWCSStatus, ...] = ()
+    cfa_status: tuple[ImageCFAStatus, ...] = ()
 
 
 def _resolve_approx_pointing(header: dict, target_name: str) -> tuple[float, float, str] | None:
@@ -107,6 +135,58 @@ def _resolve_approx_pointing(header: dict, target_name: str) -> tuple[float, flo
         ra, dec, source = resolved
         return ra, dec, source
     return None
+
+
+def _debayer_if_cfa(loaded: LoadedImage, image_ref, *, auto_debayer: bool) -> ImageCFAStatus:
+    """Convierte un mosaico CFA/Bayer real en un plano de luminancia ANTES
+    de detectar o medir nada -- ver `imtools/debayer.py` para el porqué y
+    `docs/audit/35-DEBAYERING-OSC.md` para la comprobación con datos
+    reales (45 fuentes detectadas sobre el mosaico crudo frente a 416
+    tras demosaicar, en el mismo light de M 31).
+
+    Modifica `loaded.legacy_image` en el sitio (datos, WCS y escala de
+    píxel, las tres coherentes entre sí tras el binificado 2x2) -- mismo
+    patrón que `_ensure_wcs`, que ya escribe `fits_image.wcs`. Nunca
+    demosaica sin declararlo: el estado y el motivo real vuelven siempre
+    en el `ImageCFAStatus`."""
+    fits_image = loaded.legacy_image
+    pattern = bayer_pattern_from_header(fits_image.header or {})
+    if pattern is None:
+        return ImageCFAStatus(
+            path=image_ref.path, band=image_ref.band, state=CFA_STATE_NOT_CFA,
+            detail="La cabecera no declara BAYERPAT -- se trata como imagen monocroma o ya demosaicada, sin tocar los píxeles.",
+        )
+    if not auto_debayer:
+        return ImageCFAStatus(
+            path=image_ref.path, band=image_ref.band, state=CFA_STATE_DISABLED,
+            detail=f"La imagen declara un mosaico {pattern} pero el demosaico está desactivado para este análisis -- "
+                   f"la detección y la fotometría corren sobre el mosaico crudo, con el sesgo que eso implica.",
+        )
+    try:
+        agreement = describe_bayer_agreement(fits_image.data, fits_image.header or {})
+        luminance = debayer_to_luminance(fits_image.data, pattern)
+    except Exception as exc:
+        return ImageCFAStatus(
+            path=image_ref.path, band=image_ref.band, state=CFA_STATE_FAILED,
+            detail=f"El demosaico falló ({type(exc).__name__}: {exc}) -- se continúa sobre el mosaico crudo, "
+                   f"con el sesgo que eso implica en fondo, flujo y PSF.",
+        )
+
+    fits_image.data = luminance
+    if fits_image.wcs is not None:
+        fits_image.wcs = rescale_wcs_for_binning(fits_image.wcs, 2)
+    previous_scale = fits_image.pixel_scale_arcsec
+    if previous_scale is not None:
+        fits_image.pixel_scale_arcsec = previous_scale * 2.0
+    scale_note = (
+        f" Escala de píxel: {previous_scale:.4f}\" -> {previous_scale * 2.0:.4f}\"/px."
+        if previous_scale is not None else ""
+    )
+    return ImageCFAStatus(
+        path=image_ref.path, band=image_ref.band, state=CFA_STATE_DEBAYERED,
+        detail=f"Mosaico {pattern} demosaicado a luminancia por SuperPixel (sin interpolar ningún valor, "
+               f"{luminance.shape[1]}x{luminance.shape[0]} px).{scale_note} {agreement.detail}",
+    )
 
 
 def _ensure_wcs(
@@ -169,6 +249,7 @@ def run_generic_discovery(
     progress: Callable[[float, str], None] | None = None,
     cancel: threading.Event | None = None,
     auto_plate_solve: bool = True,
+    auto_debayer: bool = True,
 ) -> tuple[list[Candidate], DiscoveryRunSummary]:
     """Ejecuta el modo genérico sobre todas las imágenes de una
     `Observation` ya cargada (ver `io.fits_loader.build_observation`).
@@ -203,10 +284,22 @@ def run_generic_discovery(
     n_rejected = 0
     n_images = max(1, len(observation.images))
     wcs_statuses: list[ImageWCSStatus] = []
+    cfa_statuses: list[ImageCFAStatus] = []
 
     for image_index, image_ref in enumerate(observation.images):
         check_cancelled()
         loaded = loaded_images[image_ref.path]
+        # El demosaico va ANTES que el WCS y que la detección: si hay que
+        # resolver la placa, resolverla sobre la luminancia real (no sobre
+        # el mosaico) da muchas más estrellas con las que emparejar.
+        cfa_status = _debayer_if_cfa(loaded, image_ref, auto_debayer=auto_debayer)
+        cfa_statuses.append(cfa_status)
+        if cfa_status.state == CFA_STATE_DEBAYERED:
+            report(image_index / n_images, f"Mosaico de color demosaicado en {image_ref.band} ({image_index + 1}/{n_images})")
+        # El binificado 2x2 del SuperPixel divide por dos la FWHM medida en
+        # píxeles: usar la original detectaría con un núcleo del doble de
+        # ancho que la PSF real y perdería la mayoría de las estrellas.
+        image_fwhm_px = fwhm_px / 2.0 if cfa_status.state == CFA_STATE_DEBAYERED else fwhm_px
         wcs_statuses.append(
             _ensure_wcs(
                 loaded, image_ref, target_name=observation.target_name, auto_plate_solve=auto_plate_solve,
@@ -219,7 +312,7 @@ def run_generic_discovery(
             loaded,
             observation_id=observation.observation_id,
             band=image_ref.band,
-            fwhm_px=fwhm_px,
+            fwhm_px=image_fwhm_px,
             threshold_sigma=threshold_sigma,
             max_sources=max_sources,
             pipeline_version=pipeline_version,
@@ -277,5 +370,6 @@ def run_generic_discovery(
         n_unmatched=sum(1 for c in candidates if c.identification_state.value == "UNMATCHED"),
         n_discovery_review=sum(1 for c in candidates if c.identification_state.value == "DISCOVERY_REVIEW"),
         wcs_status=tuple(wcs_statuses),
+        cfa_status=tuple(cfa_statuses),
     )
     return candidates, summary

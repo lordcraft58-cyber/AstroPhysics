@@ -11,6 +11,7 @@ from typing import Any
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
     QFormLayout,
     QLabel,
@@ -80,6 +81,11 @@ class PropertiesDock(QWidget):
             self.form_layout.addRow(spec.label, widget)
 
     def _build_widget(self, spec) -> QWidget:
+        if spec.kind == "choice":
+            widget = QComboBox()
+            widget.addItems(list(spec.choices))
+            widget.setCurrentText(str(spec.default))
+            return widget
         if spec.kind == "bool":
             widget = QCheckBox()
             widget.setChecked(bool(spec.default))
@@ -108,10 +114,10 @@ class PropertiesDock(QWidget):
         params: dict[str, Any] = {}
         for spec in self.current_process.parameters:
             widget = self._param_widgets[spec.name]
-            if spec.kind == "bool":
+            if spec.kind == "choice":
+                params[spec.name] = widget.currentText()
+            elif spec.kind == "bool":
                 params[spec.name] = widget.isChecked()
-            elif spec.kind == "int":
-                params[spec.name] = widget.value()
             else:
                 params[spec.name] = widget.value()
         self.run_requested.emit(self.current_process.process_id, params)
