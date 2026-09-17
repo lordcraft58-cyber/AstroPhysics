@@ -199,15 +199,59 @@ def test_review_flow_updates_session_state_and_disables_buttons(qapp, main_windo
     qapp.processEvents()
     detail_widget = main_window._candidate_detail_windows[candidate_id].widget()
 
-    with mock.patch.object(cdw.QInputDialog, "getMultiLineText", return_value=("Confirmado en prueba de humo", True)):
+    with (
+        mock.patch.object(cdw.QInputDialog, "getText", return_value=("Revisor de prueba", True)),
+        mock.patch.object(cdw.QInputDialog, "getMultiLineText", return_value=("Confirmado en prueba de humo", True)),
+    ):
         detail_widget._review(ReviewState.KEPT)
     qapp.processEvents()
 
     updated = [c for c in main_window.session_state.candidates if c.candidate_id == candidate_id][0]
     assert updated.review_state == ReviewState.KEPT
     assert len(updated.review_notes) == 1
+    assert updated.review_notes[0].author == "Revisor de prueba"
     assert not detail_widget.keep_button.isEnabled()
     assert not detail_widget.reject_button.isEnabled()
+
+
+def test_reviewer_name_is_persisted_and_prefilled_on_the_next_review(qapp, main_window, tmp_path):
+    # Antes REVIEWER_NAME era un placeholder fijo ("Revisor") -- ahora es
+    # el nombre real que el revisor teclea la primera vez, persistido
+    # como preferencia y reutilizado como valor por defecto la próxima
+    # vez, sin inventar un sistema de usuarios completo.
+    from astrophysics_suite.core.enums import ReviewState
+    from legacy.AstroPhysicsSuite_v57_3_COMMERCIAL import _write_minimal_fits_2d
+    from qt_app.candidates import candidate_detail_widget as cdw
+    from qt_app.theme import DARK
+    from services.app_preferences import AppPreferencesStore
+
+    field = _star_field((96, 96), [(30, 30), (60, 60)])
+    path = tmp_path / "field.fits"
+    _write_minimal_fits_2d(path, field)
+    _run_discovery_and_wait(qapp, main_window, "Campo nombre revisor", [(str(path), "OIII")])
+    assert main_window.session_state.candidates
+
+    isolated_preferences = AppPreferencesStore(tmp_path / "prefs.json")
+    widget = cdw.CandidateDetailWidget(
+        main_window.session_state.candidates[0].candidate_id, main_window.session_state, DARK,
+        preferences=isolated_preferences,
+    )
+
+    prefill_holder: list[str] = []
+
+    def _capture_prefill(parent, title, label, text=""):
+        prefill_holder.append(text)
+        return "María Revisora", True
+
+    with (
+        mock.patch.object(cdw.QInputDialog, "getText", side_effect=_capture_prefill),
+        mock.patch.object(cdw.QInputDialog, "getMultiLineText", return_value=("primera revisión", True)),
+    ):
+        widget._review(ReviewState.KEPT)
+    qapp.processEvents()
+
+    assert prefill_holder[0] == cdw.DEFAULT_REVIEWER_NAME
+    assert isolated_preferences.get(cdw._REVIEWER_NAME_PREFERENCE_KEY) == "María Revisora"
 
 
 def _field_with_calibratable_flux_and_catalog(shape=(180, 180), *, true_zeropoint_mag=24.0, n_stars=6, anomalous_index=0, anomalous_factor=6.0, seed=13):

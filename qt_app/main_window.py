@@ -581,6 +581,13 @@ class MainWindow(QMainWindow):
         astropy_wcs = wcs_solution_to_astropy(solution)
         header = dict(view.header) if view.header else {}
         header.update(dict(astropy_wcs.to_header()))
+        # Procedencia real del ajuste, no solo la solución en sí -- antes
+        # `PlateSolveResult`/`WCSSolution` solo vivían en el objeto Python
+        # en memoria; la copia FITS que el usuario se lleva no llevaba
+        # ningún rastro de cómo se resolvió ni con qué calidad.
+        header["WCSRMS"] = round(float(solution.rms_residual_arcsec), 6)
+        header["WCSNSTR"] = int(solution.n_stars)
+        header["HISTORY"] = f"WCS ajustado por AstroPhysics Suite (astrometry.wcs_fit): RMS={solution.rms_residual_arcsec:.4f}\" con {solution.n_stars} estrella(s)"
         try:
             save_fits_image(path, view.data, header=header)
         except Exception as exc:  # noqa: BLE001 -- error real de escritura, debe ser visible
@@ -1074,7 +1081,7 @@ class MainWindow(QMainWindow):
             self.mdi.setActiveSubWindow(existing)
             return
 
-        widget = CandidateDetailWidget(candidate_id, self.session_state, DARK, self)
+        widget = CandidateDetailWidget(candidate_id, self.session_state, DARK, self, preferences=self.preferences)
         widget.report_generated.connect(lambda path: self.statusBar().showMessage(f"Informe científico generado en {path}", 6000))
         sub_window = QMdiSubWindow()
         sub_window.setWidget(widget)

@@ -259,3 +259,10 @@ def test_saving_wcs_fits_copy_writes_a_real_solvable_header(qapp, main_window, m
             got_ra, got_dec = reloaded_wcs.all_pix2world(x0, y0, 0)
             assert float(got_ra) == pytest.approx(expected_ra, abs=1e-5)
             assert float(got_dec) == pytest.approx(expected_dec, abs=1e-5)
+
+        # Procedencia real del ajuste -- antes esta información solo
+        # vivía en el objeto `WCSSolution` en memoria, nunca llegaba a la
+        # copia FITS que el usuario se lleva.
+        assert hdul[0].header["WCSRMS"] == pytest.approx(solution.rms_residual_arcsec, abs=1e-5)
+        assert hdul[0].header["WCSNSTR"] == solution.n_stars
+        assert "wcs_fit" in str(hdul[0].header["HISTORY"])

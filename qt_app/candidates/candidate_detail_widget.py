@@ -32,13 +32,18 @@ from astrophysics_suite.core.enums import ReviewState
 from astrophysics_suite.core.quantity import Quantity
 from qt_app.candidates.badge import Badge
 from qt_app.candidates.mappings import REVIEW_LABEL_ES, STATE_COLOR_ATTR, STATE_LABEL_ES
+from services.app_preferences import AppPreferencesStore
 from services.session_state import SessionState
 
 logger = logging.getLogger(__name__)
 
-REVIEWER_NAME = "Revisor"
-"""Placeholder de autoría -- el taller no tiene todavía un sistema de
-usuarios; queda para una fase posterior, igual que en la Fase 8."""
+_REVIEWER_NAME_PREFERENCE_KEY = "candidate_review.reviewer_name"
+DEFAULT_REVIEWER_NAME = "Revisor"
+"""Valor de partida cuando todavía no se ha guardado ningún nombre real
+-- el taller no tiene un sistema de usuarios/sesiones de inicio de
+sesión, así que la autoría real es lo que el propio revisor teclea la
+primera vez (`_review`), persistido como preferencia y reutilizado
+como valor por defecto en las siguientes revisiones."""
 
 
 def _fmt_quantity(q: Quantity | None) -> str:
@@ -60,11 +65,12 @@ class CandidateDetailWidget(QWidget):
     éxito se comunica así, nunca con un diálogo modal bloqueante como el
     que sí usa `QMessageBox.critical` para un error real."""
 
-    def __init__(self, candidate_id: str, session_state: SessionState, palette, parent=None):
+    def __init__(self, candidate_id: str, session_state: SessionState, palette, parent=None, preferences: AppPreferencesStore | None = None):
         super().__init__(parent)
         self.candidate_id = candidate_id
         self.session_state = session_state
         self.palette = palette
+        self.preferences = preferences or AppPreferencesStore()
 
         outer = QVBoxLayout(self)
         header = QVBoxLayout()
@@ -117,12 +123,18 @@ class CandidateDetailWidget(QWidget):
         candidate = self._candidate()
         if candidate is None:
             return
+        last_reviewer = self.preferences.get(_REVIEWER_NAME_PREFERENCE_KEY, DEFAULT_REVIEWER_NAME)
+        reviewer, ok = QInputDialog.getText(self, "Nota de revisión", "Tu nombre (queda registrado como autor de esta revisión):", text=last_reviewer)
+        if not ok or not reviewer.strip():
+            return
+        reviewer = reviewer.strip()
         note, ok = QInputDialog.getMultiLineText(
             self, "Nota de revisión", "Motivo (queda registrado en el historial del candidato):"
         )
         if not ok:
             return
-        updated = candidate.mark_reviewed(new_state=new_state, author=REVIEWER_NAME, note=note, reviewed_at=datetime.now(timezone.utc))
+        self.preferences.set(_REVIEWER_NAME_PREFERENCE_KEY, reviewer)
+        updated = candidate.mark_reviewed(new_state=new_state, author=reviewer, note=note, reviewed_at=datetime.now(timezone.utc))
         self.session_state.replace_candidate(updated)
         self.review_changed.emit()
 
