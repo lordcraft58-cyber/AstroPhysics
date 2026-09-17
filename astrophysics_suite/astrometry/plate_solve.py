@@ -7,17 +7,23 @@ real por búsqueda en rejilla + emparejamiento por vecino más cercano,
 refinando con `fit_wcs` (mínimos cuadrados real, ya existente).
 
 Alcance deliberado, documentado explícitamente (ver
-`docs/audit/27-PLATE-SOLVING-AUTOMATICO.md`): esto NO es "blind solving"
-completo al estilo astrometry.net (que no necesita ningún puntero previo
-y resuelve contra un índice precalculado de todo el cielo -- un problema
-de emparejamiento de patrones geométricos bastante más difícil, fuera de
-alcance de esta ronda). Aquí se REQUIERE una posición aproximada y una
-escala aproximada -- del header FITS (RA/DEC, FOCALLEN+XPIXSZ, PIXSCALE)
-o proporcionadas explícitamente -- y se resuelve la orientación exacta
-(rotación + posible espejo) y se refina la solución con estrellas reales.
-Cuando no hay información aproximada suficiente, se informa explícitamente
-en vez de inventar una solución -- ver `estimate_approx_pointing_from_header`/
-`estimate_approx_scale_from_header` devolviendo `None`.
+`docs/audit/27-PLATE-SOLVING-AUTOMATICO.md`): esta función en concreto
+REQUIERE una posición aproximada y una escala aproximada -- del header
+FITS (RA/DEC, FOCALLEN+XPIXSZ, PIXSCALE) o proporcionadas explícitamente
+-- y resuelve la orientación exacta (rotación + posible espejo),
+refinando con estrellas reales. Cuando no hay información aproximada
+suficiente, se informa explícitamente en vez de inventar una solución --
+ver `estimate_approx_pointing_from_header`/`estimate_approx_scale_from_header`
+devolviendo `None`.
+
+El resolutor CIEGO (sin ningún puntero previo, al estilo astrometry.net)
+vive aparte, en `astrometry/blind_solve.py`: empareja asterismos por
+hashing geométrico contra un catálogo de referencia (típicamente la
+caché local ya descargada) para producir un puntero/escala semilla, y
+delega la verificación final en `solve_plate` -- por eso esta función
+sigue existiendo tal cual, como el paso de verificación común a ambos
+caminos (con puntero y ciego), en vez de duplicar la rejilla de rotación
+y el ajuste robusto en dos sitios.
 """
 from __future__ import annotations
 

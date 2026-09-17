@@ -15,13 +15,14 @@ import numpy as np
 import astrophysics_suite.astrometry.plate_solve as plate_solve_module
 import astrophysics_suite.catalogs.gaia as gaia_module
 import astrophysics_suite.discovery.pipeline as pipeline_module
-from astrophysics_suite.astrometry.wcs_fit import angular_separation_deg, gnomonic_deproject
+from astrophysics_suite.astrometry.wcs_fit import angular_separation_deg, gnomonic_deproject, gnomonic_project
 from astrophysics_suite.core.enums import IdentificationState
 from astrophysics_suite.discovery.pipeline import (
     CFA_STATE_DEBAYERED,
     CFA_STATE_DISABLED,
     CFA_STATE_NOT_CFA,
     WCS_STATE_AUTO_RESOLVED,
+    WCS_STATE_BLIND_RESOLVED,
     WCS_STATE_PRESENT,
     WCS_STATE_SOLVE_FAILED,
     WCS_STATE_SOLVE_NOT_RUN,
@@ -475,3 +476,77 @@ def test_run_generic_discovery_groups_multi_epoch_detections_into_one_candidate_
         from astrophysics_suite.models.candidate import Candidate
 
         assert Candidate.from_dict(candidate.to_dict()) == candidate
+
+
+def _write_fits_no_pointing_no_wcs(path, data):
+    """FITS real SIN WCS, SIN OBJCTRA/OBJCTDEC, SIN RA/DEC -- ni el
+    header ni un nombre de objeto dan ningún puntero aproximado. El
+    único camino real para resolver esta imagen es la resolución ciega
+    (`astrometry/blind_solve.py`) contra un catálogo ya descargado."""
+    from astropy.io import fits
+
+    fits.PrimaryHDU(data.astype(np.float32), header=fits.Header()).writeto(path)
+
+
+def test_run_generic_discovery_resolves_wcs_blind_without_any_pointer_using_the_local_cache(tmp_path, monkeypatch):
+    """La petición explícita del usuario: plate solving SIN coordenadas.
+    Sin RA/Dec en el header y sin nombre de objeto resoluble (el target
+    de la Observation es un nombre no reconocible), Discovery debe
+    resolver igualmente el WCS emparejando asterismos contra la caché
+    local de catálogos ya descargada -- nunca fallar solo porque falta
+    un puntero, si hay algo contra lo que buscar."""
+    import astrophysics_suite.catalogs.local_cache as local_cache_module
+    from astrophysics_suite.catalogs.local_cache import CatalogCache
+
+    monkeypatch.setattr(pipeline_module, "resolve_object_coordinates", lambda name: None)
+    # Redirige la caché local (por defecto) a un directorio temporal real,
+    # y la puebla como lo haría una descarga previa -- el mismo camino
+    # que usan tanto `_try_blind_solve` (CatalogCache("gaia") por defecto)
+    # como la consulta real de `query_gaia_neighbors` durante la
+    # verificación (caché primero, antes que la red).
+    monkeypatch.setattr(local_cache_module, "DEFAULT_CACHE_DIR", tmp_path)
+
+    ra0, dec0 = 83.633, -5.391
+    rng = np.random.default_rng(7)
+    xi = rng.uniform(-0.3, 0.3, 400)
+    eta = rng.uniform(-0.3, 0.3, 400)
+    cat_ra, cat_dec = gnomonic_deproject(xi, eta, ra0, dec0)
+    mags = rng.uniform(10.0, 16.0, 400)
+    catalog_rows = [
+        {"source_id": f"CAT-{i}", "ra_deg": float(r), "dec_deg": float(d), "mag_g": float(m)}
+        for i, (r, d, m) in enumerate(zip(cat_ra, cat_dec, mags))
+    ]
+    CatalogCache("gaia").store_region(ra0, dec0, 1200.0, mag_limit=20.0, rows=catalog_rows)
+
+    scale_arcsec_px, rotation_deg, shape = 1.2, 37.0, (512, 512)
+    theta = math.radians(rotation_deg)
+    cos_t, sin_t = math.cos(theta), math.sin(theta)
+    scale_deg = scale_arcsec_px / 3600.0
+    cd = scale_deg * np.array([[cos_t, -sin_t], [sin_t, cos_t]])
+    cd_inv = np.linalg.inv(cd)
+    img_xi, img_eta = gnomonic_project(np.array(cat_ra), np.array(cat_dec), ra0, dec0)
+    offsets = cd_inv @ np.vstack([img_xi, img_eta])
+    height, width = shape
+    px, py = offsets[0] + width / 2.0, offsets[1] + height / 2.0
+    margin = 12.0
+    in_field = (px >= margin) & (px < width - margin) & (py >= margin) & (py < height - margin)
+    assert in_field.sum() >= 15, "la propia prueba necesita suficientes estrellas reales en el campo"
+
+    data = np.full(shape, 200.0, dtype=np.float64)
+    yy, xx = np.mgrid[0:height, 0:width]
+    for x0, y0, mag in zip(px[in_field], py[in_field], mags[in_field]):
+        amplitude = 20000.0 * 10 ** (-0.4 * (mag - 10.0))
+        data += amplitude * np.exp(-(((xx - x0) ** 2 + (yy - y0) ** 2)) / (2 * 1.8**2))
+    data += rng.normal(0, 3.0, shape)
+
+    path = tmp_path / "field_no_pointer.fits"
+    _write_fits_no_pointing_no_wcs(path, data)
+
+    observation, loaded = build_observation([(str(path), "L")], observation_id="OBS-BLIND-0001", target_name="objetivo no reconocible")
+    candidates, summary = run_generic_discovery(observation, loaded, threshold_sigma=6.0, match_radius_arcsec=3.0)
+
+    assert len(summary.wcs_status) == 1
+    assert summary.wcs_status[0].state == WCS_STATE_BLIND_RESOLVED, summary.wcs_status[0].detail
+    assert summary.n_candidates > 0
+    for candidate in candidates:
+        assert candidate.position.has_sky_coordinates, "el WCS resuelto en ciego debe llegar a las coordenadas reales de cada candidato"

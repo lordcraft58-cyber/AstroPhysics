@@ -16,6 +16,12 @@ from PySide6.QtWidgets import QDockWidget, QFileDialog, QInputDialog, QLabel, QM
 
 from astrophysics_suite.astrometry.registration import apply_affine_transform, fit_affine_transform
 from astrophysics_suite.detection.point_sources import detect_point_sources_in_array, detect_psf_candidates
+from astrophysics_suite.discovery.pipeline import (
+    WCS_STATE_AUTO_RESOLVED,
+    WCS_STATE_BLIND_RESOLVED,
+    WCS_STATE_SOLVE_FAILED,
+    WCS_STATE_SOLVE_NOT_RUN,
+)
 from astrophysics_suite.photometry.psf import select_psf_reference_stars
 from astrophysics_suite.spectroscopy.wavelength import find_arc_lines
 from astrophysics_suite.tables.table import Table
@@ -912,16 +918,22 @@ class MainWindow(QMainWindow):
                     event.summary.n_candidates, event.summary.n_detected, event.summary.n_artifact_rejected,
                 )
                 n_auto_resolved = 0
+                n_blind_resolved = 0
                 n_wcs_missing = 0
                 for wcs_status in event.summary.wcs_status:
                     logger.info("WCS %s (%s): %s", wcs_status.state, wcs_status.band, wcs_status.detail)
-                    if wcs_status.state == "WCS_RESUELTO_Y_VALIDADO_AUTOMATICAMENTE":
+                    if wcs_status.state == WCS_STATE_AUTO_RESOLVED:
                         n_auto_resolved += 1
-                    elif wcs_status.state in ("PLATE_SOLVING_FALLIDO", "PLATE_SOLVING_NO_EJECUTADO"):
+                    elif wcs_status.state == WCS_STATE_BLIND_RESOLVED:
+                        n_blind_resolved += 1
+                    elif wcs_status.state in (WCS_STATE_SOLVE_FAILED, WCS_STATE_SOLVE_NOT_RUN):
                         n_wcs_missing += 1
                 wcs_suffix = ""
-                if n_auto_resolved or n_wcs_missing:
-                    wcs_suffix = f" WCS: {n_auto_resolved} resuelto(s) automáticamente, {n_wcs_missing} sin WCS (ver consola)."
+                if n_auto_resolved or n_blind_resolved or n_wcs_missing:
+                    wcs_suffix = (
+                        f" WCS: {n_auto_resolved} resuelto(s) con puntero, {n_blind_resolved} resuelto(s) en ciego, "
+                        f"{n_wcs_missing} sin WCS (ver consola)."
+                    )
                 self.statusBar().showMessage(
                     f"Completado: {event.summary.n_candidates} candidatos de {event.summary.n_detected} detecciones.{wcs_suffix}", 8000
                 )

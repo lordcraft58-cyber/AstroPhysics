@@ -53,6 +53,50 @@ def test_an_empty_but_really_downloaded_region_is_covered(tmp_path):
     assert covered is True, "la región SÍ se descargó: vacía es una respuesta real, no una pregunta sin responder"
 
 
+def test_all_rows_returns_everything_regardless_of_position(tmp_path):
+    """`all_rows()` es lo que necesita el resolutor ciego
+    (`astrometry/blind_solve.py`): sin un puntero que buscar, necesita
+    TODO lo que haya en la caché, sin importar dónde caiga."""
+    cache = CatalogCache("gaia", path=tmp_path / "gaia.sqlite3")
+    # source_id realmente distintos entre regiones (como los identificadores
+    # globales reales de Gaia) -- _rows_around reutilizado sin más daría
+    # "GAIA-0" en las dos regiones aunque sean estrellas físicas distintas.
+    region_a = [{"source_id": f"A-{i}", "ra_deg": 10.0 + i * 0.001, "dec_deg": 41.0 + i * 0.001, "mag_g": 14.0} for i in range(3)]
+    region_b = [{"source_id": f"B-{i}", "ra_deg": 200.0 + i * 0.001, "dec_deg": -30.0 + i * 0.001, "mag_g": 14.0} for i in range(4)]
+    cache.store_region(10.0, 41.0, 600.0, mag_limit=20.0, rows=region_a)
+    cache.store_region(200.0, -30.0, 600.0, mag_limit=20.0, rows=region_b)
+
+    rows = cache.all_rows()
+    assert len(rows) == 7
+    ras = {round(r["ra_deg"], 3) for r in rows}
+    assert round(10.0, 3) in ras and round(200.0, 3) in ras
+
+
+def test_all_rows_sorts_brightest_first_and_respects_max_rows(tmp_path):
+    cache = CatalogCache("gaia", path=tmp_path / "gaia.sqlite3")
+    rows_in = [{"source_id": f"S{i}", "ra_deg": 10.0 + i * 0.01, "dec_deg": 41.0, "mag_g": mag} for i, mag in enumerate([18.0, 12.0, 15.0, 9.0])]
+    cache.store_region(10.0, 41.0, 600.0, mag_limit=20.0, rows=rows_in)
+
+    rows = cache.all_rows(max_rows=2)
+    assert len(rows) == 2
+    assert [r["mag_g"] for r in rows] == [9.0, 12.0]
+
+
+def test_all_rows_deduplicates_overlapping_downloads_by_source_id(tmp_path):
+    cache = CatalogCache("gaia", path=tmp_path / "gaia.sqlite3")
+    shared = _rows_around(10.0, 41.0, n=3)
+    cache.store_region(10.0, 41.0, 600.0, mag_limit=20.0, rows=shared)
+    cache.store_region(10.0005, 41.0005, 600.0, mag_limit=20.0, rows=shared)  # descarga solapada, mismas fuentes reales
+
+    rows = cache.all_rows()
+    assert len(rows) == 3, "las mismas fuentes descargadas dos veces no deben contarse dos veces"
+
+
+def test_all_rows_on_an_empty_cache_is_an_empty_list_not_an_error(tmp_path):
+    cache = CatalogCache("gaia", path=tmp_path / "gaia.sqlite3")
+    assert cache.all_rows() == []
+
+
 def test_edge_of_a_region_is_not_served_as_complete(tmp_path):
     """Justo en el borde de lo descargado, el radio de búsqueda se sale
     de la zona cubierta -- servir ahí daría un resultado incompleto sin

@@ -194,6 +194,43 @@ class CatalogCache:
         rows.sort(key=lambda item: item[0])
         return [row for _, row in rows[:max_rows]], True
 
+    def all_rows(self, *, mag_limit: float = 99.0, max_rows: int = 20_000) -> list[dict]:
+        """TODAS las fuentes descargadas de este catálogo, sin importar
+        la posición -- lo que necesita el resolutor CIEGO de placas
+        (`astrometry/blind_solve.py`): sin un puntero aproximado no hay
+        radio que buscar, así que en vez de una vecindad usa lo que ya
+        haya en disco, de donde sea. Ordenadas de más a menos brillante
+        (las estrellas sin magnitud, al final -- una magnitud desconocida
+        no es "muy tenue") para que quien limite con `max_rows` se quede
+        con las más útiles para formar asterismos reconocibles.
+
+        Deduplicada por `source_id` cuando lo hay (dos regiones
+        descargadas pueden solaparse y repetir la misma fuente real) --
+        sin él, por posición redondeada a 4 decimales de grado (~0.4
+        arcsec), suficiente para no contar dos veces la misma fila
+        exacta sin fundir fuentes reales distintas y próximas."""
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "SELECT s.source_id, s.ra_deg, s.dec_deg, s.mag_g FROM sources s "
+                "JOIN regions r ON r.id = s.region_id "
+                "WHERE r.catalog = ? AND (s.mag_g IS NULL OR s.mag_g <= ?) "
+                "ORDER BY (s.mag_g IS NULL), s.mag_g ASC",
+                (self.catalog, float(mag_limit)),
+            )
+            rows = cursor.fetchall()
+
+        seen: set[str] = set()
+        result: list[dict] = []
+        for source_id, ra_deg, dec_deg, mag_g in rows:
+            key = str(source_id) if source_id else f"{ra_deg:.4f},{dec_deg:.4f}"
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append({"source_id": source_id, "ra_deg": ra_deg, "dec_deg": dec_deg, "mag_g": mag_g})
+            if len(result) >= max_rows:
+                break
+        return result
+
     def clear(self) -> None:
         """Borra todo lo descargado de ESTE catálogo -- la GUI lo ofrece
         explícitamente; nunca se limpia solo."""

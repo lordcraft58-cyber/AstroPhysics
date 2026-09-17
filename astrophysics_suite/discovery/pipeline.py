@@ -35,8 +35,10 @@ from typing import Callable
 from astrophysics_suite.anomaly.vector import build_anomaly_vector
 from astrophysics_suite.artifacts.artifact_screen import FieldStatistics, compute_field_statistics, screen_detection
 from astrophysics_suite.artifacts.morphology_screen import classify_morphology
-from astrophysics_suite.astrometry.plate_solve import estimate_approx_pointing_from_header, solve_plate
+from astrophysics_suite.astrometry import blind_solve
+from astrophysics_suite.astrometry.plate_solve import PlateSolveResult, estimate_approx_pointing_from_header, solve_plate
 from astrophysics_suite.astrometry.wcs_fit import rescale_wcs_for_binning, wcs_solution_to_astropy
+from astrophysics_suite.catalogs.local_cache import CatalogCache
 from astrophysics_suite.imtools.debayer import bayer_pattern_from_header, debayer_to_luminance, describe_bayer_agreement
 from astrophysics_suite.catalogs.gaia import identify_detection
 from astrophysics_suite.catalogs.simbad import resolve_object_coordinates
@@ -75,6 +77,7 @@ class DiscoveryCancelled(Exception):
 # qué análisis pudieron ejecutarse con coordenadas celestes y cuáles no.
 WCS_STATE_PRESENT = "WCS_PRESENTE"
 WCS_STATE_AUTO_RESOLVED = "WCS_RESUELTO_Y_VALIDADO_AUTOMATICAMENTE"
+WCS_STATE_BLIND_RESOLVED = "WCS_RESUELTO_EN_CIEGO_SIN_PUNTERO"
 WCS_STATE_SOLVE_FAILED = "PLATE_SOLVING_FALLIDO"
 WCS_STATE_SOLVE_NOT_RUN = "PLATE_SOLVING_NO_EJECUTADO"
 
@@ -234,28 +237,64 @@ def _ensure_wcs(
                    "continuando sin coordenadas celestes para esta imagen.",
         )
     approx = _resolve_approx_pointing(fits_image.header or {}, target_name)
-    approx_ra = approx[0] if approx is not None else None
-    approx_dec = approx[1] if approx is not None else None
-    pointing_note = f" (puntero: {approx[2]})" if approx is not None else ""
-    report(progress_fraction, f"Resolviendo WCS automáticamente para {image_ref.band}{pointing_note}...")
-    result = solve_plate(fits_image.data, fits_image.header or {}, approx_ra_deg=approx_ra, approx_dec_deg=approx_dec)
-    if not result.success:
+    pointed_result = None
+    if approx is not None:
+        approx_ra, approx_dec, pointing_source = approx
+        pointing_note = f" (puntero: {pointing_source})"
+        report(progress_fraction, f"Resolviendo WCS automáticamente para {image_ref.band}{pointing_note}...")
+        pointed_result = solve_plate(fits_image.data, fits_image.header or {}, approx_ra_deg=approx_ra, approx_dec_deg=approx_dec)
+        if pointed_result.success:
+            fits_image.wcs = wcs_solution_to_astropy(pointed_result.solution)
+            return ImageWCSStatus(
+                path=image_ref.path, band=image_ref.band, state=WCS_STATE_AUTO_RESOLVED,
+                detail=f"WCS resuelto y validado automáticamente ({pointed_result.provider}), puntero{pointing_note}: {pointed_result.reason}.",
+            )
+
+    # Sin puntero utilizable, o el puntero disponible no dio una solución
+    # válida: se intenta resolución CIEGA (sin ningún puntero, ver
+    # `astrometry/blind_solve.py`) contra lo que ya haya en la caché
+    # local de catálogos -- nunca golpea la red a ciegas sobre "todo el
+    # cielo", así que sin ninguna descarga previa esto falla explícito,
+    # no inventa nada.
+    report(progress_fraction, f"Intentando resolución de placa ciega (sin puntero) para {image_ref.band}...")
+    blind_result = _try_blind_solve(fits_image)
+    if blind_result.success:
+        fits_image.wcs = wcs_solution_to_astropy(blind_result.solution)
+        return ImageWCSStatus(
+            path=image_ref.path, band=image_ref.band, state=WCS_STATE_BLIND_RESOLVED,
+            detail=f"WCS resuelto SIN puntero, por coincidencia de asterismos contra el catálogo local "
+                   f"({blind_result.provider}): {blind_result.reason}.",
+        )
+
+    if pointed_result is not None:
+        pointing_hint = f" El puntero disponible{pointing_note} tampoco produjo una solución válida: {pointed_result.reason}."
+    else:
         pointing_hint = (
             " Ninguna posición aproximada disponible (ni en el header FITS ni resolviendo por SIMBAD el nombre "
             "del objetivo) -- comprueba que el nombre de la observación sea un objeto real reconocible."
-            if approx is None else ""
         )
-        return ImageWCSStatus(
-            path=image_ref.path, band=image_ref.band, state=WCS_STATE_SOLVE_FAILED,
-            detail=f"Plate solving falló: {result.reason}{pointing_hint} -- WCS no disponible, continuando sin "
-                   f"coordenadas celestes para esta imagen (usa Astrometría -> Resolver placa automáticamente... "
-                   f"o Ajustar WCS manualmente... para intentarlo con otros parámetros).",
-        )
-    fits_image.wcs = wcs_solution_to_astropy(result.solution)
     return ImageWCSStatus(
-        path=image_ref.path, band=image_ref.band, state=WCS_STATE_AUTO_RESOLVED,
-        detail=f"WCS resuelto y validado automáticamente ({result.provider}), puntero{pointing_note}: {result.reason}.",
+        path=image_ref.path, band=image_ref.band, state=WCS_STATE_SOLVE_FAILED,
+        detail=f"Plate solving falló (con puntero y en ciego): {blind_result.reason}{pointing_hint} -- WCS no "
+               f"disponible, continuando sin coordenadas celestes para esta imagen (usa Astrometría -> Resolver "
+               f"placa automáticamente... o Ajustar WCS manualmente... para intentarlo con otros parámetros).",
     )
+
+
+def _try_blind_solve(fits_image) -> PlateSolveResult:
+    """Intenta resolución ciega usando TODO lo que haya en la caché local
+    de Gaia (`CatalogCache.all_rows()`), sin importar qué zona del cielo
+    cubra -- es justo el caso "no sé dónde apunta esto" el que necesita
+    el resolutor ciego. Nunca lanza: un problema de lectura de la caché
+    se trata igual que "sin catálogo disponible", no aborta el análisis."""
+    try:
+        catalog_rows = CatalogCache("gaia").all_rows()
+    except Exception as exc:
+        return PlateSolveResult(
+            success=False, solution=None, provider=blind_solve.PROVIDER_NAME, n_detected_stars=0, n_catalog_stars=0, n_matched=0,
+            reason=f"no se pudo leer la caché local de catálogos ({type(exc).__name__}: {exc})",
+        )
+    return blind_solve.solve_plate_blind(fits_image.data, fits_image.header or {}, catalog_rows=catalog_rows)
 
 
 @dataclass(frozen=True)
