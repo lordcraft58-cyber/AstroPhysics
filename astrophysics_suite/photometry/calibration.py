@@ -26,6 +26,12 @@ class ZeropointFit:
     """`catalog_mag - (instrumental_mag + zeropoint_mag)` de cada estrella
     finalmente usada -- para diagnóstico de calidad del ajuste."""
     rms_residual_mag: float
+    used_mask: tuple[bool, ...] = ()
+    """Misma longitud y orden que los `instrumental_mags`/`catalog_mags`
+    de entrada -- `True` si esa estrella sobrevivió el sigma-clip final,
+    `False` si el propio ajuste la rechazó. Antes esta información se
+    perdía (el llamador solo sabía CUÁNTAS se rechazaron, no CUÁLES) --
+    documentado como limitación real en docs/audit/19-FASE14-TABLAS.md."""
 
 
 def fit_zeropoint(
@@ -79,4 +85,5 @@ def fit_zeropoint(
         n_stars_rejected=n_total - n_used,
         residuals_mag=tuple(float(r) for r in residuals),
         rms_residual_mag=rms,
+        used_mask=tuple(bool(m) for m in mask),
     )

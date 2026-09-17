@@ -46,10 +46,26 @@ def test_photometric_anomaly_requires_both_measured_flux_and_expectation():
     assert "flujo medido" in without_expectation.photometric.reference
 
     with_expectation = build_anomaly_vector(
-        detection_id="D0", characterization=chars, expected_band_flux={"HA": 500.0},
+        detection_id="D0", characterization=chars, expected_band_flux={"HA": _q(500.0, unit="adu")},
     )
     assert with_expectation.photometric.is_available
     assert with_expectation.photometric.value == abs(1000.0 - 500.0) / 50.0
+
+
+def test_photometric_anomaly_combines_measured_and_expected_uncertainty_in_quadrature():
+    # Regresión directa: antes de esta corrección, `expected_band_flux`
+    # era un float sin incertidumbre (p. ej. la del punto cero
+    # fotométrico que produjo la expectativa se descartaba por completo),
+    # lo que inflaba artificialmente la significancia declarada.
+    import math
+
+    chars = _characterization(band_flux={"HA": _q(1000.0, error=50.0, unit="adu")})
+    with_uncertain_expectation = build_anomaly_vector(
+        detection_id="D0", characterization=chars, expected_band_flux={"HA": _q(500.0, error=30.0, unit="adu")},
+    )
+    expected_combined_error = math.sqrt(50.0**2 + 30.0**2)
+    assert with_uncertain_expectation.photometric.value == abs(1000.0 - 500.0) / expected_combined_error
+    assert with_uncertain_expectation.photometric.value < abs(1000.0 - 500.0) / 50.0
 
 
 def test_photometric_anomaly_never_reports_flux_over_error_as_the_anomaly():

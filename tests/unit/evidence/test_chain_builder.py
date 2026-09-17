@@ -61,8 +61,8 @@ def test_real_catalog_non_match_supports_candidacy_but_unreachable_query_does_no
 
 def test_only_anomaly_dimensions_above_threshold_become_evidence_items():
     chars = _characterization(band_flux={"HA": _q(1000.0, error=50.0, unit="adu")})
-    below_threshold = build_anomaly_vector(detection_id="D0", characterization=chars, expected_band_flux={"HA": 950.0})  # z=1
-    above_threshold = build_anomaly_vector(detection_id="D0", characterization=chars, expected_band_flux={"HA": 500.0})  # z=10
+    below_threshold = build_anomaly_vector(detection_id="D0", characterization=chars, expected_band_flux={"HA": _q(950.0, unit="adu")})  # z=1
+    above_threshold = build_anomaly_vector(detection_id="D0", characterization=chars, expected_band_flux={"HA": _q(500.0, unit="adu")})  # z=10
 
     chain_below = build_evidence_chain(detection_id="D0", anomaly=below_threshold, anomaly_sigma_threshold=4.0)
     assert chain_below.items == ()

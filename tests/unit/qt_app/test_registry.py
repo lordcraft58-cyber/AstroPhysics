@@ -211,9 +211,14 @@ def test_zeropoint_process_fits_real_zeropoint_against_mocked_gaia(monkeypatch):
     assert len(result.log_lines) == 2
 
     assert result.table is not None
-    assert result.table.columns == ("star", "x", "y", "ra", "dec", "instrumental_mag", "catalog_mag", "separation")
+    assert result.table.columns == ("star", "x", "y", "ra", "dec", "instrumental_mag", "catalog_mag", "separation", "usada")
     assert len(result.table.rows) == 2
     assert result.table.rows[0][0] == 1  # numeración de estrella desde 1
+    # Ambas estrellas son consistentes con el mismo punto cero real -- el
+    # sigma-clip de `fit_zeropoint` no debería rechazar ninguna, y esa
+    # información real (por índice, antes perdida) ahora llega a la tabla.
+    assert result.table.rows[0][-1] == "sí"
+    assert result.table.rows[1][-1] == "sí"
 
 
 def test_zeropoint_process_rejects_when_no_star_matches_gaia(monkeypatch):

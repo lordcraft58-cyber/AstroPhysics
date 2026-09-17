@@ -32,6 +32,30 @@ def test_fit_zeropoint_rejects_outlier_star():
     assert fit.n_stars_used == 6 - fit.n_stars_rejected
 
 
+def test_fit_zeropoint_used_mask_identifies_the_real_outlier_by_index():
+    true_zeropoint = 25.0
+    instrumental = [-10.0, -9.5, -8.8, -11.2, -9.9, -10.5]
+    catalog = [m + true_zeropoint for m in instrumental]
+    catalog[3] += 3.0  # misma estrella deliberadamente inconsistente
+
+    fit = fit_zeropoint(instrumental, catalog, sigma_clip=3.0)
+
+    assert len(fit.used_mask) == len(instrumental)
+    assert sum(fit.used_mask) == fit.n_stars_used
+    assert fit.used_mask[3] is False
+    assert all(fit.used_mask[i] for i in (0, 1, 2, 4, 5))
+
+
+def test_fit_zeropoint_used_mask_is_all_true_without_outliers():
+    true_zeropoint = 24.7
+    instrumental = [-10.0, -9.5, -8.8, -11.2, -9.9]
+    catalog = [m + true_zeropoint for m in instrumental]
+
+    fit = fit_zeropoint(instrumental, catalog)
+
+    assert fit.used_mask == (True, True, True, True, True)
+
+
 def test_fit_zeropoint_single_star_has_zero_uncertainty():
     fit = fit_zeropoint([-10.0], [15.0])
 

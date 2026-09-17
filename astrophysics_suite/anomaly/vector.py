@@ -24,6 +24,8 @@ Las siete dimensiones y de dónde sale cada una:
 """
 from __future__ import annotations
 
+import math
+
 from astrophysics_suite.core.enums import ValueKind
 from astrophysics_suite.core.quantity import Quantity
 from astrophysics_suite.models.anomaly import AnomalyVector
@@ -105,7 +107,7 @@ def _spectral_anomaly(
 
 
 def _photometric_anomaly(
-    characterization: CharacterizationResult, expected_band_flux: dict[str, float] | None,
+    characterization: CharacterizationResult, expected_band_flux: dict[str, Quantity] | None,
 ) -> Quantity:
     """Cuánto se aparta el flujo MEDIDO del ESPERADO (p. ej. el que
     correspondería a la magnitud de su contrapartida de catálogo).
@@ -130,15 +132,22 @@ def _photometric_anomaly(
             ),
         )
 
-    best: tuple[float, str, Quantity, float] | None = None
+    best: tuple[float, str, Quantity, Quantity] | None = None
     for band, quantity in fluxes.items():
         expected = expected_band_flux.get(band)
-        if expected is None:
+        if expected is None or not expected.is_available or expected.value is None:
             continue
-        error = float(quantity.error) if quantity.error is not None and quantity.error > 0 else None
-        if error is None:
+        measured_error = float(quantity.error) if quantity.error is not None and quantity.error > 0 else None
+        if measured_error is None:
             continue
-        z = abs(float(quantity.value) - expected) / error
+        expected_error = float(expected.error) if expected.error is not None and expected.error > 0 else 0.0
+        # La incertidumbre de `expected` (p. ej. la del punto cero
+        # fotométrico que la produjo) se combina en cuadratura con la
+        # medida -- antes se ignoraba por completo, lo que podía inflar
+        # la significancia declarada frente a una expectativa que
+        # también tiene su propio margen de error real.
+        combined_error = math.sqrt(measured_error**2 + expected_error**2)
+        z = abs(float(quantity.value) - float(expected.value)) / combined_error
         if best is None or z > best[0]:
             best = (z, band, quantity, expected)
 
@@ -150,7 +159,10 @@ def _photometric_anomaly(
     z, band, quantity, expected = best
     return Quantity(
         value=z, error=None, unit="sigma", kind=ValueKind.OBSERVED, method="flux_versus_expected",
-        notes=(f"banda {band}: medido {quantity.value:.4g} ± {quantity.error:.4g} {quantity.unit}, esperado {expected:.4g}",),
+        notes=(
+            f"banda {band}: medido {quantity.value:.4g} ± {quantity.error:.4g} {quantity.unit}, "
+            f"esperado {expected.value:.4g} ± {(expected.error or 0.0):.4g} {expected.unit}",
+        ),
     )
 
 
@@ -202,7 +214,7 @@ def build_anomaly_vector(
     field_median_fwhm_px: float | None = None,
     field_fwhm_scatter_px: float | None = None,
     spatial: Quantity | None = None,
-    expected_band_flux: dict[str, float] | None = None,
+    expected_band_flux: dict[str, Quantity] | None = None,
     expected_band_ratios: dict[str, float] | None = None,
 ) -> AnomalyVector:
     """Ensambla las siete dimensiones. Las que no se pudieron calcular

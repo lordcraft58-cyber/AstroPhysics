@@ -678,6 +678,13 @@ def test_run_generic_discovery_activates_photometric_anomaly_via_real_field_zero
     assert anomalous_z > max(normal_zs), (anomalous_z, normal_zs)
     assert anomalous_z > 5.0, anomalous_z
 
+    # La incertidumbre real del punto cero ajustado (nunca descartada,
+    # ver anomaly/vector.py::_photometric_anomaly) queda anotada en la
+    # nota de la propia significancia -- confirma que la propagación
+    # llegó de verdad hasta el resultado final, no solo que el pipeline
+    # no lanzó una excepción.
+    assert "esperado" in anomalous_candidate.anomaly_evidence.photometric.notes[0]
+
     # Serialización real sin pérdida del candidato anómalo.
     from astrophysics_suite.models.candidate import Candidate
 

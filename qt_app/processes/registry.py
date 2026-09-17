@@ -250,14 +250,14 @@ def _run_photometric_zeropoint(data: np.ndarray, params: dict) -> ProcessResult:
         f"Punto cero = {fit.zeropoint_mag:.3f} ± {fit.zeropoint_uncertainty_mag:.3f} mag  ·  "
         f"{fit.n_stars_used} estrella(s) usadas, {fit.n_stars_rejected} rechazada(s)  ·  RMS={fit.rms_residual_mag:.3f} mag"
     )
-    # tabla de las estrellas emparejadas con éxito contra Gaia (antes del
-    # rechazo robusto final de fit_zeropoint, que no expone qué índice
-    # original rechazó) -- sigue siendo un export real y útil: las
-    # medidas de entrada al ajuste, no un resultado inventado.
+    # tabla de las estrellas emparejadas con éxito contra Gaia, con la
+    # columna "usada" real de `fit.used_mask` (misma longitud y orden
+    # que `instrumental_mags`/`catalog_mags`) -- ya distingue cuáles
+    # sobrevivieron el sigma-clip final, no solo cuántas.
     table = Table(
-        columns=("star", "x", "y", "ra", "dec", "instrumental_mag", "catalog_mag", "separation"),
-        units=("", "px", "px", "deg", "deg", "mag", "mag", "arcsec"),
-        rows=tuple(table_rows),
+        columns=("star", "x", "y", "ra", "dec", "instrumental_mag", "catalog_mag", "separation", "usada"),
+        units=("", "px", "px", "deg", "deg", "mag", "mag", "arcsec", ""),
+        rows=tuple((*row, "sí" if used else "no") for row, used in zip(table_rows, fit.used_mask)),
     )
     return ProcessResult(output_data=None, summary=summary, log_lines=tuple(log_lines), table=table)
 

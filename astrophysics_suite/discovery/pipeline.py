@@ -55,7 +55,7 @@ from astrophysics_suite.models.characterization import CharacterizationResult
 from astrophysics_suite.models.detection import Detection
 from astrophysics_suite.models.observation import Observation
 from astrophysics_suite.models.temporal import MotionEvidence, TemporalEvidence
-from astrophysics_suite.photometry.calibration import fit_zeropoint
+from astrophysics_suite.photometry.calibration import ZeropointFit, fit_zeropoint
 from astrophysics_suite.photometry.quality import characterize_point_source
 from astrophysics_suite.temporal.motion import analyze_motion
 from astrophysics_suite.temporal.variability import analyze_variability
@@ -648,12 +648,11 @@ def run_generic_discovery(
     # deja sin ajustar -- la dimensión fotométrica de esas trazas
     # quedará NOT_AVAILABLE con el motivo real, no un ajuste sobre dos
     # estrellas disfrazado de calibración.
-    zeropoint_mag_by_image: dict[int, float] = {}
+    zeropoint_fit_by_image: dict[int, ZeropointFit] = {}
     for image_index, samples in zeropoint_samples_by_image.items():
         if len(samples) < _MIN_ZEROPOINT_STARS:
             continue
-        fit = fit_zeropoint([s[0] for s in samples], [s[1] for s in samples])
-        zeropoint_mag_by_image[image_index] = fit.zeropoint_mag
+        zeropoint_fit_by_image[image_index] = fit_zeropoint([s[0] for s in samples], [s[1] for s in samples])
 
     # --- Pase C: vector de anomalía (con expectativa fotométrica real
     # cuando la imagen tiene punto cero ajustado y la traza tiene match
@@ -663,16 +662,31 @@ def run_generic_discovery(
         reference_detection = ctx.reference_detection
         reference = ctx.reference
 
-        expected_band_flux: dict[str, float] = {}
-        zeropoint_mag = zeropoint_mag_by_image.get(reference.image_index)
+        expected_band_flux: dict[str, Quantity] = {}
+        zeropoint_fit = zeropoint_fit_by_image.get(reference.image_index)
         if (
-            zeropoint_mag is not None and ctx.catalog_matches
+            zeropoint_fit is not None and ctx.catalog_matches
             and ctx.catalog_matches[0].magnitude is not None and ctx.catalog_matches[0].magnitude.is_available
         ):
-            expected_instrumental_mag = float(ctx.catalog_matches[0].magnitude.value) - zeropoint_mag
+            catalog_magnitude = ctx.catalog_matches[0].magnitude
+            expected_instrumental_mag = float(catalog_magnitude.value) - zeropoint_fit.zeropoint_mag
             expected_flux = 10.0 ** (-0.4 * expected_instrumental_mag)
+            # Incertidumbre del punto cero (siempre real, aunque sea 0.0
+            # con una sola estrella usada) más la de la magnitud de
+            # catálogo (cuando el catálogo la trae) en cuadratura -- antes
+            # se descartaba por completo, lo que subestimaba la
+            # incertidumbre real de `expected_flux` y podía inflar la
+            # significancia de `_photometric_anomaly`.
+            catalog_error = float(catalog_magnitude.error) if catalog_magnitude.error is not None else 0.0
+            expected_mag_error = math.sqrt(zeropoint_fit.zeropoint_uncertainty_mag ** 2 + catalog_error ** 2)
+            expected_flux_error = 0.4 * math.log(10.0) * expected_flux * expected_mag_error if expected_mag_error > 0 else None
+            expected_flux_quantity = Quantity(
+                value=expected_flux, error=expected_flux_error, unit="adu", kind=ValueKind.MODEL_INFERENCE,
+                method="zeropoint_calibration",
+                notes=(f"punto cero {zeropoint_fit.zeropoint_mag:.4f} ± {zeropoint_fit.zeropoint_uncertainty_mag:.4f} mag",),
+            )
             for band in reference_detection.bands:
-                expected_band_flux[band] = expected_flux
+                expected_band_flux[band] = expected_flux_quantity
 
         anomaly = build_anomaly_vector(
             detection_id=reference_detection.detection_id,
