@@ -111,3 +111,26 @@ def test_roundtrip():
     track = _track([(10.0, 41.0), (10.0, 41.0), (10.0, 41.0)])
     result = analyze_motion(track, detection_id="D0")
     assert MotionEvidence.from_dict(result.to_dict()) == result
+
+
+def test_provenance_carries_the_real_pipeline_version_and_engine():
+    # Antes de este cierre, `analyze_motion` recibía `pipeline_version`
+    # y lo descartaba explícitamente (`del pipeline_version`) porque
+    # `MotionEvidence` no tenía dónde ponerlo -- ahora debe llegar real
+    # hasta el resultado.
+    track = _track([(10.0, 41.0), (10.0, 41.0), (10.0, 41.0)])
+    result = analyze_motion(track, detection_id="D0", pipeline_version="v9.9.9-test")
+    assert result.provenance.pipeline_version == "v9.9.9-test"
+    assert result.provenance.engine == "temporal.motion"
+    assert result.provenance.produced_at is not None
+
+
+def test_provenance_is_present_even_when_the_result_is_not_available():
+    # "No disponible" es igual de real que una medida positiva -- también
+    # debe llevar procedencia, nunca solo las medidas que "salieron bien".
+    epochs = [EpochDetection(0, _T0, "L", "p", _detection(0, 10.0, 41.0))]
+    tracking = group_detections_into_tracks(epochs, observation_id="OBS")
+    result = analyze_motion(tracking.tracks[0], detection_id="D0", pipeline_version="v1")
+    assert not result.pm_total.is_available
+    assert result.provenance.pipeline_version == "v1"
+    assert result.provenance.engine == "temporal.motion"

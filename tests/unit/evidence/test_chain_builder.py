@@ -89,13 +89,13 @@ def test_physical_tension_becomes_evidence_with_its_assumptions_attached():
 
 
 def test_temporal_and_motion_only_count_when_the_engine_concluded_something_real():
-    inactive_temporal = TemporalEvidence.create(detection_id="D0", n_epochs=1, variable_candidate=False)
+    inactive_temporal = TemporalEvidence.create(detection_id="D0", n_epochs=1, provenance=_PROV, variable_candidate=False)
     active_temporal = TemporalEvidence.create(
-        detection_id="D0", n_epochs=5, variable_candidate=True, brightness_change=_q(2.0, error=0.2, unit="value/epoch"),
+        detection_id="D0", n_epochs=5, provenance=_PROV, variable_candidate=True, brightness_change=_q(2.0, error=0.2, unit="value/epoch"),
     )
-    still_motion = MotionEvidence.create(detection_id="D0", n_epochs_used=3, moving_source_candidate=False)
+    still_motion = MotionEvidence.create(detection_id="D0", n_epochs_used=3, provenance=_PROV, moving_source_candidate=False)
     moving = MotionEvidence.create(
-        detection_id="D0", n_epochs_used=3, moving_source_candidate=True, pm_total=_q(24.0, error=3.6, unit="arcsec/hour"),
+        detection_id="D0", n_epochs_used=3, provenance=_PROV, moving_source_candidate=True, pm_total=_q(24.0, error=3.6, unit="arcsec/hour"),
     )
 
     quiet = build_evidence_chain(detection_id="D0", temporal=inactive_temporal, motion=still_motion)
@@ -119,10 +119,10 @@ def test_flagged_artifact_checks_count_as_opposing_evidence_never_hidden():
 
 def test_priority_index_counts_distinct_supporting_engines_minus_artifact_opposition():
     active_temporal = TemporalEvidence.create(
-        detection_id="D0", n_epochs=5, variable_candidate=True, brightness_change=_q(2.0, error=0.2, unit="value/epoch"),
+        detection_id="D0", n_epochs=5, provenance=_PROV, variable_candidate=True, brightness_change=_q(2.0, error=0.2, unit="value/epoch"),
     )
     moving = MotionEvidence.create(
-        detection_id="D0", n_epochs_used=3, moving_source_candidate=True, pm_total=_q(24.0, error=3.6, unit="arcsec/hour"),
+        detection_id="D0", n_epochs_used=3, provenance=_PROV, moving_source_candidate=True, pm_total=_q(24.0, error=3.6, unit="arcsec/hour"),
     )
     flagged = ArtifactCheck(kind=ArtifactKind.COSMIC_RAY, flagged=True, confidence=_q(0.9), notes="test")
 
@@ -140,7 +140,7 @@ def test_priority_index_never_goes_below_zero():
 
 def test_scientific_candidate_gate_needs_the_configured_minimum_independent_evidence():
     active_temporal = TemporalEvidence.create(
-        detection_id="D0", n_epochs=5, variable_candidate=True, brightness_change=_q(2.0, error=0.2, unit="value/epoch"),
+        detection_id="D0", n_epochs=5, provenance=_PROV, variable_candidate=True, brightness_change=_q(2.0, error=0.2, unit="value/epoch"),
     )
     chain = build_evidence_chain(detection_id="D0", temporal=active_temporal, minimum_independent_evidence=2)
     assert chain.independent_evidence_count == 1

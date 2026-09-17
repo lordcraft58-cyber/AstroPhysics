@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from astrophysics_suite.core.provenance import Provenance
 from astrophysics_suite.core.quantity import Quantity
 
 SCHEMA_VERSION = 1
@@ -32,6 +33,7 @@ class TemporalEvidence:
     schema_version: int
     detection_id: str
     n_epochs: int
+    provenance: Provenance
     appearance_detected: bool = False
     disappearance_detected: bool = False
     brightness_change: Quantity | None = None
@@ -41,14 +43,15 @@ class TemporalEvidence:
     notes: tuple[str, ...] = ()
 
     @classmethod
-    def create(cls, *, detection_id: str, n_epochs: int, **kwargs) -> "TemporalEvidence":
-        return cls(schema_version=SCHEMA_VERSION, detection_id=detection_id, n_epochs=n_epochs, **kwargs)
+    def create(cls, *, detection_id: str, n_epochs: int, provenance: Provenance, **kwargs) -> "TemporalEvidence":
+        return cls(schema_version=SCHEMA_VERSION, detection_id=detection_id, n_epochs=n_epochs, provenance=provenance, **kwargs)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,
             "detection_id": self.detection_id,
             "n_epochs": self.n_epochs,
+            "provenance": self.provenance.to_dict(),
             "appearance_detected": self.appearance_detected,
             "disappearance_detected": self.disappearance_detected,
             "brightness_change": _q(self.brightness_change),
@@ -64,6 +67,7 @@ class TemporalEvidence:
             schema_version=data.get("schema_version", SCHEMA_VERSION),
             detection_id=data["detection_id"],
             n_epochs=data["n_epochs"],
+            provenance=Provenance.from_dict(data["provenance"]),
             appearance_detected=bool(data.get("appearance_detected", False)),
             disappearance_detected=bool(data.get("disappearance_detected", False)),
             brightness_change=_qf(data, "brightness_change"),
@@ -79,20 +83,22 @@ class MotionEvidence:
     schema_version: int
     detection_id: str
     n_epochs_used: int
+    provenance: Provenance
     pm_total: Quantity | None = None
     pm_ra: Quantity | None = None
     pm_dec: Quantity | None = None
     moving_source_candidate: bool = False
 
     @classmethod
-    def create(cls, *, detection_id: str, n_epochs_used: int, **kwargs) -> "MotionEvidence":
-        return cls(schema_version=SCHEMA_VERSION, detection_id=detection_id, n_epochs_used=n_epochs_used, **kwargs)
+    def create(cls, *, detection_id: str, n_epochs_used: int, provenance: Provenance, **kwargs) -> "MotionEvidence":
+        return cls(schema_version=SCHEMA_VERSION, detection_id=detection_id, n_epochs_used=n_epochs_used, provenance=provenance, **kwargs)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,
             "detection_id": self.detection_id,
             "n_epochs_used": self.n_epochs_used,
+            "provenance": self.provenance.to_dict(),
             "pm_total": _q(self.pm_total),
             "pm_ra": _q(self.pm_ra),
             "pm_dec": _q(self.pm_dec),
@@ -105,6 +111,7 @@ class MotionEvidence:
             schema_version=data.get("schema_version", SCHEMA_VERSION),
             detection_id=data["detection_id"],
             n_epochs_used=data["n_epochs_used"],
+            provenance=Provenance.from_dict(data["provenance"]),
             pm_total=_qf(data, "pm_total"),
             pm_ra=_qf(data, "pm_ra"),
             pm_dec=_qf(data, "pm_dec"),

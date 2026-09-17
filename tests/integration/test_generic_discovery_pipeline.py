@@ -474,7 +474,9 @@ def test_run_generic_discovery_groups_multi_epoch_detections_into_one_candidate_
         image_refs.append((str(path), "L"))
 
     observation, loaded = build_observation(image_refs, observation_id="OBS-MULTI-0001", target_name="Campo multiépoca")
-    candidates, summary = run_generic_discovery(observation, loaded, threshold_sigma=5.0, match_radius_arcsec=3.0)
+    candidates, summary = run_generic_discovery(
+        observation, loaded, threshold_sigma=5.0, match_radius_arcsec=3.0, pipeline_version="v-multi-epoch-test",
+    )
 
     assert summary.n_images == 3
     assert summary.n_candidates == 2, [(c.candidate_id, c.position.ra_deg, c.position.dec_deg) for c in candidates]
@@ -488,6 +490,13 @@ def test_run_generic_discovery_groups_multi_epoch_detections_into_one_candidate_
     assert moving_candidate.motion_evidence.pm_total.value > 1.0  # "/h, muy por encima del jitter de centroide
     # La significancia real viene del residuo del ajuste, nunca de un valor fijo.
     assert "σ" in moving_candidate.motion_evidence.pm_total.notes[-1]
+    # Procedencia real de punta a punta -- antes de este cierre,
+    # MotionEvidence/TemporalEvidence no tenían dónde llevarla.
+    assert moving_candidate.motion_evidence.provenance.engine == "temporal.motion"
+    assert moving_candidate.motion_evidence.provenance.pipeline_version == "v-multi-epoch-test"
+    if moving_candidate.temporal_evidence is not None:
+        assert moving_candidate.temporal_evidence.provenance.engine == "temporal.variability"
+        assert moving_candidate.temporal_evidence.provenance.pipeline_version == "v-multi-epoch-test"
     assert moving_candidate.evidence_chain is not None
     categories = {item.category for item in moving_candidate.evidence_chain.items}
     assert "motion_evidence" in categories

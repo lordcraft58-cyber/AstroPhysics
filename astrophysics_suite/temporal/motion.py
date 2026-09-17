@@ -28,6 +28,7 @@ import numpy as np
 
 from astrophysics_suite.core.enums import ValueKind
 
+from astrophysics_suite.core.provenance import Provenance
 from astrophysics_suite.core.quantity import Quantity
 from astrophysics_suite.discovery.source_tracks import SourceTrack
 from astrophysics_suite.models.temporal import MotionEvidence
@@ -59,17 +60,14 @@ def analyze_motion(
     Devuelve siempre un `MotionEvidence`: cuando no se puede medir, con
     las magnitudes en NO DISPONIBLE y el motivo concreto, nunca con
     ceros que parezcan una medida."""
-    # `MotionEvidence` no tiene todavía campo de procedencia (ver la fase de
-    # provenance): mientras tanto, el método y las notas de cada `Quantity`
-    # llevan el motor y las condiciones reales del ajuste, así que ningún
-    # número sale de aquí sin poder decir de dónde viene.
-    del pipeline_version
+    provenance = Provenance.now(pipeline_version=pipeline_version, engine=ENGINE_NAME, engine_version=ENGINE_VERSION)
     positions = track.sky_positions()
 
     def unavailable(reason: str) -> MotionEvidence:
         return MotionEvidence.create(
             detection_id=detection_id,
             n_epochs_used=len(positions),
+            provenance=provenance,
             pm_ra=Quantity.not_available(unit="arcsec/hour", method=ENGINE_NAME, reference=reason),
             pm_dec=Quantity.not_available(unit="arcsec/hour", method=ENGINE_NAME, reference=reason),
             pm_total=Quantity.not_available(unit="arcsec/hour", method=ENGINE_NAME, reference=reason),
@@ -152,6 +150,7 @@ def analyze_motion(
         return MotionEvidence.create(
             detection_id=detection_id,
             n_epochs_used=n_epochs,
+            provenance=provenance,
             pm_ra=Quantity(value=float(slope_x), error=None, unit="arcsec/hour", kind=ValueKind.OBSERVED,
                            method="linear_trajectory_fit", notes=notes),
             pm_dec=Quantity(value=float(slope_y), error=None, unit="arcsec/hour", kind=ValueKind.OBSERVED,
@@ -172,6 +171,7 @@ def analyze_motion(
     return MotionEvidence.create(
         detection_id=detection_id,
         n_epochs_used=n_epochs,
+        provenance=provenance,
         pm_ra=Quantity(value=float(slope_x), error=slope_error, unit="arcsec/hour", kind=ValueKind.OBSERVED,
                        method="linear_trajectory_fit", notes=notes),
         pm_dec=Quantity(value=float(slope_y), error=slope_error, unit="arcsec/hour", kind=ValueKind.OBSERVED,

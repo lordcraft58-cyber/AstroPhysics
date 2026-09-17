@@ -607,7 +607,7 @@ def run_generic_discovery(
         if track.n_epochs >= 2:
             brightness_epochs = _brightness_epochs(track, processed_by_id)
             if len(brightness_epochs) >= 2:
-                temporal = analyze_variability(brightness_epochs, detection_id=reference_detection.detection_id)
+                temporal = analyze_variability(brightness_epochs, detection_id=reference_detection.detection_id, pipeline_version=pipeline_version)
             motion = analyze_motion(track, detection_id=reference_detection.detection_id, pipeline_version=pipeline_version)
 
         identification_state, catalog_matches, catalog_non_matches = identify_detection(

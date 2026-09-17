@@ -96,6 +96,7 @@ def test_morphological_anomaly_needs_a_field_reference():
 def test_temporal_dimension_reflects_variability_significance():
     variable = TemporalEvidence.create(
         detection_id="D0", n_epochs=5, variable_candidate=True,
+        provenance=Provenance.now(pipeline_version="test", engine="temporal.variability", engine_version="1.0"),
         brightness_change=_q(2.0, error=0.25, unit="value/epoch"),
     )
     result = build_anomaly_vector(detection_id="D0", characterization=_characterization(), temporal=variable)
@@ -112,6 +113,7 @@ def test_temporal_dimension_not_available_without_a_temporal_engine_run():
 def test_astrometric_dimension_reflects_motion_significance():
     moving = MotionEvidence.create(
         detection_id="D0", n_epochs_used=3, moving_source_candidate=True,
+        provenance=Provenance.now(pipeline_version="test", engine="temporal.motion", engine_version="1.0"),
         pm_total=_q(24.0, error=3.6, unit="arcsec/hour"),
     )
     result = build_anomaly_vector(detection_id="D0", characterization=_characterization(), motion=moving)
