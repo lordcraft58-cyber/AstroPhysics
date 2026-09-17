@@ -12,3 +12,5 @@ matplotlib>=3.8
 openpyxl>=3.1
 pytest>=8.0
 astroquery>=0.4  # Gaia/SIMBAD -- ver astrophysics_suite/catalogs/
+lz4>=4.0  # lectura XISF comprimida (lz4/lz4hc) -- ver astrophysics_suite/io/xisf_reader.py (BSD, no GPL)
+zstandard>=0.20  # lectura XISF comprimida (zstd) -- BSD, no GPL

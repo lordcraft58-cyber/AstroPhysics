@@ -16,3 +16,5 @@ matplotlib>=3.8
 openpyxl>=3.1
 astroquery>=0.4
 PySide6>=6.5
+lz4>=4.0  # descompresión de bloques XISF con codec lz4/lz4hc -- ver astrophysics_suite/io/xisf_reader.py (BSD, no GPL)
+zstandard>=0.20  # descompresión de bloques XISF con codec zstd -- BSD, no GPL

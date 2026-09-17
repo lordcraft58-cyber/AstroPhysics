@@ -162,7 +162,7 @@ class BuildMasterFrameDialog(QDialog):
             self._output_path_edited_by_user = True
 
     def _add_files(self) -> None:
-        paths, _ = QFileDialog.getOpenFileNames(self, "Seleccionar fotogramas", "", "FITS (*.fits *.fit *.fts);;Todos los archivos (*.*)")
+        paths, _ = QFileDialog.getOpenFileNames(self, "Seleccionar fotogramas", "", "FITS/XISF (*.fits *.fit *.fts *.xisf);;FITS (*.fits *.fit *.fts);;XISF (*.xisf);;Todos los archivos (*.*)")
         for path in paths:
             self.file_list.addItem(Path(path).name)
             self.file_list.item(self.file_list.count() - 1).setData(Qt.ItemDataRole.UserRole, path)

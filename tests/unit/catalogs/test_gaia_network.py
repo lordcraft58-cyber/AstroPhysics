@@ -50,3 +50,33 @@ def test_identify_detection_end_to_end():
     state, matches, non_matches = identify_detection(detection, match_radius_arcsec=30.0)
     assert state in set(IdentificationState)
     assert bool(matches) != bool(non_matches), "debe haber exactamente match o no-match, nunca ambos ni ninguno"
+
+
+def test_identify_detection_reaches_discovery_review_not_unmatched_when_gaia_really_unreachable():
+    """Confirma contra la condición de red REAL de este entorno (Gaia
+    bloqueada por la política de salida del sandbox) que
+    `identify_detection` degrada a DISCOVERY_REVIEW, nunca a UNMATCHED --
+    bug real encontrado probando con FITS de M 31 reales (ver
+    tests/unit/catalogs/test_gaia.py y
+    docs/audit/34-PRUEBAS-CON-FITS-REALES.md). Si el entorno donde corre
+    esto SÍ tiene red real hacia Gaia, esta prueba se salta -- no es su
+    propósito verificar el camino feliz (ya cubierto por
+    test_identify_detection_end_to_end)."""
+    detection = Detection.create(
+        detection_id="DET-0002",
+        observation_id="OBS-0001",
+        position=SkyPosition(x_px=1.0, y_px=1.0, ra_deg=10.9131301993, dec_deg=41.2120838282),  # M 31, campo real
+        morphology=MorphologySummary(morphology_class=MorphologyClass.POINT_SOURCE, area_px=10.0, elongation=1.0, compactness=0.5),
+        bands=("L",),
+        peak_snr=10.0,
+        method="test",
+        provenance=Provenance.now(pipeline_version="test", engine="test", engine_version="1.0"),
+    )
+    probe_rows = query_gaia_neighbors(10.9131301993, 41.2120838282, radius_arcsec=60.0, mag_limit=20.0, max_rows=1)
+    if probe_rows:
+        pytest.skip("Gaia respondió de verdad en este entorno -- esta prueba solo cubre el camino sin red")
+
+    state, matches, non_matches = identify_detection(detection, match_radius_arcsec=3.0)
+    assert state is IdentificationState.DISCOVERY_REVIEW
+    assert matches == ()
+    assert non_matches[0].reason.startswith("Gaia no disponible")

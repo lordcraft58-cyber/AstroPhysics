@@ -8,9 +8,17 @@ reescribir la lectura de FITS desde cero. `LoadedImage.legacy_image`
 expone el objeto `FitsImage` heredado para que otros motores en
 migración (p. ej. `detection/point_sources.py`) puedan operar sobre los
 píxeles reales sin releer el archivo ni duplicar la lógica de lectura.
-"""
+
+Soporte XISF (formato nativo de PixInsight, ver
+`astrophysics_suite.io.xisf_reader` -- lector propio, nunca envuelve la
+librería GPLv3 de PyPI): un XISF real se decodifica con ese lector y se
+vuelca a un FITS temporario real en disco (con la misma cabecera, vía
+`FITSKeyword` -> tarjetas FITS) para reutilizar el mismo `load_fits`
+heredado -- WCS, manejo de cubos, escala de píxel, todo probado ya --
+en vez de duplicar esa lógica para un segundo formato de entrada."""
 from __future__ import annotations
 
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,9 +26,31 @@ from typing import Any
 
 from legacy.AstroPhysicsSuite_v57_3_COMMERCIAL import AmbiguousCubeError, load_fits, sha256_file
 
+from astrophysics_suite.io.xisf_reader import is_xisf_path, probe_xisf_shape, read_xisf_image
 from astrophysics_suite.models.observation import ImageRef, Observation
 
 __all__ = ["AmbiguousCubeError", "LoadedImage", "build_observation", "load_image", "probe_fits_shape"]
+
+
+def _xisf_to_temp_fits(path: str) -> str:
+    """Decodifica un XISF real y lo vuelca a un FITS temporal real en
+    disco -- se borra el original nunca, solo se lee; el temporal lo
+    limpia el sistema operativo (`tempfile`, `delete=False` porque
+    `load_fits` necesita reabrir la ruta, no un descriptor ya abierto)."""
+    from astropy.io import fits as _fits
+
+    data, header_dict = read_xisf_image(str(path))
+    header = _fits.Header()
+    for key, value in header_dict.items():
+        try:
+            header[key] = value
+        except (ValueError, KeyError):
+            continue  # FITSKeyword no representable como tarjeta FITS real (nombre inválido, etc.) -- se ignora, nunca rompe la carga
+    hdu = _fits.PrimaryHDU(data=data, header=header)
+    tmp = tempfile.NamedTemporaryFile(suffix=".fits", delete=False)
+    tmp.close()
+    hdu.writeto(tmp.name, overwrite=True)
+    return tmp.name
 
 
 @dataclass(frozen=True)
@@ -45,8 +75,23 @@ def load_image(path: str, *, band: str, role: str = "science", plane: int | tupl
     captura `AmbiguousCubeError` en el primer intento sin `plane`, pide el
     índice al usuario, y reintenta con `plane` explícito -- nunca elige
     un plano por su cuenta.
+
+    Un `.xisf` real (formato nativo de PixInsight, detectado por
+    extensión o por la firma real del archivo, nunca solo por el nombre)
+    se decodifica con el lector propio (`xisf_reader`, ver su docstring
+    para lo que cubre) y se reutiliza el mismo `load_fits` heredado a
+    través de un FITS temporal real -- mismo manejo de WCS/cubos que
+    cualquier FITS. `ImageRef.sha256` siempre hashea el archivo XISF
+    original, nunca el temporal interno.
     """
-    legacy_image = load_fits(path, plane=plane)
+    if is_xisf_path(path):
+        temp_fits_path = _xisf_to_temp_fits(path)
+        try:
+            legacy_image = load_fits(temp_fits_path, plane=plane)
+        finally:
+            Path(temp_fits_path).unlink(missing_ok=True)
+    else:
+        legacy_image = load_fits(path, plane=plane)
     image_ref = ImageRef(
         path=str(Path(path).resolve()),
         band=band,
@@ -64,6 +109,9 @@ def probe_fits_shape(path: str, *, hdu: int | None = None) -> tuple[int, ...]:
     pueda preguntar al usuario qué plano de un cubo 3D/4D quiere ver
     (`AmbiguousCubeError`) sin tener que parsear la forma del propio
     mensaje de la excepción."""
+    if is_xisf_path(path):
+        return probe_xisf_shape(str(path))
+
     from astropy.io import fits
 
     with fits.open(str(path), memmap=True, lazy_load_hdus=True) as hdul:

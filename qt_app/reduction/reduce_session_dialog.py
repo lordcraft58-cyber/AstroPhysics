@@ -245,7 +245,7 @@ class ReduceSessionDialog(QDialog):
             self.illumination_check.setChecked(False)
 
     def _add_files(self) -> None:
-        paths, _ = QFileDialog.getOpenFileNames(self, "Seleccionar LIGHTS", "", "FITS (*.fits *.fit *.fts);;Todos los archivos (*.*)")
+        paths, _ = QFileDialog.getOpenFileNames(self, "Seleccionar LIGHTS", "", "FITS/XISF (*.fits *.fit *.fts *.xisf);;FITS (*.fits *.fit *.fts);;XISF (*.xisf);;Todos los archivos (*.*)")
         self._add_paths_to_list(paths)
 
     def _add_paths_to_list(self, paths: list[str]) -> None:
@@ -261,10 +261,10 @@ class ReduceSessionDialog(QDialog):
         if not directory:
             return
         fits_paths = sorted(
-            str(p) for p in Path(directory).iterdir() if p.suffix.lower() in (".fits", ".fit", ".fts") and p.is_file()
+            str(p) for p in Path(directory).iterdir() if p.suffix.lower() in (".fits", ".fit", ".fts", ".xisf") and p.is_file()
         )
         if not fits_paths:
-            self.status_label.setText("La carpeta no contiene ningún FITS.")
+            self.status_label.setText("La carpeta no contiene ningún FITS/XISF.")
             return
 
         from astrophysics_suite.io.fits_header_reader import read_fits_header

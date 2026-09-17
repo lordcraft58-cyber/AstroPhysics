@@ -164,10 +164,18 @@ def test_discovery_job_does_not_crash_when_gaia_service_call_raises(tmp_path, mo
     una lista vacía) en el mismo punto donde ya lo atrapa el código
     heredado (`crossmatch_gaia_safe`, con `except Exception` real) y
     confirma que Discovery sigue completando de extremo a extremo,
-    degradando a UNMATCHED -- no un `ConnectionError` inventado
+    degradando a DISCOVERY_REVIEW -- no un `ConnectionError` inventado
     directamente en `query_gaia_neighbors`, que rompería un contrato que
     esa función no tiene (siempre delega el manejo de errores en
-    `crossmatch_gaia_safe`, nunca lanza ella misma)."""
+    `crossmatch_gaia_safe`, nunca lanza ella misma).
+
+    DISCOVERY_REVIEW y no UNMATCHED: bug real encontrado al probar con
+    FITS reales de M 31 en un entorno sin red hacia Gaia -- los 141
+    candidatos reales salían UNMATCHED (\"sin fuentes Gaia en el radio\"),
+    una afirmación falsa porque Gaia nunca llegó a responder. Declarar
+    UNMATCHED sin haber podido consultar el catálogo confunde \"se
+    consultó y no había nada cerca\" con \"no se pudo comprobar\" -- la
+    ausencia de respuesta nunca debe leerse como ausencia de fuente."""
     astroquery_gaia = pytest.importorskip("astroquery.gaia", reason="astroquery no instalado en este entorno")
 
     shape = (80, 80)
@@ -192,7 +200,9 @@ def test_discovery_job_does_not_crash_when_gaia_service_call_raises(tmp_path, mo
 
     from astrophysics_suite.core.enums import IdentificationState
 
-    assert all(c.identification_state is IdentificationState.UNMATCHED for c in done_event.candidates)
+    assert all(c.identification_state is IdentificationState.DISCOVERY_REVIEW for c in done_event.candidates)
+    for candidate in done_event.candidates:
+        assert candidate.catalog_non_matches[0].reason.startswith("Gaia no disponible")
 
 
 def test_discovery_job_cancel_stops_before_completion(tmp_path):

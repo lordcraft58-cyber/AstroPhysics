@@ -79,7 +79,7 @@ class NewObservationDialog(QDialog):
         layout.addWidget(self.button_box)
 
     def _add_images(self) -> None:
-        paths, _ = QFileDialog.getOpenFileNames(self, "Seleccionar imágenes", "", "FITS (*.fits *.fit *.fts);;Todos los archivos (*.*)")
+        paths, _ = QFileDialog.getOpenFileNames(self, "Seleccionar imágenes", "", "FITS/XISF (*.fits *.fit *.fts *.xisf);;FITS (*.fits *.fit *.fts);;XISF (*.xisf);;Todos los archivos (*.*)")
         for path in paths:
             self._add_row(path)
         if paths:

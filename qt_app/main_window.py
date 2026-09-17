@@ -266,7 +266,7 @@ class MainWindow(QMainWindow):
 
     # ---------------------------------------------------------------- imágenes
     def open_fits_dialog(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Abrir FITS", "", "FITS (*.fits *.fit *.fts);;Todos los archivos (*.*)")
+        path, _ = QFileDialog.getOpenFileName(self, "Abrir FITS/XISF", "", "FITS/XISF (*.fits *.fit *.fts *.xisf);;FITS (*.fits *.fit *.fts);;XISF (*.xisf);;Todos los archivos (*.*)")
         if path:
             self.open_fits(path)
 
