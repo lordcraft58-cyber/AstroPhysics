@@ -580,3 +580,120 @@ def test_run_generic_discovery_resolves_wcs_blind_without_any_pointer_using_the_
     assert summary.n_candidates > 0
     for candidate in candidates:
         assert candidate.position.has_sky_coordinates, "el WCS resuelto en ciego debe llegar a las coordenadas reales de cada candidato"
+
+
+def _field_with_calibratable_flux_and_catalog(
+    shape=(200, 200), *, true_zeropoint_mag=24.0, n_stars=8, anomalous_index=0, anomalous_factor=6.0, seed=11,
+):
+    """A diferencia de `_solvable_star_field_and_catalog` (todas las
+    estrellas con el mismo flujo y la misma magnitud de catálogo), aquí
+    cada estrella lleva un flujo VERDADERO distinto y una magnitud de
+    catálogo derivada de ESE flujo vía un punto cero real elegido -- así
+    el ajuste de punto cero por imagen (Fase B de `run_generic_discovery`)
+    tiene algo real que recuperar. `anomalous_index` escala el flujo
+    INYECTADO (no el que fija la magnitud de catálogo) de una estrella --
+    exactamente lo que sería una fuente fotométricamente anómala de
+    verdad: su catálogo dice lo que debería brillar, brilla distinto."""
+    from astropy.wcs import WCS
+
+    height, width = shape
+    wcs = WCS(naxis=2)
+    wcs.wcs.crpix = [width / 2.0, height / 2.0]
+    wcs.wcs.cdelt = [-1.0 / 3600.0, 1.0 / 3600.0]
+    wcs.wcs.crval = [210.0, -8.0]
+    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+
+    rng = np.random.default_rng(seed)
+    margin = 25.0
+    xs = rng.uniform(margin, width - margin, n_stars)
+    ys = rng.uniform(margin, height - margin, n_stars)
+    ra, dec = wcs.all_pix2world(xs, ys, 0)
+
+    true_fluxes = rng.uniform(15000.0, 60000.0, n_stars)
+    catalog_mags = true_zeropoint_mag - 2.5 * np.log10(true_fluxes)
+
+    injected_fluxes = true_fluxes.copy()
+    if anomalous_index is not None:
+        injected_fluxes[anomalous_index] *= anomalous_factor
+
+    data = np.full(shape, 200.0, dtype=np.float64)
+    yy, xx = np.mgrid[0:height, 0:width]
+    sigma = 1.6
+    for x0, y0, flux in zip(xs, ys, injected_fluxes):
+        data += flux / (2 * math.pi * sigma**2) * np.exp(-(((xx - x0) ** 2 + (yy - y0) ** 2)) / (2 * sigma**2))
+    data += rng.normal(0, 3.0, shape)
+
+    gaia_rows = [
+        {"ra_deg": float(r), "dec_deg": float(d), "source_id": f"GAIA-{i}", "mag_g": float(m)}
+        for i, (r, d, m) in enumerate(zip(ra, dec, catalog_mags))
+    ]
+    return data.astype(np.float32), wcs.to_header(), gaia_rows, xs, ys
+
+
+def test_run_generic_discovery_activates_photometric_anomaly_via_real_field_zeropoint_fit(tmp_path, monkeypatch):
+    """Cierre del motor de calibración fotométrica: con suficientes
+    estrellas KNOWN en la imagen, el pipeline ajusta un punto cero de
+    campo real (mismo `fit_zeropoint` que ya usa el proceso manual de la
+    GUI) y lo usa para calcular `expected_band_flux` -- la dimensión
+    `photometric` de `AnomalyVector`, SIEMPRE NOT_AVAILABLE en producción
+    hasta este cierre, pasa a tener un valor real. Una estrella cuyo
+    flujo inyectado se hizo deliberadamente inconsistente con su propia
+    magnitud de catálogo debe salir con una significancia muy superior a
+    las demás -- confirma que el cálculo es real, no solo "no es None"."""
+    from astropy.io import fits
+
+    data, header, gaia_rows, xs, ys = _field_with_calibratable_flux_and_catalog()
+    monkeypatch.setattr(gaia_module, "query_gaia_neighbors", _radius_filtered_gaia_mock(gaia_rows))
+
+    path = tmp_path / "field_zeropoint.fits"
+    fits.PrimaryHDU(data, header=header).writeto(path)
+
+    observation, loaded = build_observation([(str(path), "OIII")], observation_id="OBS-INT-ZP", target_name="Campo con punto cero real")
+    candidates, summary = run_generic_discovery(observation, loaded, threshold_sigma=6.0, match_radius_arcsec=3.0)
+
+    known = [c for c in candidates if c.identification_state is IdentificationState.KNOWN]
+    assert len(known) >= 5, "la prueba necesita suficientes estrellas KNOWN reales para que el ajuste de punto cero se dispare (>= _MIN_ZEROPOINT_STARS)"
+
+    with_photometric = [c for c in known if c.anomaly_evidence is not None and c.anomaly_evidence.photometric.is_available]
+    assert with_photometric, "con estrellas KNOWN suficientes, la dimensión fotométrica de al menos un candidato debe activarse de verdad"
+
+    def _closest(cands, x, y):
+        return min(cands, key=lambda c: (c.position.x_px - x) ** 2 + (c.position.y_px - y) ** 2)
+
+    anomalous_candidate = _closest(with_photometric, xs[0], ys[0])
+    normal_candidates = [c for c in with_photometric if c is not anomalous_candidate]
+    assert normal_candidates, "hacen falta candidatos normales con los que comparar la estrella anómala"
+
+    anomalous_z = anomalous_candidate.anomaly_evidence.photometric.value
+    normal_zs = [c.anomaly_evidence.photometric.value for c in normal_candidates]
+    assert anomalous_z > max(normal_zs), (anomalous_z, normal_zs)
+    assert anomalous_z > 5.0, anomalous_z
+
+    # Serialización real sin pérdida del candidato anómalo.
+    from astrophysics_suite.models.candidate import Candidate
+
+    assert Candidate.from_dict(anomalous_candidate.to_dict()) == anomalous_candidate
+
+
+def test_run_generic_discovery_leaves_photometric_anomaly_not_available_with_too_few_calibration_stars(tmp_path, monkeypatch):
+    """Por debajo de `_MIN_ZEROPOINT_STARS`, un ajuste robusto de punto
+    cero no es fiable -- debe quedar sin ajustar, y la dimensión
+    fotométrica NOT_AVAILABLE con un motivo real, nunca un punto cero
+    inventado a partir de dos o tres estrellas."""
+    from astropy.io import fits
+
+    data, header, gaia_rows, _xs, _ys = _field_with_calibratable_flux_and_catalog(n_stars=3, anomalous_index=None)
+    monkeypatch.setattr(gaia_module, "query_gaia_neighbors", _radius_filtered_gaia_mock(gaia_rows))
+
+    path = tmp_path / "field_zeropoint_too_few.fits"
+    fits.PrimaryHDU(data, header=header).writeto(path)
+
+    observation, loaded = build_observation([(str(path), "OIII")], observation_id="OBS-INT-ZP-FEW", target_name="Campo con pocas estrellas")
+    candidates, summary = run_generic_discovery(observation, loaded, threshold_sigma=6.0, match_radius_arcsec=3.0)
+
+    known = [c for c in candidates if c.identification_state is IdentificationState.KNOWN]
+    assert 0 < len(known) < pipeline_module._MIN_ZEROPOINT_STARS
+    for candidate in known:
+        assert candidate.anomaly_evidence is not None
+        assert not candidate.anomaly_evidence.photometric.is_available
+        assert "esperado" in candidate.anomaly_evidence.photometric.reference or "flujo" in candidate.anomaly_evidence.photometric.reference

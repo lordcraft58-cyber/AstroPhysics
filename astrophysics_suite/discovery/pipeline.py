@@ -27,6 +27,7 @@ de evidencia (ver `discovery/source_tracks.py`, medido: 416/412/492
 detecciones por época sobre el mismo campo)."""
 from __future__ import annotations
 
+import math
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -49,11 +50,12 @@ from astrophysics_suite.detection.point_sources import detect_point_sources
 from astrophysics_suite.discovery.source_tracks import EpochDetection, SourceTrack, group_detections_into_tracks
 from astrophysics_suite.evidence.chain_builder import build_evidence_chain
 from astrophysics_suite.io.fits_loader import LoadedImage
-from astrophysics_suite.models.candidate import ArtifactCheck, Candidate, QualityCheckItem, QualitySummary
+from astrophysics_suite.models.candidate import ArtifactCheck, Candidate, CatalogMatch, CatalogQuery, QualityCheckItem, QualitySummary
 from astrophysics_suite.models.characterization import CharacterizationResult
 from astrophysics_suite.models.detection import Detection
 from astrophysics_suite.models.observation import Observation
 from astrophysics_suite.models.temporal import MotionEvidence, TemporalEvidence
+from astrophysics_suite.photometry.calibration import fit_zeropoint
 from astrophysics_suite.photometry.quality import characterize_point_source
 from astrophysics_suite.temporal.motion import analyze_motion
 from astrophysics_suite.temporal.variability import analyze_variability
@@ -320,6 +322,48 @@ class _ProcessedSource:
     morphology_reason: str
 
 
+@dataclass(frozen=True)
+class _TrackContext:
+    """Todo lo real ya calculado para una traza (variabilidad,
+    movimiento, identificación de catálogo) entre el Pase A (por traza)
+    y el Pase C (vector de anomalía + Candidate) del bucle principal --
+    existe para que el Pase B (ajuste de punto cero por imagen, que
+    necesita conocer TODAS las trazas de una imagen antes de ajustar
+    nada) pueda intercalarse entre ambos sin recalcular identificación."""
+
+    track: SourceTrack
+    reference_detection: Detection
+    reference: _ProcessedSource
+    temporal: TemporalEvidence | None
+    motion: MotionEvidence | None
+    identification_state: IdentificationState
+    catalog_matches: tuple[CatalogMatch, ...]
+    catalog_non_matches: tuple[CatalogQuery, ...]
+    field_stats: FieldStatistics
+
+
+_MIN_ZEROPOINT_STARS = 5
+"""Mismo mínimo que `compute_field_statistics` exige para sus propias
+estadísticas de campo (`artifacts/artifact_screen.py`): por debajo de
+esto, un ajuste robusto de punto cero (mediana + sigma-clip MAD) no es
+fiable -- se deja sin ajustar en vez de calibrar con dos o tres
+estrellas."""
+
+
+def _instrumental_magnitude(flux_adu: float) -> float | None:
+    """Magnitud instrumental de punto cero arbitrario 0 -- misma
+    convención que ya usa el proceso manual de punto cero de la GUI
+    (`qt_app/processes/registry.py::_run_photometric_zeropoint`, vía
+    `aperture_photometry(..., zeropoint_mag=0.0)`), para que el ajuste de
+    campo automático sea comparable al que ya hace un usuario a mano.
+    `None` para flujo neto no positivo (fuente no detectada por encima
+    del cielo local): una magnitud no está definida ahí, nunca se
+    inventa un valor."""
+    if flux_adu <= 0:
+        return None
+    return -2.5 * math.log10(flux_adu)
+
+
 def _parse_epoch_time(header: dict) -> datetime | None:
     """Instante real de adquisición a partir de `DATE-OBS`, necesario
     para agrupar multiépoca por tiempo real (`source_tracks`) y para el
@@ -342,12 +386,15 @@ def _brightness_epochs(track: SourceTrack, processed_by_id: dict[str, _Processed
     en ADU (`peak_adu`, ya medido por `characterize_point_source`) con su
     incertidumbre real (`noise_adu`) en cada época con tiempo conocido.
 
-    Es un proxy INSTRUMENTAL, no flujo calibrado -- la fotometría de
-    apertura/PSF todavía no está conectada a `Characterization`
-    (pendiente, ver el informe de cierre). Se usa igualmente porque es
-    una magnitud real medida sobre los píxeles en cada época, nunca
-    inventada; cuando la calibración fotométrica se conecte, esta función
-    es el único punto que hay que cambiar."""
+    Es un proxy INSTRUMENTAL, no flujo calibrado: usa `peak_adu`/
+    `noise_adu` (pico de un solo píxel) en vez del flujo de apertura ya
+    conectado en `characterization.band_flux` desde el cierre del motor
+    de fotometría de apertura -- `temporal/variability.py` todavía no
+    migró a esa medida más completa, no porque no exista, sino porque no
+    era parte de ese cierre. Se usa igualmente porque es una magnitud
+    real medida sobre los píxeles en cada época, nunca inventada; migrar
+    esta función a flujo de apertura integrado es una mejora futura
+    concreta, no parte de este cierre tampoco."""
     times = [obs.epoch_time for obs in track.observations if obs.epoch_time is not None]
     if not times:
         return []
@@ -541,9 +588,15 @@ def run_generic_discovery(
         )
         tracks.extend(tracking.tracks)
 
-    # --- Por cada traza física: variabilidad/movimiento (si hay >= 2
-    # épocas), identificación (una sola vez, sobre la época de
-    # referencia), vector de anomalía, cadena de evidencia y Candidate.
+    # --- Pase A, por cada traza física: variabilidad/movimiento (si hay
+    # >= 2 épocas) e identificación (una sola vez, sobre la época de
+    # referencia). El vector de anomalía y el Candidate se construyen
+    # después (Pase C), porque su dimensión fotométrica necesita el
+    # punto cero de la imagen (Pase B), que a su vez necesita conocer
+    # TODAS las trazas identificadas de esa imagen, no solo las
+    # procesadas hasta ahora en este bucle.
+    track_contexts: list[_TrackContext] = []
+    zeropoint_samples_by_image: dict[int, list[tuple[float, float]]] = {}
     for track in tracks:
         check_cancelled()
         reference_detection = track.reference.detection
@@ -561,26 +614,86 @@ def run_generic_discovery(
             reference_detection, match_radius_arcsec=match_radius_arcsec, mag_limit=gaia_mag_limit,
         )
 
+        # Cada traza KNOWN con flujo de apertura real aporta un punto de
+        # calibración al ajuste de punto cero de SU imagen -- mismo par
+        # (magnitud instrumental, magnitud de catálogo) que mediría a
+        # mano el proceso manual de punto cero, pero tomado de
+        # identificaciones que el pipeline ya hace de todos modos (cero
+        # consultas nuevas a Gaia).
+        if catalog_matches and catalog_matches[0].magnitude is not None and catalog_matches[0].magnitude.is_available:
+            catalog_mag = float(catalog_matches[0].magnitude.value)
+            for band in reference_detection.bands:
+                flux_quantity = reference.characterization.band_flux.get(band)
+                if flux_quantity is None or not flux_quantity.is_available or flux_quantity.value is None:
+                    continue
+                instrumental_mag = _instrumental_magnitude(float(flux_quantity.value))
+                if instrumental_mag is None:
+                    continue
+                zeropoint_samples_by_image.setdefault(reference.image_index, []).append((instrumental_mag, catalog_mag))
+
         field_stats = field_stats_by_image.get(reference.image_index, FieldStatistics(n_sources=0, median_fwhm_px=None, fwhm_scatter_px=None))
+        track_contexts.append(
+            _TrackContext(
+                track=track, reference_detection=reference_detection, reference=reference,
+                temporal=temporal, motion=motion, identification_state=identification_state,
+                catalog_matches=catalog_matches, catalog_non_matches=catalog_non_matches, field_stats=field_stats,
+            )
+        )
+
+    # --- Pase B: ajuste real de punto cero por imagen (mediana + sigma-
+    # clip MAD, `photometry/calibration.py::fit_zeropoint` -- el mismo
+    # ajuste robusto que ya usa el proceso manual de la GUI desde la
+    # Fase 12, nunca un punto cero inventado). Por debajo de
+    # `_MIN_ZEROPOINT_STARS` estrellas identificadas en la imagen, se
+    # deja sin ajustar -- la dimensión fotométrica de esas trazas
+    # quedará NOT_AVAILABLE con el motivo real, no un ajuste sobre dos
+    # estrellas disfrazado de calibración.
+    zeropoint_mag_by_image: dict[int, float] = {}
+    for image_index, samples in zeropoint_samples_by_image.items():
+        if len(samples) < _MIN_ZEROPOINT_STARS:
+            continue
+        fit = fit_zeropoint([s[0] for s in samples], [s[1] for s in samples])
+        zeropoint_mag_by_image[image_index] = fit.zeropoint_mag
+
+    # --- Pase C: vector de anomalía (con expectativa fotométrica real
+    # cuando la imagen tiene punto cero ajustado y la traza tiene match
+    # de catálogo), cadena de evidencia y Candidate.
+    for ctx in track_contexts:
+        check_cancelled()
+        reference_detection = ctx.reference_detection
+        reference = ctx.reference
+
+        expected_band_flux: dict[str, float] = {}
+        zeropoint_mag = zeropoint_mag_by_image.get(reference.image_index)
+        if (
+            zeropoint_mag is not None and ctx.catalog_matches
+            and ctx.catalog_matches[0].magnitude is not None and ctx.catalog_matches[0].magnitude.is_available
+        ):
+            expected_instrumental_mag = float(ctx.catalog_matches[0].magnitude.value) - zeropoint_mag
+            expected_flux = 10.0 ** (-0.4 * expected_instrumental_mag)
+            for band in reference_detection.bands:
+                expected_band_flux[band] = expected_flux
+
         anomaly = build_anomaly_vector(
             detection_id=reference_detection.detection_id,
             characterization=reference.characterization,
-            temporal=temporal,
-            motion=motion,
-            field_median_fwhm_px=field_stats.median_fwhm_px,
-            field_fwhm_scatter_px=field_stats.fwhm_scatter_px,
+            temporal=ctx.temporal,
+            motion=ctx.motion,
+            field_median_fwhm_px=ctx.field_stats.median_fwhm_px,
+            field_fwhm_scatter_px=ctx.field_stats.fwhm_scatter_px,
+            expected_band_flux=expected_band_flux or None,
         )
         evidence_chain = build_evidence_chain(
             detection_id=reference_detection.detection_id,
             anomaly=anomaly,
-            temporal=temporal,
-            motion=motion,
-            catalog_matches=catalog_matches,
-            catalog_non_matches=catalog_non_matches,
+            temporal=ctx.temporal,
+            motion=ctx.motion,
+            catalog_matches=ctx.catalog_matches,
+            catalog_non_matches=ctx.catalog_non_matches,
             artifact_checks=reference.artifact_checks,
         )
 
-        final_state = _upgrade_identification_state(identification_state, temporal, motion)
+        final_state = _upgrade_identification_state(ctx.identification_state, ctx.temporal, ctx.motion)
         quality = QualitySummary(
             overall_level=_QUALITY_LEVEL_FOR_STATE[reference.morphology_state],
             checks=(QualityCheckItem(name="morphology_screen", level=_QUALITY_LEVEL_FOR_STATE[reference.morphology_state], detail=reference.morphology_reason),),
@@ -598,10 +711,10 @@ def run_generic_discovery(
                 flux=reference.characterization.band_flux,
                 snr=snr,
                 bands=reference_detection.bands,
-                catalog_matches=catalog_matches,
-                catalog_non_matches=catalog_non_matches,
-                temporal_evidence=temporal,
-                motion_evidence=motion,
+                catalog_matches=ctx.catalog_matches,
+                catalog_non_matches=ctx.catalog_non_matches,
+                temporal_evidence=ctx.temporal,
+                motion_evidence=ctx.motion,
                 anomaly_evidence=anomaly,
                 artifact_checks=reference.artifact_checks,
                 provenance=reference_detection.provenance,

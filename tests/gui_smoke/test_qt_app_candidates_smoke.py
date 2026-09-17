@@ -13,6 +13,7 @@ prueba.
 """
 from __future__ import annotations
 
+import math
 import time
 from unittest import mock
 
@@ -147,6 +148,94 @@ def test_review_flow_updates_session_state_and_disables_buttons(qapp, main_windo
     assert len(updated.review_notes) == 1
     assert not detail_widget.keep_button.isEnabled()
     assert not detail_widget.reject_button.isEnabled()
+
+
+def _field_with_calibratable_flux_and_catalog(shape=(180, 180), *, true_zeropoint_mag=24.0, n_stars=6, anomalous_index=0, anomalous_factor=6.0, seed=13):
+    """Mismo generador que
+    `tests/integration/test_generic_discovery_pipeline.py::_field_with_calibratable_flux_and_catalog`
+    (independiente aquí, como el resto de las pruebas de humo GUI de
+    este archivo, que no importan helpers de otros archivos de test):
+    flujo verdadero distinto por estrella + magnitud de catálogo
+    derivada de ese flujo vía un punto cero real, con una estrella cuyo
+    flujo inyectado se hace deliberadamente inconsistente con su propia
+    magnitud de catálogo."""
+    from astropy.wcs import WCS
+
+    height, width = shape
+    wcs = WCS(naxis=2)
+    wcs.wcs.crpix = [width / 2.0, height / 2.0]
+    wcs.wcs.cdelt = [-1.0 / 3600.0, 1.0 / 3600.0]
+    wcs.wcs.crval = [210.0, -8.0]
+    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+
+    rng = np.random.default_rng(seed)
+    margin = 25.0
+    xs = rng.uniform(margin, width - margin, n_stars)
+    ys = rng.uniform(margin, height - margin, n_stars)
+    ra, dec = wcs.all_pix2world(xs, ys, 0)
+
+    true_fluxes = rng.uniform(15000.0, 60000.0, n_stars)
+    catalog_mags = true_zeropoint_mag - 2.5 * np.log10(true_fluxes)
+    injected_fluxes = true_fluxes.copy()
+    if anomalous_index is not None:
+        injected_fluxes[anomalous_index] *= anomalous_factor
+
+    data = np.full(shape, 200.0, dtype=np.float64)
+    yy, xx = np.mgrid[0:height, 0:width]
+    sigma = 1.6
+    for x0, y0, flux in zip(xs, ys, injected_fluxes):
+        data += flux / (2 * math.pi * sigma**2) * np.exp(-(((xx - x0) ** 2 + (yy - y0) ** 2)) / (2 * sigma**2))
+    data += rng.normal(0, 3.0, shape)
+
+    gaia_rows = [
+        {"ra_deg": float(r), "dec_deg": float(d), "source_id": f"GAIA-{i}", "mag_g": float(m)}
+        for i, (r, d, m) in enumerate(zip(ra, dec, catalog_mags))
+    ]
+    return data.astype(np.float32), wcs.to_header(), gaia_rows
+
+
+def test_candidate_detail_shows_real_photometric_anomaly_from_field_zeropoint_fit(qapp, main_window, tmp_path, monkeypatch):
+    # Cierre del motor de calibración fotométrica (Fase 5, GUI): la fila
+    # "Photometric" del vector de anomalía ya existía en el detalle de
+    # candidato pero estaba siempre en "NO DISPONIBLE" porque
+    # `discovery/pipeline.py` nunca ajustaba un punto cero real ni pasaba
+    # `expected_band_flux` a `build_anomaly_vector` -- esto confirma que
+    # ahora, con estrellas KNOWN reales de sobra en la imagen, renderiza
+    # una significancia real (en sigma), no que el widget simplemente
+    # exista.
+    from astropy.io import fits
+
+    import astrophysics_suite.catalogs.gaia as gaia_module
+    from astrophysics_suite.astrometry.wcs_fit import angular_separation_deg
+
+    data, header, gaia_rows = _field_with_calibratable_flux_and_catalog()
+
+    def _gaia_mock(ra, dec, *, radius_arcsec=3.0, mag_limit=20.0, max_rows=25):
+        return [row for row in gaia_rows if angular_separation_deg(ra, dec, row["ra_deg"], row["dec_deg"]) * 3600.0 <= radius_arcsec][:max_rows]
+
+    monkeypatch.setattr(gaia_module, "query_gaia_neighbors", _gaia_mock)
+
+    path = tmp_path / "field_zeropoint.fits"
+    fits.PrimaryHDU(data, header=header).writeto(path)
+    _run_discovery_and_wait(qapp, main_window, "Campo punto cero", [(str(path), "OIII")])
+
+    from astrophysics_suite.core.enums import IdentificationState
+
+    known = [c for c in main_window.session_state.candidates if c.identification_state is IdentificationState.KNOWN]
+    assert len(known) >= 5, "la prueba necesita suficientes estrellas KNOWN reales para que el ajuste de punto cero se dispare"
+    with_photometric = [c for c in known if c.anomaly_evidence is not None and c.anomaly_evidence.photometric.is_available]
+    assert with_photometric, "con estrellas KNOWN suficientes, al menos un candidato debe tener dimensión fotométrica real"
+
+    main_window._open_candidate_detail(with_photometric[0].candidate_id)
+    qapp.processEvents()
+    detail_widget = main_window._candidate_detail_windows[with_photometric[0].candidate_id].widget()
+
+    labels = detail_widget.findChildren(QLabel)
+    texts = [label.text() for label in labels]
+    assert "Photometric" in texts, texts
+    photometric_value_label = labels[texts.index("Photometric") + 1]
+    assert "NO DISPONIBLE" not in photometric_value_label.text()
+    assert "sigma" in photometric_value_label.text()
 
 
 def test_candidate_detail_shows_real_flux_measured_by_aperture_photometry(qapp, main_window, tmp_path):
