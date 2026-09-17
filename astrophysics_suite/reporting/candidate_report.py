@@ -10,13 +10,19 @@ en vez de dejar un hueco silencioso o inventar un valor.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from astrophysics_suite.core.provenance import Provenance
 from astrophysics_suite.core.quantity import Quantity
+from astrophysics_suite.diagnostics.residuals import ResidualDiagnostic, build_residual_diagnostic
 from astrophysics_suite.models.candidate import Candidate
 from astrophysics_suite.models.observation import Observation
 from astrophysics_suite.reporting.models import DataSeries, ReportField, ReportSection, ScientificResult
 from astrophysics_suite.tables.table import Table
+
+if TYPE_CHECKING:
+    from astrophysics_suite.astrometry.wcs_fit import WCSSolution
+    from astrophysics_suite.photometry.calibration import ZeropointFit
 
 ENGINE_NAME = "reporting.candidate_report"
 ENGINE_VERSION = "1.0"
@@ -41,6 +47,14 @@ def _fmt_quantity(q: Quantity | None) -> str:
 
 def _field(label: str, q: Quantity | None) -> ReportField:
     return ReportField(label=label, value=_fmt_quantity(q), available=q is not None and q.is_available)
+
+
+def _residual_series(diagnostic: ResidualDiagnostic, *, name: str, y_label: str) -> DataSeries:
+    return DataSeries(
+        name=name, x=tuple(range(len(diagnostic.residuals))), y=diagnostic.residuals,
+        x_label="Índice", y_label=y_label, y_unit=diagnostic.unit, kind="residual",
+        outlier_indices=diagnostic.outlier_indices,
+    )
 
 
 def _section_observation(candidate: Candidate, observation: Observation | None) -> ReportSection:
@@ -84,7 +98,7 @@ def _section_quality(candidate: Candidate) -> ReportSection:
     return ReportSection(key="quality", title="2. Calidad", fields=tuple(fields), tables=(table, artifacts_table))
 
 
-def _section_astrometry(candidate: Candidate) -> ReportSection:
+def _section_astrometry(candidate: Candidate, wcs_solution: WCSSolution | None) -> ReportSection:
     pos = candidate.position
     fields = [
         ReportField(label="X (px)", value=f"{pos.x_px:.2f}"),
@@ -95,29 +109,60 @@ def _section_astrometry(candidate: Candidate) -> ReportSection:
         fields.append(ReportField(label="Dec", value=f"{pos.dec_deg:.6f}°"))
     else:
         fields.append(ReportField(label="RA/Dec", value="NO DISPONIBLE (sin WCS en la imagen de referencia)", available=False))
+
+    if wcs_solution is not None and wcs_solution.residuals_arcsec:
+        diagnostic = build_residual_diagnostic(wcs_solution.residuals_arcsec, unit="arcsec")
+        fields.append(ReportField(label="RMS del ajuste WCS", value=f"{wcs_solution.rms_residual_arcsec:.4f}\""))
+        fields.append(ReportField(label="Estrellas en el ajuste", value=str(wcs_solution.n_stars)))
+        fields.append(ReportField(label="Atípicos (>3σ MAD)", value=f"{len(diagnostic.outlier_indices)} de {wcs_solution.n_stars}"))
+        table = Table(
+            columns=("estrella", "residual"), units=("", "arcsec"),
+            rows=tuple((f"#{i + 1}", r) for i, r in enumerate(wcs_solution.residuals_arcsec)),
+        )
+        series = (_residual_series(diagnostic, name="Residuales del ajuste WCS", y_label="Residual"),)
+        return ReportSection(key="astrometry", title="3. Astrometría", fields=tuple(fields), tables=(table,), series=series)
+
     fields.append(ReportField(
         label="WCS / RMS del ajuste de placa",
-        value="NO DISPONIBLE (resultado por imagen, no por candidato -- este informe no recibió el PlateSolveResult)",
+        value="NO DISPONIBLE (resultado por imagen, no por candidato -- este informe no recibió el WCSSolution del ajuste)",
         available=False,
     ))
     return ReportSection(key="astrometry", title="3. Astrometría", fields=tuple(fields))
 
 
-def _section_photometry(candidate: Candidate) -> ReportSection:
+def _section_photometry(candidate: Candidate, zeropoint_fit: ZeropointFit | None) -> ReportSection:
     fields: list[ReportField] = []
     if not candidate.flux:
         fields.append(ReportField(label="Flujo", value="NO DISPONIBLE (sin FWHM medida no se pudo dimensionar una apertura)", available=False))
     for band, flux in candidate.flux.items():
         fields.append(_field(f"Flujo ({band})", flux))
-    fields.append(ReportField(
-        label="Magnitud calibrada", value="NO DISPONIBLE (necesita un punto cero fotométrico de campo, no forma parte de este candidato)",
-        available=False,
-    ))
-    table = Table(
+
+    tables: list[Table] = [Table(
         columns=("banda", "flujo", "incertidumbre", "unidad", "método"), units=("", "", "", "", ""),
         rows=tuple((band, q.value, q.error, q.unit, q.method) for band, q in candidate.flux.items()),
-    )
-    return ReportSection(key="photometry", title="4. Fotometría", fields=tuple(fields), tables=(table,))
+    )]
+    series: tuple[DataSeries, ...] = ()
+    if zeropoint_fit is not None and zeropoint_fit.residuals_mag:
+        diagnostic = build_residual_diagnostic(zeropoint_fit.residuals_mag, unit="mag")
+        fields.append(ReportField(label="Punto cero fotométrico", value=f"{zeropoint_fit.zeropoint_mag:.4f} ± {zeropoint_fit.zeropoint_uncertainty_mag:.4f} mag"))
+        fields.append(ReportField(label="RMS del ajuste de punto cero", value=f"{zeropoint_fit.rms_residual_mag:.4f} mag"))
+        fields.append(ReportField(
+            label="Estrellas usadas / rechazadas",
+            value=f"{zeropoint_fit.n_stars_used} usadas, {zeropoint_fit.n_stars_rejected} rechazadas por el propio ajuste",
+        ))
+        fields.append(ReportField(label="Atípicos adicionales (>3σ MAD)", value=f"{len(diagnostic.outlier_indices)} de {zeropoint_fit.n_stars_used}"))
+        tables.append(Table(
+            columns=("estrella", "residual"), units=("", "mag"),
+            rows=tuple((f"#{i + 1}", r) for i, r in enumerate(zeropoint_fit.residuals_mag)),
+        ))
+        series = (_residual_series(diagnostic, name="Residuales del punto cero", y_label="Residual"),)
+    else:
+        fields.append(ReportField(
+            label="Magnitud calibrada",
+            value="NO DISPONIBLE (necesita el ZeropointFit del campo, no forma parte de este candidato)",
+            available=False,
+        ))
+    return ReportSection(key="photometry", title="4. Fotometría", fields=tuple(fields), tables=tuple(tables), series=series)
 
 
 def _section_morphology(candidate: Candidate) -> ReportSection:
@@ -283,19 +328,27 @@ def _section_review(candidate: Candidate) -> ReportSection:
 
 
 def build_candidate_report(
-    candidate: Candidate, *, observation: Observation | None = None, pipeline_version: str = "",
+    candidate: Candidate, *, observation: Observation | None = None,
+    wcs_solution: WCSSolution | None = None, zeropoint_fit: ZeropointFit | None = None,
+    pipeline_version: str = "",
 ) -> ScientificResult:
     """Ensambla las 13 secciones del estudio científico completo de un
     candidato. `observation` es opcional -- sin ella, la sección 1 queda
     honestamente NOT_AVAILABLE en vez de bloquear todo el informe (un
     `Candidate` cargado de una sesión guardada puede no traer su
-    `Observation` asociada, ver `io.session_export`)."""
+    `Observation` asociada, ver `io.session_export`). `wcs_solution`/
+    `zeropoint_fit` también son opcionales -- son resultados POR IMAGEN,
+    no parte del `Candidate`, y hoy no persisten más allá de la sesión
+    de GUI activa (ver `visualization.charts`); cuando el llamador los
+    tiene a mano (p. ej. el mismo `ImageView` de origen), las secciones
+    de astrometría/fotometría muestran residuales reales en vez de
+    NO DISPONIBLE."""
     provenance = Provenance.now(pipeline_version=pipeline_version, engine=ENGINE_NAME, engine_version=ENGINE_VERSION)
     sections = (
         _section_observation(candidate, observation),
         _section_quality(candidate),
-        _section_astrometry(candidate),
-        _section_photometry(candidate),
+        _section_astrometry(candidate, wcs_solution),
+        _section_photometry(candidate, zeropoint_fit),
         _section_morphology(candidate),
         _section_temporal(candidate),
         _section_motion(candidate),

@@ -33,14 +33,20 @@ class DataSeries:
     y_error: tuple[float, ...] | None = None
     kind: str = "line"
     """"line" (serie continua, p. ej. curva de luz), "scatter" (puntos
-    independientes, p. ej. trayectoria RA/Dec) o "bar" (categórica, p. ej.
-    las siete dimensiones de anomalía) -- decide cómo se dibuja, nunca
-    cambia los datos."""
+    independientes, p. ej. trayectoria RA/Dec), "bar" (categórica, p. ej.
+    las siete dimensiones de anomalía) o "residual" (residuales de un
+    ajuste ya hecho, p. ej. `WCSSolution.residuals_arcsec` -- ver
+    `diagnostics.residuals`) -- decide cómo se dibuja, nunca cambia los
+    datos."""
     x_categories: tuple[str, ...] | None = None
     """Solo para `kind="bar"`: la etiqueta real de cada posición de `x`
     (p. ej. los nombres de las dimensiones de anomalía) -- `x` sigue
     siendo `0..n-1` para mantener el mismo contrato numérico que el
     resto de series."""
+    outlier_indices: tuple[int, ...] | None = None
+    """Solo para `kind="residual"`: posiciones de `x`/`y` marcadas como
+    atípicas (`diagnostics.outliers.flag_outliers`) -- para resaltarlas
+    en la gráfica, nunca para excluirlas de los datos."""
 
     def __post_init__(self) -> None:
         if len(self.x) != len(self.y):
@@ -49,6 +55,8 @@ class DataSeries:
             raise ValueError("y_error debe tener la misma longitud que y")
         if self.x_categories is not None and len(self.x_categories) != len(self.x):
             raise ValueError("x_categories debe tener la misma longitud que x")
+        if self.outlier_indices is not None and any(i < 0 or i >= len(self.x) for i in self.outlier_indices):
+            raise ValueError("outlier_indices debe contener solo posiciones válidas dentro de x/y")
 
 
 @dataclass(frozen=True)

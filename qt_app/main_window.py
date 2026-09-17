@@ -235,6 +235,9 @@ class MainWindow(QMainWindow):
         self.cancel_discovery_action.setEnabled(False)
         self.cancel_discovery_action.triggered.connect(self._cancel_discovery)
         self.discovery_menu.addAction(self.cancel_discovery_action)
+        observation_report_action = QAction("Generar informe de &observación...", self)
+        observation_report_action.triggered.connect(self._generate_observation_report_dialog)
+        self.discovery_menu.addAction(observation_report_action)
 
         help_menu = self.menuBar().addMenu("A&yuda")
         tutorial_action = QAction("&Tutorial guiado", self)
@@ -663,6 +666,36 @@ class MainWindow(QMainWindow):
             return
         self._last_result_table.to_csv(path)
         self.statusBar().showMessage(f"Tabla exportada a {path}", 5000)
+
+    def _generate_observation_report_dialog(self) -> None:
+        from astrophysics_suite.export.html import export_html
+        from astrophysics_suite.reporting.observation_report import build_observation_report
+
+        if not self.session_state.observations:
+            self.statusBar().showMessage("No hay ninguna observación todavía -- ejecuta un análisis de Descubrimiento primero.", 6000)
+            return
+        if len(self.session_state.observations) == 1:
+            observation = self.session_state.observations[0]
+        else:
+            labels = [f"{o.target_name} ({o.observation_id})" for o in self.session_state.observations]
+            choice, ok = QInputDialog.getItem(self, "Generar informe de observación", "Observación:", labels, len(labels) - 1, editable=False)
+            if not ok:
+                return
+            observation = self.session_state.observations[labels.index(choice)]
+
+        candidates = [c for c in self.session_state.candidates if c.observation_id == observation.observation_id]
+        path, _ = QFileDialog.getSaveFileName(self, "Generar informe de observación", f"{observation.observation_id}.html", "HTML (*.html)")
+        if not path:
+            return
+        try:
+            report = build_observation_report(observation, candidates, pipeline_version=observation.observation_id)
+            export_html(report, path)
+        except Exception as exc:  # noqa: BLE001 -- error real de generación/escritura, debe ser visible
+            logger.error("No se pudo generar el informe de observación %s en %s: %s", observation.observation_id, path, exc)
+            QMessageBox.critical(self, "Generar informe de observación", f"No se pudo generar el informe en «{Path(path).name}»:\n\n{exc}")
+            return
+        logger.info("Informe de observación %s generado en %s (%d candidato(s))", observation.observation_id, path, len(candidates))
+        self.statusBar().showMessage(f"Informe de observación generado en {path}", 6000)
 
     def _open_wavelength_fit_flow(self) -> None:
         view = self._active_image_view()

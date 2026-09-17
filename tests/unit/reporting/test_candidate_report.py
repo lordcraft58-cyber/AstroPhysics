@@ -10,11 +10,13 @@ from datetime import datetime, timedelta, timezone
 
 import numpy as np
 
+from astrophysics_suite.astrometry.wcs_fit import fit_wcs
 from astrophysics_suite.core.enums import ValueKind
 from astrophysics_suite.core.quantity import Quantity
 from astrophysics_suite.discovery.pipeline import run_generic_discovery
 from astrophysics_suite.io.fits_loader import build_observation
 from astrophysics_suite.models.anomaly import AnomalyVector
+from astrophysics_suite.photometry.calibration import fit_zeropoint
 from astrophysics_suite.reporting.candidate_report import ANOMALY_DIMENSIONS, ANOMALY_LABELS, build_candidate_report
 from astrophysics_suite.temporal.motion import analyze_motion
 from astrophysics_suite.temporal.variability import analyze_variability
@@ -188,6 +190,56 @@ def test_physical_section_is_honestly_unavailable_in_generic_mode(tmp_path):
     section = report.section("physical")
     assert section.fields[0].available is False
     assert "genérico" in section.fields[0].value
+
+
+def test_astrometry_section_shows_real_wcs_residuals_when_solution_is_given(tmp_path):
+    _observation, candidate = _real_candidate(tmp_path)
+
+    pixel_xy = [(10.0, 10.0), (90.0, 12.0), (15.0, 88.0), (70.0, 65.0), (40.0, 30.0), (55.0, 75.0)]
+    sky_radec = [(10.001, 40.0005), (10.021, 40.0007), (10.003, 40.0205), (10.016, 40.015), (10.009, 40.007), (10.013, 40.017)]
+    wcs_solution = fit_wcs(pixel_xy, sky_radec, crpix_px=(50.0, 50.0))
+    assert wcs_solution.residuals_arcsec
+
+    report = build_candidate_report(candidate, wcs_solution=wcs_solution, pipeline_version="v-report-test")
+    section = report.section("astrometry")
+
+    values = {f.label: f.value for f in section.fields}
+    assert "NO DISPONIBLE" not in values.get("WCS / RMS del ajuste de placa", "")
+    assert values["Estrellas en el ajuste"] == str(wcs_solution.n_stars)
+    assert len(section.tables) == 1
+    assert len(section.tables[0].rows) == wcs_solution.n_stars
+    assert len(section.series) == 1
+    assert section.series[0].kind == "residual"
+    assert section.series[0].y == wcs_solution.residuals_arcsec
+
+
+def test_photometry_section_shows_real_zeropoint_residuals_when_fit_is_given(tmp_path):
+    _observation, candidate = _real_candidate(tmp_path)
+
+    instrumental = [-12.0, -11.5, -12.3, -11.8, -12.1]
+    catalog = [15.0, 15.51, 14.71, 15.19, 14.91]
+    zeropoint_fit = fit_zeropoint(instrumental, catalog)
+    assert zeropoint_fit.residuals_mag
+
+    report = build_candidate_report(candidate, zeropoint_fit=zeropoint_fit, pipeline_version="v-report-test")
+    section = report.section("photometry")
+
+    values = {f.label: f.value for f in section.fields}
+    assert "NO DISPONIBLE" not in values.get("Magnitud calibrada", "")
+    assert f"{zeropoint_fit.zeropoint_mag:.4f}" in values["Punto cero fotométrico"]
+    assert len(section.series) == 1
+    assert section.series[0].kind == "residual"
+    assert section.series[0].y == zeropoint_fit.residuals_mag
+
+
+def test_astrometry_and_photometry_stay_honest_when_solutions_are_not_given(tmp_path):
+    _observation, candidate = _real_candidate(tmp_path)
+    report = build_candidate_report(candidate, pipeline_version="v-report-test")
+
+    assert report.section("astrometry").series == ()
+    assert report.section("photometry").series == ()
+    photometry_values = {f.label: f.value for f in report.section("photometry").fields}
+    assert "NO DISPONIBLE" in photometry_values["Magnitud calibrada"]
 
 
 def test_review_section_reflects_review_history(tmp_path):

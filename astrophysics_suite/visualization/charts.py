@@ -54,6 +54,17 @@ def _draw_series(ax, series: DataSeries) -> None:
             ax.scatter([series.x[0]], [series.y[0]], color="#54a24b", s=48, zorder=3, label="primera época")
             ax.scatter([series.x[-1]], [series.y[-1]], color="#e45756", s=48, zorder=3, label="última época")
             ax.legend(fontsize=7, loc="best")
+    elif series.kind == "residual":
+        outliers = set(series.outlier_indices or ())
+        inliers_x = [x for i, x in enumerate(series.x) if i not in outliers]
+        inliers_y = [y for i, y in enumerate(series.y) if i not in outliers]
+        ax.axhline(0.0, color="#888888", linewidth=1, linestyle="--")
+        ax.scatter(inliers_x, inliers_y, color="#4c78a8", s=28, label="punto usado")
+        if outliers:
+            outlier_x = [series.x[i] for i in sorted(outliers)]
+            outlier_y = [series.y[i] for i in sorted(outliers)]
+            ax.scatter(outlier_x, outlier_y, color="#e45756", s=48, marker="x", zorder=3, label="atípico (>3σ MAD)")
+            ax.legend(fontsize=7, loc="best")
     else:
         if series.y_error is not None:
             ax.errorbar(series.x, series.y, yerr=series.y_error, fmt="o-", color="#4c78a8", markersize=4, linewidth=1, capsize=2)

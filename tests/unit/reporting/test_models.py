@@ -33,6 +33,16 @@ def test_data_series_accepts_well_formed_series():
     assert len(series.x) == len(series.y) == len(series.y_error)
 
 
+def test_data_series_rejects_out_of_range_outlier_indices():
+    with pytest.raises(ValueError):
+        DataSeries(name="s", x=(0.0, 1.0), y=(1.0, 2.0), x_label="i", y_label="r", kind="residual", outlier_indices=(2,))
+
+
+def test_data_series_accepts_valid_outlier_indices():
+    series = DataSeries(name="s", x=(0.0, 1.0, 2.0), y=(0.1, -0.2, 5.0), x_label="i", y_label="r", kind="residual", outlier_indices=(2,))
+    assert series.outlier_indices == (2,)
+
+
 def test_scientific_result_section_lookup_finds_existing_key():
     result = ScientificResult(
         schema_version=1, subject_id="SUBJ-1", title="t", generated_at=datetime.now(timezone.utc), provenance=_provenance(),

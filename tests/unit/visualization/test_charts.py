@@ -38,6 +38,24 @@ def test_render_series_scatter_produces_a_real_png():
     _assert_real_png(png)
 
 
+def test_render_series_residual_with_outliers_produces_a_real_png():
+    series = DataSeries(
+        name="Residuales del ajuste WCS", x=(0.0, 1.0, 2.0, 3.0), y=(0.1, -0.15, 0.08, 1.9),
+        x_label="Índice", y_label="Residual", y_unit="arcsec", kind="residual", outlier_indices=(3,),
+    )
+    png = render_series(series, title="Residuales del ajuste WCS")
+    _assert_real_png(png)
+
+
+def test_render_series_residual_without_outliers_produces_a_real_png():
+    series = DataSeries(
+        name="Residuales del punto cero", x=(0.0, 1.0, 2.0), y=(0.02, -0.01, 0.015),
+        x_label="Índice", y_label="Residual", y_unit="mag", kind="residual",
+    )
+    png = render_series(series, title="Residuales del punto cero")
+    _assert_real_png(png)
+
+
 def test_render_series_bar_with_categories_produces_a_real_png():
     series = DataSeries(
         name="Vector de anomalía", x=(0.0, 1.0), y=(5.2, 6.8),
