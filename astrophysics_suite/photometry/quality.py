@@ -61,11 +61,35 @@ def characterize_point_source(
     if ellipticity is not None and math.isfinite(ellipticity) and ellipticity < 0.999:
         elongation_quantity = Quantity(value=1.0 / (1.0 - ellipticity), error=None, unit="dimensionless", kind=ValueKind.OBSERVED, method="second_moments")
 
-    extra = {}
-    if raw.get("sharpness") is not None and math.isfinite(raw["sharpness"]):
-        extra["sharpness"] = Quantity(value=raw["sharpness"], error=None, unit="dimensionless", kind=ValueKind.OBSERVED, method="peak_over_central_mean")
-    if math.isfinite(raw.get("snr_local", float("nan"))):
-        extra["snr_local"] = Quantity(value=raw["snr_local"], error=None, unit="dimensionless", kind=ValueKind.OBSERVED, method="peak_over_local_noise")
+    # Todas las medidas reales que `measure_source_quality` ya calcula se
+    # propagan aquí: antes se descartaban `saturated`, `isolated`,
+    # `n_peaks_in_stamp`, `peak_adu`, `background_adu` y `noise_adu`, que son
+    # exactamente los observables que necesita el motor de artefactos
+    # (`artifacts/artifact_screen.py`). Perderlos obligaba a volver a
+    # medirlos por otra vía, con el riesgo real de acabar con dos medidas
+    # incompatibles de la misma propiedad. `CharacterizationResult` es la
+    # ÚNICA fuente de verdad de estas magnitudes por fuente.
+    extra: dict[str, Quantity] = {}
+
+    def _observed(key: str, unit: str, method: str) -> None:
+        value = raw.get(key)
+        if value is not None and math.isfinite(float(value)):
+            extra[key] = Quantity(value=float(value), error=None, unit=unit, kind=ValueKind.OBSERVED, method=method)
+
+    _observed("sharpness", "dimensionless", "peak_over_central_mean")
+    _observed("snr_local", "dimensionless", "peak_over_local_noise")
+    _observed("peak_adu", "adu", "cutout_peak")
+    _observed("background_adu", "adu", "cutout_background")
+    _observed("noise_adu", "adu", "cutout_noise")
+    _observed("n_peaks_in_stamp", "count", "connected_components_at_30pct_peak")
+
+    # Booleanos reales medidos sobre los píxeles: se conservan como Quantity
+    # 0/1 para que viajen por el mismo contrato que el resto y lleguen con
+    # su método explícito, en vez de perderse por no ser numéricos.
+    for key, method in (("saturated", "peak_above_saturation_level"), ("isolated", "single_component_at_30pct_peak")):
+        value = raw.get(key)
+        if value is not None:
+            extra[key] = Quantity(value=1.0 if value else 0.0, error=None, unit="boolean", kind=ValueKind.OBSERVED, method=method)
 
     return CharacterizationResult.create(
         detection_id=detection.detection_id,
