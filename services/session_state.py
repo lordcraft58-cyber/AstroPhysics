@@ -1,9 +1,13 @@
 """Estado de la sesión: el proyecto en memoria que la GUI muestra y
-modifica. Persistencia real a disco (usando `astrophysics_suite.models.
-project.Project`) queda para una fase posterior -- ver
-docs/audit/10-FASE8-GUI.md, seccion "Qué queda". Esta clase ya está
-estructurada para que añadir guardar/cargar no requiera un rediseño: es
-la única fuente de verdad de "qué hay en el proyecto ahora mismo".
+modifica. Persistencia real a disco -- `astrophysics_suite.io.session_
+export.save_session`/`load_session`, cableada en `qt_app/main_window.py`
+("Archivo -> Guardar sesión.../Abrir sesión...") -- cierra el hueco que
+este mismo docstring documentaba como pendiente ("queda para una fase
+posterior"; ver docs/audit/39-CIERRE-MOTOR-CALIBRACION-FOTOMETRICA.md y
+el cierre del motor de persistencia de sesión que lo resolvió). Esta
+clase ya estaba estructurada para que añadir guardar/cargar no
+requiriera un rediseño: es la única fuente de verdad de "qué hay en el
+proyecto ahora mismo".
 """
 from __future__ import annotations
 
@@ -45,6 +49,25 @@ class SessionState:
 
     def add_candidates(self, candidates: list[Candidate]) -> None:
         with self._lock:
+            self.candidates.extend(candidates)
+        self._notify()
+
+    def load_saved_session(self, *, project_name: str, observations: list[Observation], candidates: list[Candidate]) -> None:
+        """Incorpora una sesión leída de disco (`io.session_export.
+        load_session`) a la sesión en memoria actual -- SUMA, nunca
+        reemplaza: igual que "Nueva observación..." nunca vació lo que
+        ya había, "Abrir sesión..." nunca descarta análisis en curso sin
+        que el usuario lo pida explícitamente. `loaded_images` queda
+        vacío para las observaciones restauradas -- una sesión guardada
+        no incluye los píxeles originales (solo la ruta del FITS de
+        origen en cada `ImageRef`), así que una imagen de una sesión
+        reabierta debe reabrirse desde disco para volver a verse; los
+        candidatos y su cadena de evidencia completa sí llegan
+        íntegros, con independencia de esto."""
+        with self._lock:
+            if project_name:
+                self.project_name = project_name
+            self.observations.extend(observations)
             self.candidates.extend(candidates)
         self._notify()
 

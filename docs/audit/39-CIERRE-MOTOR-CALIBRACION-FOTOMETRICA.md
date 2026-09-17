@@ -299,7 +299,7 @@ en concreto:
 ## FASE 9 — Cierre
 
 **Motor: Calibración Fotométrica (punto cero conectado a Discovery/
-Anomalía) -- REAL PERO LIMITADO.**
+Anomalía) -- CERRADO.**
 
 - Funciona: sí -- verificado con recuperación de un punto cero conocido
   pese a ruido realista y un outlier, sobre flujos reales de M31 (0.003
@@ -312,24 +312,26 @@ Anomalía) -- REAL PERO LIMITADO.**
   Discovery completo.
 - GUI funciona: sí -- fila antes muerta ("Photometric") ahora renderiza
   un valor real, verificado con prueba de humo sobre la aplicación real.
-- **Outputs funcionan: NO** (mismo motivo exacto que el cierre anterior,
-  38: no existe ninguna forma de guardar `Candidate`/sesión a disco en
-  la aplicación hoy -- gap de todo el proyecto, no de este motor).
+- Outputs funcionan: sí -- ver "Actualización" más abajo.
 - Provenance funciona: no aplica una nueva (ver Fase 2) -- la
   trazabilidad existente de `AnomalyVector`/`Candidate` no se ha roto,
   verificado.
 - Tests pasan: 587 (suite completa, antes 582) + 107 GUI (antes 106),
-  cero regresiones.
+  cero regresiones en esta ronda.
 - Validación real realizada: sí, incluida recuperación de un punto cero
   conocido sobre flujos reales de M31 con ruido y outlier inyectados.
 
-Por el mismo criterio explícito del protocolo aplicado en el cierre
-anterior (38): este motor **no se marca CERRADO**, se marca **REAL PERO
-LIMITADO** -- la única limitación de cierre incondicional es la ausencia
-de persistencia de sesión, que ya afecta a TODOS los motores conectados
-hoy y pertenece a un motor de persistencia que ninguno de estos dos
-cierres tenía mandato de crear. Todo lo demás -- cálculo, conexión, GUI,
-tests, validación con datos reales -- está genuinamente terminado.
+**Actualización (docs/audit/40-CIERRE-MOTOR-PERSISTENCIA-DE-SESION.md).**
+En el momento de este informe, "outputs funcionan" se marcó NO por el
+mismo motivo exacto que el cierre 38: no existía ninguna forma de
+guardar `Candidate`/sesión a disco en la aplicación, así que este motor
+se cerró entonces como **REAL PERO LIMITADO**. El usuario pidió
+explícitamente cerrar ese hueco ("cierra estos anteriores creando lo
+que falte"): el cierre 40 lo resolvió en la misma sesión de trabajo,
+verificado con round-trip real sobre candidatos de M31 con `anomaly_
+evidence.photometric` real producido por ESTE motor. Con esa limitación
+resuelta, los siete criterios de la Fase 9 quedan satisfechos y este
+informe se corrige a **CERRADO**.
 
 ## FASE 10 — Cambio de motor
 

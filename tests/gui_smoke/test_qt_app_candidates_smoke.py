@@ -22,7 +22,7 @@ import pytest
 
 PySide6 = pytest.importorskip("PySide6", reason="PySide6 no instalado en este entorno")
 
-from PySide6.QtWidgets import QApplication, QLabel  # noqa: E402
+from PySide6.QtWidgets import QApplication, QFileDialog, QLabel  # noqa: E402
 
 
 def _display_available() -> bool:
@@ -83,6 +83,66 @@ def test_discovery_run_populates_session_state_and_dock(qapp, main_window, tmp_p
     assert not main_window.discovery_progress.isVisible()
     assert len(main_window.session_state.candidates) >= 2
     assert main_window.candidates_dock_widget.title_label.text().startswith(str(len(main_window.session_state.candidates)))
+
+
+def test_saving_and_reopening_a_session_roundtrips_real_candidates_via_the_menu(qapp, main_window, tmp_path, monkeypatch):
+    # Cierre del motor de persistencia de sesión: "Guardar sesión..."/
+    # "Abrir sesión..." (Archivo) sobre un análisis real de Descubrimiento,
+    # no una llamada directa a `save_session`/`load_session` -- confirma
+    # que el cableado completo de la GUI (diálogo nativo, `SessionState`,
+    # refresco del panel) funciona de extremo a extremo.
+    from legacy.AstroPhysicsSuite_v57_3_COMMERCIAL import _write_minimal_fits_2d
+
+    field = _star_field((96, 96), [(30, 30), (60, 60)])
+    path = tmp_path / "field_OIII.fits"
+    _write_minimal_fits_2d(path, field)
+    _run_discovery_and_wait(qapp, main_window, "Campo persistencia", [(str(path), "OIII")])
+    original_candidates = list(main_window.session_state.candidates)
+    assert original_candidates
+
+    session_path = tmp_path / "session.apssession.json"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(session_path), "")))
+    main_window._save_session_dialog()
+    assert session_path.exists()
+
+    from astrophysics_suite.io.session_export import load_session
+
+    on_disk = load_session(str(session_path))
+    assert list(on_disk.candidates) == original_candidates
+
+    # "Abrir sesión..." SUMA a la sesión en memoria (nunca descarta
+    # análisis en curso) -- tras reabrir el mismo archivo, cada
+    # candidato original debe aparecer duplicado una vez más.
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(session_path), "")))
+    main_window._open_session_dialog()
+    qapp.processEvents()
+
+    assert len(main_window.session_state.candidates) == 2 * len(original_candidates)
+    for candidate in original_candidates:
+        assert main_window.session_state.candidates.count(candidate) == 2
+
+
+def test_save_session_dialog_warns_instead_of_opening_a_dialog_when_there_is_nothing_to_save(qapp, main_window, monkeypatch):
+    def _fail_if_called(*a, **k):
+        raise AssertionError("no debería abrirse el diálogo de guardado sin nada que guardar")
+
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(_fail_if_called))
+    main_window._save_session_dialog()
+    assert "nada que guardar" in main_window.statusBar().currentMessage() or "primero" in main_window.statusBar().currentMessage()
+
+
+def test_open_session_dialog_reports_a_real_error_for_a_corrupt_file(qapp, main_window, tmp_path, monkeypatch):
+    from unittest import mock
+
+    bad_path = tmp_path / "corrupt.apssession.json"
+    bad_path.write_text("{ esto no es JSON valido", encoding="utf-8")
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(bad_path), "")))
+
+    with mock.patch("qt_app.main_window.QMessageBox.critical") as critical:
+        main_window._open_session_dialog()
+
+    critical.assert_called_once()
+    assert main_window.session_state.candidates == []
 
 
 def test_discovery_cancel_stops_before_completion(qapp, main_window, tmp_path):

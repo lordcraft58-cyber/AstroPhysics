@@ -155,6 +155,14 @@ class MainWindow(QMainWindow):
         self.open_action.triggered.connect(self.open_fits_dialog)
         self.file_menu.addAction(self.open_action)
         self.file_menu.addSeparator()
+        self.save_session_action = QAction("&Guardar sesión...", self)
+        self.save_session_action.setShortcut("Ctrl+S")
+        self.save_session_action.triggered.connect(self._save_session_dialog)
+        self.file_menu.addAction(self.save_session_action)
+        self.open_session_action = QAction("A&brir sesión...", self)
+        self.open_session_action.triggered.connect(self._open_session_dialog)
+        self.file_menu.addAction(self.open_session_action)
+        self.file_menu.addSeparator()
         exit_action = QAction("&Salir", self)
         exit_action.setShortcut("Ctrl+Q")
         exit_action.triggered.connect(self.close)
@@ -606,6 +614,45 @@ class MainWindow(QMainWindow):
             view.title, solution.rms_residual_arcsec, solution.n_stars,
         )
         self.statusBar().showMessage(f"WCS ajustado para {view.title} (RMS={solution.rms_residual_arcsec:.3f}\").", 6000)
+
+    def _save_session_dialog(self) -> None:
+        from astrophysics_suite.io.session_export import save_session
+
+        if not self.session_state.candidates and not self.session_state.observations:
+            self.statusBar().showMessage("No hay ninguna observación ni candidato que guardar todavía -- ejecuta un análisis de Descubrimiento primero.", 6000)
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Guardar sesión", "", "Sesión AstroPhysics Suite (*.apssession.json)")
+        if not path:
+            return
+        try:
+            save_session(
+                path, project_name=self.session_state.project_name,
+                observations=self.session_state.observations, candidates=self.session_state.candidates,
+            )
+        except Exception as exc:  # noqa: BLE001 -- error real de escritura, debe ser visible
+            logger.error("No se pudo guardar la sesión en %s: %s", path, exc)
+            QMessageBox.critical(self, "Guardar sesión", f"No se pudo guardar «{Path(path).name}»:\n\n{exc}")
+            return
+        logger.info("Sesión guardada en %s (%d candidato(s), %d observación/es)", path, len(self.session_state.candidates), len(self.session_state.observations))
+        self.statusBar().showMessage(f"Sesión guardada en {path}", 6000)
+
+    def _open_session_dialog(self) -> None:
+        from astrophysics_suite.io.session_export import load_session
+
+        path, _ = QFileDialog.getOpenFileName(self, "Abrir sesión", "", "Sesión AstroPhysics Suite (*.apssession.json);;JSON (*.json);;Todos los archivos (*.*)")
+        if not path:
+            return
+        try:
+            loaded = load_session(path)
+        except Exception as exc:  # noqa: BLE001 -- error real de lectura, debe ser visible
+            logger.error("No se pudo abrir la sesión %s: %s", path, exc)
+            QMessageBox.critical(self, "Abrir sesión", f"No se pudo abrir «{Path(path).name}»:\n\n{exc}")
+            return
+        self.session_state.load_saved_session(
+            project_name=loaded.project_name, observations=list(loaded.observations), candidates=list(loaded.candidates),
+        )
+        logger.info("Sesión abierta desde %s (%d candidato(s), %d observación/es)", path, len(loaded.candidates), len(loaded.observations))
+        self.statusBar().showMessage(f"Sesión abierta desde {path}: {len(loaded.candidates)} candidato(s) añadidos", 6000)
 
     def _export_last_table(self) -> None:
         if self._last_result_table is None:

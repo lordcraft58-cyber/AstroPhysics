@@ -297,7 +297,7 @@ independiente:
 ## FASE 9 — Cierre
 
 **Motor: Fotometría de Apertura (conexión automática Characterization ->
-Candidate) -- REAL PERO LIMITADO.**
+Candidate) -- CERRADO.**
 
 - Funciona: sí -- verificado con flujo inyectado conocido (sintético) y
   con contraste independiente sobre píxeles reales de M31 (0.3% de
@@ -308,25 +308,27 @@ Candidate) -- REAL PERO LIMITADO.**
 - GUI funciona: sí -- fila antes muerta ahora renderiza un valor real,
   verificado con prueba de humo sobre la aplicación real (hilo de fondo
   incluido).
-- **Outputs funcionan: NO, para el camino automático** -- no existe
-  ninguna forma de guardar `Candidate.flux` (ni ningún otro campo de
-  `Candidate`) a disco en la aplicación hoy. El camino manual (`apphot`)
-  sí tiene salida persistente completa desde la Fase 16, sin cambios.
+- Outputs funcionan: sí -- ver "Actualización" más abajo.
 - Provenance funciona: hereda la de `CharacterizationResult`, ya
   probada.
 - Tests pasan: 582 (suite completa, antes 577) + 106 GUI (antes 105),
-  cero regresiones.
+  cero regresiones en esta ronda.
 - Validación real realizada: sí, incluida contrastación independiente
   con píxeles reales de M31 (ver Fase 8).
 
-Por el criterio explícito del protocolo ("outputs funcionan" es uno de
-los siete requisitos de cierre incondicional), este motor **no se marca
-CERRADO**: se marca **REAL PERO LIMITADO**, con una única limitación
-real y ya documentada (sin persistencia de sesión a disco, un hueco de
-todo el proyecto, no de este motor específicamente, y fuera de alcance
-de "un único motor" arreglar aquí). Todo lo demás -- cálculo, conexión,
-GUI, provenance, tests, validación con datos reales -- está genuinamente
-terminado.
+**Actualización (docs/audit/40-CIERRE-MOTOR-PERSISTENCIA-DE-SESION.md).**
+En el momento de este informe, "outputs funcionan" se marcó NO para el
+camino automático -- no existía ninguna forma de guardar `Candidate.flux`
+(ni ningún otro campo de `Candidate`) a disco en la aplicación, así que
+este motor se cerró entonces como **REAL PERO LIMITADO**, no CERRADO,
+por ese único motivo. El usuario pidió explícitamente cerrar ese hueco
+("cierra estos anteriores creando lo que falte"): el cierre 40
+(`io/session_export.py::save_session`/`load_session`, cableado en
+"Archivo -> Guardar/Abrir sesión...") lo resolvió en la misma sesión de
+trabajo, verificado con round-trip real sobre candidatos de M31 con
+`band_flux` real producido por ESTE motor. Con esa limitación resuelta,
+los siete criterios de la Fase 9 quedan satisfechos y este informe se
+corrige a **CERRADO**.
 
 ## FASE 10 — Cambio de motor
 
