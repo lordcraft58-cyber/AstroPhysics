@@ -1042,6 +1042,7 @@ class MainWindow(QMainWindow):
             return
 
         widget = CandidateDetailWidget(candidate_id, self.session_state, DARK, self)
+        widget.report_generated.connect(lambda path: self.statusBar().showMessage(f"Informe científico generado en {path}", 6000))
         sub_window = QMdiSubWindow()
         sub_window.setWidget(widget)
         sub_window.setWindowTitle(f"Candidato: {candidate_id}")

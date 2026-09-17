@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from astrophysics_suite.core.provenance import Provenance
 from astrophysics_suite.discovery.source_tracks import EpochDetection, SourceTrack, group_detections_into_tracks
 from astrophysics_suite.models.detection import Detection, MorphologyClass, MorphologySummary, SkyPosition
@@ -111,6 +113,19 @@ def test_roundtrip():
     track = _track([(10.0, 41.0), (10.0, 41.0), (10.0, 41.0)])
     result = analyze_motion(track, detection_id="D0")
     assert MotionEvidence.from_dict(result.to_dict()) == result
+
+
+def test_epochs_carry_the_real_trajectory_points_for_plotting():
+    step_deg = 2.0 / 3600.0 / 0.754
+    positions = [(10.0 + i * step_deg, 41.0) for i in range(3)]
+    track = _track(positions)
+    result = analyze_motion(track, detection_id="D0", registration_rms_arcsec=0.3)
+    assert len(result.epochs) == 3
+    assert [e.ra_deg for e in result.epochs] == [pytest.approx(ra) for ra, _dec in positions]
+    assert [e.dec_deg for e in result.epochs] == [pytest.approx(dec) for _ra, dec in positions]
+    assert all(e.time is not None for e in result.epochs)
+    # Orden temporal real, no el orden de inserción por casualidad.
+    assert list(result.epochs) == sorted(result.epochs, key=lambda e: e.time)
 
 
 def test_provenance_carries_the_real_pipeline_version_and_engine():

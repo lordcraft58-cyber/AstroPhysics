@@ -9,15 +9,19 @@ aquí un descubrimiento oficial -- solo registra la decisión humana
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
+from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QFileDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
@@ -29,6 +33,8 @@ from astrophysics_suite.core.quantity import Quantity
 from qt_app.candidates.badge import Badge
 from qt_app.candidates.mappings import REVIEW_LABEL_ES, STATE_COLOR_ATTR, STATE_LABEL_ES
 from services.session_state import SessionState
+
+logger = logging.getLogger(__name__)
 
 REVIEWER_NAME = "Revisor"
 """Placeholder de autoría -- el taller no tiene todavía un sistema de
@@ -48,6 +54,11 @@ def _fmt_quantity(q: Quantity | None) -> str:
 
 class CandidateDetailWidget(QWidget):
     review_changed = Signal()
+    report_generated = Signal(str)
+    """Emitida con la ruta real tras generar un informe -- este widget no
+    tiene barra de estado propia (vive dentro de una subventana MDI); el
+    éxito se comunica así, nunca con un diálogo modal bloqueante como el
+    que sí usa `QMessageBox.critical` para un error real."""
 
     def __init__(self, candidate_id: str, session_state: SessionState, palette, parent=None):
         super().__init__(parent)
@@ -77,7 +88,9 @@ class CandidateDetailWidget(QWidget):
         self.flag_button.clicked.connect(lambda: self._review(ReviewState.FLAGGED))
         self.reject_button = QPushButton("Descartar")
         self.reject_button.clicked.connect(lambda: self._review(ReviewState.REJECTED))
-        for button in (self.keep_button, self.flag_button, self.reject_button):
+        self.report_button = QPushButton("Generar informe científico...")
+        self.report_button.clicked.connect(self._generate_report)
+        for button in (self.keep_button, self.flag_button, self.reject_button, self.report_button):
             actions.addWidget(button)
         actions.addStretch(1)
         header.addLayout(actions)
@@ -112,6 +125,27 @@ class CandidateDetailWidget(QWidget):
         updated = candidate.mark_reviewed(new_state=new_state, author=REVIEWER_NAME, note=note, reviewed_at=datetime.now(timezone.utc))
         self.session_state.replace_candidate(updated)
         self.review_changed.emit()
+
+    def _generate_report(self) -> None:
+        from astrophysics_suite.export.html import export_html
+        from astrophysics_suite.reporting.candidate_report import build_candidate_report
+
+        candidate = self._candidate()
+        if candidate is None:
+            return
+        observation = next((o for o in self.session_state.observations if o.observation_id == candidate.observation_id), None)
+        path, _ = QFileDialog.getSaveFileName(self, "Generar informe científico", f"{candidate.candidate_id}.html", "HTML (*.html)")
+        if not path:
+            return
+        try:
+            report = build_candidate_report(candidate, observation=observation, pipeline_version=candidate.provenance.pipeline_version)
+            export_html(report, path)
+        except Exception as exc:  # noqa: BLE001 -- error real de generación/escritura, debe ser visible
+            logger.error("No se pudo generar el informe de %s en %s: %s", candidate.candidate_id, path, exc)
+            QMessageBox.critical(self, "Generar informe científico", f"No se pudo generar el informe en «{Path(path).name}»:\n\n{exc}")
+            return
+        logger.info("Informe científico de %s generado en %s (%d secciones)", candidate.candidate_id, path, len(report.sections))
+        self.report_generated.emit(path)
 
     def _refresh(self) -> None:
         p = self.palette

@@ -49,3 +49,22 @@ def test_provenance_is_present_even_when_the_result_is_not_active():
     assert result.variable_candidate is False
     assert result.provenance.pipeline_version == "v1"
     assert result.provenance.engine == "temporal.variability"
+
+
+def test_epochs_carry_the_real_points_used_by_the_engine_for_plotting():
+    epochs_in = [{"time": t, "value": 10.0 + 1.0 * t, "error": 0.05} for t in range(6)]
+    result = analyze_variability(epochs_in, detection_id="DET-0007")
+    assert len(result.epochs) == 6
+    assert [e.time for e in result.epochs] == list(range(6))
+    assert [e.value for e in result.epochs] == [10.0 + 1.0 * t for t in range(6)]
+    assert all(e.error == 0.05 for e in result.epochs)
+
+
+def test_epochs_drop_points_the_engine_itself_would_reject():
+    # Un punto sin error real (sy<=0) no lo usa el motor heredado --
+    # tampoco debe aparecer en los puntos que se dibujarían en una curva.
+    epochs_in = [{"time": t, "value": 10.0, "error": 0.05} for t in range(5)]
+    epochs_in.append({"time": 99, "value": 10.0, "error": 0.0})
+    result = analyze_variability(epochs_in, detection_id="DET-0008")
+    assert len(result.epochs) == 5
+    assert all(e.time != 99 for e in result.epochs)

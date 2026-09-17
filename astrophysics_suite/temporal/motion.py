@@ -31,7 +31,7 @@ from astrophysics_suite.core.enums import ValueKind
 from astrophysics_suite.core.provenance import Provenance
 from astrophysics_suite.core.quantity import Quantity
 from astrophysics_suite.discovery.source_tracks import SourceTrack
-from astrophysics_suite.models.temporal import MotionEvidence
+from astrophysics_suite.models.temporal import MotionEpoch, MotionEvidence
 
 ENGINE_NAME = "temporal.motion"
 ENGINE_VERSION = "1.0"
@@ -62,6 +62,11 @@ def analyze_motion(
     ceros que parezcan una medida."""
     provenance = Provenance.now(pipeline_version=pipeline_version, engine=ENGINE_NAME, engine_version=ENGINE_VERSION)
     positions = track.sky_positions()
+    # Puntos reales de la trayectoria, para que `reporting/` pueda dibujar
+    # RA(t)/Dec(t) real -- se adjuntan siempre, incluso cuando el ajuste
+    # no se pudo hacer (menos épocas de las necesarias sigue siendo una
+    # trayectoria real, aunque incompleta).
+    epochs = tuple(MotionEpoch(time=t, ra_deg=r, dec_deg=d) for t, r, d in positions if t is not None)
 
     def unavailable(reason: str) -> MotionEvidence:
         return MotionEvidence.create(
@@ -72,6 +77,7 @@ def analyze_motion(
             pm_dec=Quantity.not_available(unit="arcsec/hour", method=ENGINE_NAME, reference=reason),
             pm_total=Quantity.not_available(unit="arcsec/hour", method=ENGINE_NAME, reference=reason),
             moving_source_candidate=False,
+            epochs=epochs,
         )
 
     if len(positions) < 2:
@@ -158,6 +164,7 @@ def analyze_motion(
             pm_total=Quantity(value=pm_total_value, error=None, unit="arcsec/hour", kind=ValueKind.OBSERVED,
                               method="linear_trajectory_fit", notes=notes),
             moving_source_candidate=False,
+            epochs=epochs,
         )
 
     significance = pm_total_value / slope_error
@@ -179,4 +186,5 @@ def analyze_motion(
         pm_total=Quantity(value=pm_total_value, error=slope_error, unit="arcsec/hour", kind=ValueKind.OBSERVED,
                           method="linear_trajectory_fit", notes=notes),
         moving_source_candidate=bool(is_moving),
+        epochs=epochs,
     )
