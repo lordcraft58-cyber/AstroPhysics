@@ -138,6 +138,31 @@ class CandidateDetailWidget(QWidget):
         self.session_state.replace_candidate(updated)
         self.review_changed.emit()
 
+    def _lookup_wcs_and_zeropoint(self, candidate, observation):
+        """Busca, entre las imágenes reales de `observation` que llevan
+        alguna de las bandas del candidato, un `WCSSolution`/`ZeropointFit`
+        real que esta misma sesión de GUI ya haya calculado sobre esa
+        imagen (`SessionState.wcs_solutions`/`zeropoint_fits`, ver
+        `main_window._remember_wcs_solution`/`_on_process_finished`) --
+        `None` para cualquiera de los dos si no se ha ajustado nada
+        todavía, para que el informe siga siendo honesto en vez de
+        inventar una procedencia."""
+        if observation is None or not candidate.bands:
+            return None, None
+        candidate_bands = set(candidate.bands)
+        wcs_solution = None
+        zeropoint_fit = None
+        for image in observation.images:
+            if image.band not in candidate_bands:
+                continue
+            if wcs_solution is None:
+                wcs_solution = self.session_state.wcs_solutions.get(image.path)
+            if zeropoint_fit is None:
+                zeropoint_fit = self.session_state.zeropoint_fits.get(image.path)
+            if wcs_solution is not None and zeropoint_fit is not None:
+                break
+        return wcs_solution, zeropoint_fit
+
     def _generate_report(self) -> None:
         from astrophysics_suite.export.html import export_html
         from astrophysics_suite.reporting.candidate_report import build_candidate_report
@@ -146,11 +171,15 @@ class CandidateDetailWidget(QWidget):
         if candidate is None:
             return
         observation = next((o for o in self.session_state.observations if o.observation_id == candidate.observation_id), None)
+        wcs_solution, zeropoint_fit = self._lookup_wcs_and_zeropoint(candidate, observation)
         path, _ = QFileDialog.getSaveFileName(self, "Generar informe científico", f"{candidate.candidate_id}.html", "HTML (*.html)")
         if not path:
             return
         try:
-            report = build_candidate_report(candidate, observation=observation, pipeline_version=candidate.provenance.pipeline_version)
+            report = build_candidate_report(
+                candidate, observation=observation, wcs_solution=wcs_solution, zeropoint_fit=zeropoint_fit,
+                pipeline_version=candidate.provenance.pipeline_version,
+            )
             export_html(report, path)
         except Exception as exc:  # noqa: BLE001 -- error real de generación/escritura, debe ser visible
             logger.error("No se pudo generar el informe de %s en %s: %s", candidate.candidate_id, path, exc)

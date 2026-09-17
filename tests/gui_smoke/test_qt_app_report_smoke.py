@@ -124,3 +124,53 @@ def test_report_button_shows_a_real_error_instead_of_a_fake_success(qapp, main_w
         detail_widget._generate_report()
 
     critical.assert_called_once()
+
+
+def test_report_button_shows_real_wcs_residuals_when_the_source_image_has_a_fitted_wcs(qapp, main_window, tmp_path, monkeypatch):
+    # Cierre de la brecha documentada en el cierre 44: build_candidate_
+    # report ya aceptaba wcs_solution/zeropoint_fit reales, pero la GUI
+    # nunca se los pasaba porque ninguno de los dos sobrevivía más allá
+    # de la sesión activa. Ahora SessionState los recuerda por ruta de
+    # imagen (main_window._remember_wcs_solution) y el botón los busca
+    # ahí -- este test confirma la cadena completa, no solo una pieza.
+    from astrophysics_suite.astrometry.wcs_fit import fit_wcs
+    from legacy.AstroPhysicsSuite_v57_3_COMMERCIAL import _write_minimal_fits_2d
+
+    field = _star_field((96, 96), [(30, 30), (60, 60)])
+    path = tmp_path / "field_OIII.fits"
+    _write_minimal_fits_2d(path, field)
+    resolved_path = str(path.resolve())
+    _run_discovery_and_wait(qapp, main_window, "Campo residuales reales", [(str(path), "OIII")])
+    assert main_window.session_state.candidates
+    assert main_window.session_state.observations
+    observation = main_window.session_state.observations[0]
+    assert observation.images[0].path == resolved_path
+
+    view_window = main_window.add_image_window(field, "field_OIII.fits", source_path=resolved_path)
+    qapp.processEvents()
+    view = view_window.widget()
+
+    solution = fit_wcs(
+        [(10.0, 10.0), (90.0, 10.0), (10.0, 90.0), (50.0, 50.0), (70.0, 20.0), (20.0, 70.0)],
+        [(120.01, 40.0), (119.99, 40.0), (120.01, 40.02), (120.0, 40.01), (119.995, 40.005), (120.005, 40.015)],
+        crpix_px=(48.0, 48.0),
+    )
+    main_window._remember_wcs_solution(view, solution)
+    assert main_window.session_state.wcs_solutions.get(resolved_path) is solution
+
+    candidate_id = main_window.session_state.candidates[0].candidate_id
+    main_window._open_candidate_detail(candidate_id)
+    qapp.processEvents()
+    detail_widget = main_window._candidate_detail_windows[candidate_id].widget()
+
+    report_path = tmp_path / "informe_con_wcs.html"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(report_path), "")))
+
+    detail_widget._generate_report()
+    qapp.processEvents()
+
+    assert report_path.exists()
+    text = report_path.read_text(encoding="utf-8")
+    assert "RMS del ajuste WCS" in text
+    assert f"{solution.rms_residual_arcsec:.4f}" in text
+    assert "NO DISPONIBLE (resultado por imagen" not in text

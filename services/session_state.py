@@ -15,9 +15,11 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from astrophysics_suite.astrometry.wcs_fit import WCSSolution
 from astrophysics_suite.io.fits_loader import LoadedImage
 from astrophysics_suite.models.candidate import Candidate
 from astrophysics_suite.models.observation import Observation
+from astrophysics_suite.photometry.calibration import ZeropointFit
 
 
 @dataclass
@@ -28,6 +30,17 @@ class SessionState:
     """Clave: ImageRef.path. Compartido entre todas las observaciones de
     la sesión para no releer el mismo archivo dos veces."""
     candidates: list[Candidate] = field(default_factory=list)
+    wcs_solutions: dict[str, WCSSolution] = field(default_factory=dict)
+    """Clave: `ImageView.source_path` real de la imagen ajustada -- el
+    último `WCSSolution` real (de "Ajustar WCS...", resolución automática
+    o ciega) para esa imagen en esta sesión de GUI. Transitorio: no se
+    persiste con `io.session_export` (es un resultado por imagen, no
+    parte de ningún `Candidate`/`Observation`), pero mientras la sesión
+    sigue abierta permite que "Generar informe científico..." muestre
+    residuales reales en vez de NO DISPONIBLE."""
+    zeropoint_fits: dict[str, ZeropointFit] = field(default_factory=dict)
+    """Mismo patrón que `wcs_solutions`, para el último `ZeropointFit`
+    real de `photometry.zeropoint` sobre esa imagen."""
     _listeners: list = field(default_factory=list, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -84,6 +97,14 @@ class SessionState:
                     self.candidates[index] = updated
                     break
         self._notify()
+
+    def set_wcs_solution(self, path: str, solution: WCSSolution) -> None:
+        with self._lock:
+            self.wcs_solutions[path] = solution
+
+    def set_zeropoint_fit(self, path: str, fit: ZeropointFit) -> None:
+        with self._lock:
+            self.zeropoint_fits[path] = fit
 
     def candidates_pending_review(self) -> list[Candidate]:
         return [c for c in self.candidates if c.review_state.value == "PENDING"]

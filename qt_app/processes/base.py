@@ -55,6 +55,12 @@ class ProcessResult:
     """Tabla con una fila por medición (p. ej. una por estrella), lista
     para exportar a CSV -- `None` si el proceso no produce datos
     tabulares (la mayoría no lo hacen)."""
+    artifacts: dict[str, Any] = field(default_factory=dict)
+    """Resultados con nombre que un proceso concreto quiera exponer más
+    allá de `output_data`/`table` (p. ej. `"zeropoint_fit"` con el
+    `ZeropointFit` real de `photometry.zeropoint`, para que la GUI lo
+    recuerde en `SessionState` sin ensanchar este contrato genérico con
+    un campo por proceso). La mayoría de los procesos lo dejan vacío."""
 
 
 @dataclass(frozen=True)

@@ -525,7 +525,7 @@ class MainWindow(QMainWindow):
         solution = dialog.result_solution()
         if solution is None:
             return
-        view.fitted_wcs_solution = solution
+        self._remember_wcs_solution(view, solution)
         table = dialog.result_table()
         if table is not None:
             self._last_result_table = table
@@ -547,7 +547,7 @@ class MainWindow(QMainWindow):
         solution = dialog.result_solution()
         if solution is None:
             return
-        view.fitted_wcs_solution = solution
+        self._remember_wcs_solution(view, solution)
         table = dialog.result_table()
         if table is not None:
             self._last_result_table = table
@@ -616,8 +616,20 @@ class MainWindow(QMainWindow):
         view.picking_finished.connect(on_picked)
         view.start_picking()
 
-    def _on_wcs_fitted(self, view: ImageView, solution, table: Table) -> None:
+    def _remember_wcs_solution(self, view: ImageView, solution) -> None:
+        """Deja el `WCSSolution` real en la vista (comportamiento ya
+        existente, p. ej. para "Registrar por WCS compartido...") Y en
+        `SessionState` (nuevo), indexado por la ruta real de la imagen --
+        para que "Generar informe científico..." pueda mostrar
+        residuales astrométricos reales en vez de NO DISPONIBLE cuando
+        el candidato viene de esta misma imagen, mientras la sesión de
+        GUI siga abierta."""
         view.fitted_wcs_solution = solution
+        if view.source_path:
+            self.session_state.set_wcs_solution(view.source_path, solution)
+
+    def _on_wcs_fitted(self, view: ImageView, solution, table: Table) -> None:
+        self._remember_wcs_solution(view, solution)
         self._last_result_table = table
         logger.info(
             "WCS ajustado para %s: RMS=%.3f\" con %d estrella(s). Tabla disponible -- Herramientas -> Exportar última tabla a CSV...",
@@ -979,6 +991,9 @@ class MainWindow(QMainWindow):
         if result.table is not None:
             self._last_result_table = result.table
             logger.info("    Tabla disponible (%d fila(s)) -- Herramientas -> Exportar última tabla a CSV...", len(result.table.rows))
+        zeropoint_fit = result.artifacts.get("zeropoint_fit")
+        if zeropoint_fit is not None and view.source_path:
+            self.session_state.set_zeropoint_fit(view.source_path, zeropoint_fit)
 
     def _on_process_failed(self, message: str) -> None:
         self.properties.apply_button.setEnabled(True)

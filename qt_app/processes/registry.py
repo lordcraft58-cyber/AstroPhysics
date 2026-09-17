@@ -259,7 +259,7 @@ def _run_photometric_zeropoint(data: np.ndarray, params: dict) -> ProcessResult:
         units=("", "px", "px", "deg", "deg", "mag", "mag", "arcsec", ""),
         rows=tuple((*row, "sí" if used else "no") for row, used in zip(table_rows, fit.used_mask)),
     )
-    return ProcessResult(output_data=None, summary=summary, log_lines=tuple(log_lines), table=table)
+    return ProcessResult(output_data=None, summary=summary, log_lines=tuple(log_lines), table=table, artifacts={"zeropoint_fit": fit})
 
 
 def _run_psf_photometry(data: np.ndarray, params: dict) -> ProcessResult:
