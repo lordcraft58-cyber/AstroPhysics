@@ -63,3 +63,41 @@ def test_characterize_point_source_reports_not_available_when_cutout_too_small(t
     assert result.fwhm is None
     assert "quality_measurement" in result.extra
     assert not result.extra["quality_measurement"].is_available
+
+
+def test_characterize_point_source_propagates_pixel_measurements_needed_by_artifact_screen(tmp_path):
+    # artifact_screen.py consume snr_local, peak_adu, background_adu,
+    # noise_adu, saturated, isolated y n_peaks_in_stamp directamente de
+    # CharacterizationResult.extra -- antes de cacac21 se medían y se
+    # descartaban aquí, obligando a remedirlos por una segunda vía.
+    field = _star_field((64, 64), 32, 32, amplitude=900.0, background=100.0)
+    path = tmp_path / "field_HA.fits"
+    _write_minimal_fits_2d(path, field)
+    loaded = load_image(str(path), band="HA")
+
+    result = characterize_point_source(loaded, _detection_at(32, 32))
+
+    for key in ("sharpness", "snr_local", "peak_adu", "background_adu", "noise_adu", "n_peaks_in_stamp"):
+        assert key in result.extra, key
+        assert result.extra[key].is_available, key
+
+    # Fuente aislada, sin saturar: ambos booleanos deben quedar en 0.0 (False),
+    # nunca ausentes.
+    assert result.extra["saturated"].value == 0.0
+    assert result.extra["isolated"].value == 1.0
+    assert result.extra["peak_adu"].value > result.extra["background_adu"].value
+
+
+def test_characterize_point_source_flags_saturation_as_a_real_measurement(tmp_path):
+    # amplitude muy por encima del rango típico de una cámara de 16 bits:
+    # measure_source_quality debe detectar el pico como saturado de verdad,
+    # no como una fuente brillante normal.
+    field = _star_field((64, 64), 32, 32, amplitude=70000.0, background=100.0)
+    path = tmp_path / "field_HA.fits"
+    _write_minimal_fits_2d(path, field)
+    loaded = load_image(str(path), band="HA")
+
+    result = characterize_point_source(loaded, _detection_at(32, 32), saturation_level=65535.0)
+
+    assert result.extra["saturated"].value == 1.0
+    assert result.extra["saturated"].unit == "boolean"
