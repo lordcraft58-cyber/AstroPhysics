@@ -57,10 +57,23 @@ def detect_point_sources(
     threshold_sigma: float = 5.0,
     max_sources: int = 3000,
     pipeline_version: str = "",
+    image_index: int | None = None,
 ) -> list[Detection]:
     """Detecta fuentes puntuales en una imagen ya cargada (`io.fits_loader.
     load_image`) y las devuelve como `Detection` tipados, con posición
-    celeste cuando la imagen tiene WCS."""
+    celeste cuando la imagen tiene WCS.
+
+    `row['det_id']` es una etiqueta de componente conexa LOCAL a esta
+    imagen (reinicia en cada llamada) -- sin `image_index`, dos imágenes
+    de la misma `Observation` (p. ej. varias épocas o bandas) producen
+    `detection_id` que COLISIONAN de verdad en cuanto ambas tienen una
+    fuente con el mismo índice local, sobrescribiendo silenciosamente la
+    de la primera en cualquier estructura indexada por `detection_id`
+    (encontrado ejecutando el pipeline multiépoca real, no supuesto:
+    ver docs/audit del cierre de fase). Con `image_index`, el
+    `detection_id` es único dentro de toda la `Observation`; sin él, se
+    conserva el formato anterior para no romper compatibilidad con
+    llamadores existentes de una sola imagen."""
     fits_image = loaded_image.legacy_image
     bkg = _legacy_estimate_background(fits_image.data)
     raw_sources = _legacy_detect_point_sources(
@@ -98,9 +111,14 @@ def detect_point_sources(
             fwhm_px=fwhm_measured,
         )
 
+        detection_id = (
+            f"{observation_id}-IMG{image_index:03d}-PT-{row['det_id']:05d}"
+            if image_index is not None
+            else f"{observation_id}-PT-{row['det_id']:05d}"
+        )
         detections.append(
             Detection.create(
-                detection_id=f"{observation_id}-PT-{row['det_id']:05d}",
+                detection_id=detection_id,
                 observation_id=observation_id,
                 position=position,
                 morphology=morphology,

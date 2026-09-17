@@ -7,31 +7,53 @@ que la Fase 1 documentó: tres pipelines de descubrimiento paralelos que
 no se hablaban entre sí -- ver docs/audit/01-..., seccion 6).
 
 Orden de ejecución, siguiendo la filosofía central del encargo:
-IMÁGENES -> DETECCIÓN -> RECHAZO DE ARTEFACTOS -> IDENTIFICACIÓN ->
-CARACTERIZACIÓN -> CANDIDATO. El rechazo de artefactos ocurre ANTES de
-que nada se considere candidato (una detección ARTIFACT_REJECTED nunca
-llega a producir un Candidate) -- no después, como una anotación sobre
-un candidato ya creado.
-"""
+
+    POR IMAGEN: IMÁGENES -> DEMOSAICO -> WCS -> DETECCIÓN -> FILTRO
+    MORFOLÓGICO BARATO -> CARACTERIZACIÓN -> ESTADÍSTICA DE CAMPO ->
+    CRIBADO REAL DE ARTEFACTOS (autoritativo, `artifacts/artifact_screen`)
+
+    ENTRE IMÁGENES: AGRUPACIÓN MULTIÉPOCA POR BANDA
+    (`discovery/source_tracks`) -> VARIABILIDAD Y MOVIMIENTO POR TRAZA
+    (>= 2 épocas) -> IDENTIFICACIÓN (una vez por traza, sobre la época de
+    referencia) -> VECTOR DE ANOMALÍA -> CADENA DE EVIDENCIA -> CANDIDATO
+
+El cribado de artefactos ocurre ANTES de que nada se considere candidato
+(una detección rechazada por `screen_detection` nunca llega a producir
+un Candidate) -- no después, como una anotación sobre un candidato ya
+creado. Y el Candidate se construye una vez POR TRAZA física, no una vez
+por detección cruda por imagen: antes, con 3 lights reales de M 31, cada
+estrella real producía 3 candidatos duplicados en vez de 1 con 3 épocas
+de evidencia (ver `discovery/source_tracks.py`, medido: 416/412/492
+detecciones por época sobre el mismo campo)."""
 from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Callable
 
+from astrophysics_suite.anomaly.vector import build_anomaly_vector
+from astrophysics_suite.artifacts.artifact_screen import FieldStatistics, compute_field_statistics, screen_detection
 from astrophysics_suite.artifacts.morphology_screen import classify_morphology
 from astrophysics_suite.astrometry.plate_solve import estimate_approx_pointing_from_header, solve_plate
 from astrophysics_suite.astrometry.wcs_fit import rescale_wcs_for_binning, wcs_solution_to_astropy
 from astrophysics_suite.imtools.debayer import bayer_pattern_from_header, debayer_to_luminance, describe_bayer_agreement
 from astrophysics_suite.catalogs.gaia import identify_detection
 from astrophysics_suite.catalogs.simbad import resolve_object_coordinates
-from astrophysics_suite.core.enums import QualityLevel, ValueKind
+from astrophysics_suite.core.enums import IdentificationState, QualityLevel, ValueKind
 from astrophysics_suite.core.quantity import Quantity
 from astrophysics_suite.detection.point_sources import detect_point_sources
+from astrophysics_suite.discovery.source_tracks import EpochDetection, SourceTrack, group_detections_into_tracks
+from astrophysics_suite.evidence.chain_builder import build_evidence_chain
 from astrophysics_suite.io.fits_loader import LoadedImage
-from astrophysics_suite.models.candidate import Candidate, QualityCheckItem, QualitySummary
+from astrophysics_suite.models.candidate import ArtifactCheck, Candidate, QualityCheckItem, QualitySummary
+from astrophysics_suite.models.characterization import CharacterizationResult
+from astrophysics_suite.models.detection import Detection
 from astrophysics_suite.models.observation import Observation
+from astrophysics_suite.models.temporal import MotionEvidence, TemporalEvidence
 from astrophysics_suite.photometry.quality import characterize_point_source
+from astrophysics_suite.temporal.motion import analyze_motion
+from astrophysics_suite.temporal.variability import analyze_variability
 
 _QUALITY_LEVEL_FOR_STATE = {
     "SCIENCE_CANDIDATE": QualityLevel.PASS,
@@ -236,6 +258,96 @@ def _ensure_wcs(
     )
 
 
+@dataclass(frozen=True)
+class _ProcessedSource:
+    """Todo lo que se ha medido de verdad sobre una detección concreta de
+    una imagen concreta, antes de agrupar por traza. Vive solo dentro de
+    este módulo -- `EpochDetection` (de `source_tracks`) referencia el
+    `Detection`, y esto es lo que hay que recuperar a partir de su
+    `detection_id` para construir el `Candidate` final."""
+
+    detection: Detection
+    characterization: CharacterizationResult
+    artifact_checks: tuple[ArtifactCheck, ...]
+    image_index: int
+    morphology_state: str
+    morphology_reason: str
+
+
+def _parse_epoch_time(header: dict) -> datetime | None:
+    """Instante real de adquisición a partir de `DATE-OBS`, necesario
+    para agrupar multiépoca por tiempo real (`source_tracks`) y para el
+    ajuste de trayectoria de `temporal/motion.py`. Nunca se inventa: sin
+    una cabecera FITS con `DATE-OBS` en un formato ISO 8601 reconocible,
+    la imagen simplemente no aporta tiempo real a su traza -- ambos
+    motores ya declaran explícitamente qué hacen sin él."""
+    raw = (header or {}).get("DATE-OBS")
+    if not raw or not isinstance(raw, str):
+        return None
+    try:
+        value = datetime.fromisoformat(raw.strip())
+    except ValueError:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+def _brightness_epochs(track: SourceTrack, processed_by_id: dict[str, _ProcessedSource]) -> list[dict]:
+    """Serie temporal de brillo real para `temporal/variability.py`: pico
+    en ADU (`peak_adu`, ya medido por `characterize_point_source`) con su
+    incertidumbre real (`noise_adu`) en cada época con tiempo conocido.
+
+    Es un proxy INSTRUMENTAL, no flujo calibrado -- la fotometría de
+    apertura/PSF todavía no está conectada a `Characterization`
+    (pendiente, ver el informe de cierre). Se usa igualmente porque es
+    una magnitud real medida sobre los píxeles en cada época, nunca
+    inventada; cuando la calibración fotométrica se conecte, esta función
+    es el único punto que hay que cambiar."""
+    times = [obs.epoch_time for obs in track.observations if obs.epoch_time is not None]
+    if not times:
+        return []
+    t0 = min(times)
+    epochs: list[dict] = []
+    for obs in sorted(track.observations, key=lambda o: o.epoch_index):
+        if obs.epoch_time is None:
+            continue
+        processed = processed_by_id.get(obs.detection.detection_id)
+        if processed is None:
+            continue
+        peak = processed.characterization.extra.get("peak_adu")
+        noise = processed.characterization.extra.get("noise_adu")
+        if peak is None or not peak.is_available or peak.value is None:
+            continue
+        if noise is None or not noise.is_available or noise.value is None or noise.value <= 0:
+            continue
+        epochs.append({
+            "time": (obs.epoch_time - t0).total_seconds() / 3600.0,
+            "value": float(peak.value),
+            "error": float(noise.value),
+        })
+    return epochs
+
+
+def _upgrade_identification_state(
+    base_state: IdentificationState, temporal: TemporalEvidence | None, motion: MotionEvidence | None,
+) -> IdentificationState:
+    """Reclasifica el estado base con evidencia multiépoca REAL -- nunca
+    hacia una de las categorías especiales del vocabulario (§2 de
+    docs/audit/02-...) sin que el motor correspondiente haya concluido
+    algo real sobre esta traza (`variable_candidate`/
+    `moving_source_candidate`, no la mera presencia de un objeto
+    `TemporalEvidence`/`MotionEvidence` con menos épocas de las que hacen
+    falta). Movimiento significativo prevalece sobre variabilidad: un
+    objeto que se desplaza es más específico que uno que solo cambia de
+    brillo."""
+    if motion is not None and motion.moving_source_candidate:
+        return IdentificationState.MOVING_SOURCE_CANDIDATE
+    if temporal is not None and temporal.variable_candidate:
+        if base_state is IdentificationState.KNOWN:
+            return IdentificationState.KNOWN_VARIANT
+        return IdentificationState.TRANSIENT_CANDIDATE
+    return base_state
+
+
 def run_generic_discovery(
     observation: Observation,
     loaded_images: dict[str, LoadedImage],
@@ -286,6 +398,13 @@ def run_generic_discovery(
     wcs_statuses: list[ImageWCSStatus] = []
     cfa_statuses: list[ImageCFAStatus] = []
 
+    # Estado acumulado ENTRE imágenes, para la agrupación multiépoca y la
+    # reconstrucción del Candidate tras agrupar (ver el docstring del
+    # módulo: nada de esto existía antes de esta fase de cierre).
+    processed_by_id: dict[str, _ProcessedSource] = {}
+    field_stats_by_image: dict[int, FieldStatistics] = {}
+    epoch_detections_by_band: dict[str, list[EpochDetection]] = {}
+
     for image_index, image_ref in enumerate(observation.images):
         check_cancelled()
         loaded = loaded_images[image_ref.path]
@@ -306,6 +425,7 @@ def run_generic_discovery(
                 report=report, progress_fraction=image_index / n_images,
             )
         )
+        epoch_time = _parse_epoch_time(loaded.legacy_image.header or {})
         check_cancelled()
         report(image_index / n_images, f"Detectando fuentes en {image_ref.band} ({image_index + 1}/{n_images})")
         detections = detect_point_sources(
@@ -316,9 +436,17 @@ def run_generic_discovery(
             threshold_sigma=threshold_sigma,
             max_sources=max_sources,
             pipeline_version=pipeline_version,
+            image_index=image_index,
         )
         n_detected += len(detections)
 
+        # --- Pase 1: filtro morfológico barato (sin tocar píxeles) +
+        # caracterización real de lo que sobrevive. El filtro barato solo
+        # descarta lo más extremo (elongación >= 8, área <= 2 px) -- mucho
+        # más laxo que `screen_detection`, así que nunca rechaza algo que
+        # el cribado real habría aceptado; existe solo para no gastar
+        # caracterización de píxeles en basura evidente.
+        kept: list[tuple[Detection, CharacterizationResult, str, str]] = []
         for detection_index, detection in enumerate(detections):
             check_cancelled()
             if detections:
@@ -329,35 +457,112 @@ def run_generic_discovery(
             if state == "ARTIFACT_REJECTED":
                 n_rejected += 1
                 continue
-
             characterization = characterize_point_source(loaded, detection, pipeline_version=pipeline_version)
-            identification_state, catalog_matches, catalog_non_matches = identify_detection(
-                detection, match_radius_arcsec=match_radius_arcsec, mag_limit=gaia_mag_limit
+            kept.append((detection, characterization, state, reason))
+
+        # --- Pase 2: estadística de campo real, una vez por imagen -- la
+        # necesitan COSMIC_RAY/PSF_DEFECT de `screen_detection` (comparan
+        # contra la PSF real del campo, no un umbral fijo inventado).
+        field_stats = compute_field_statistics([c for _, c, _, _ in kept])
+        field_stats_by_image[image_index] = field_stats
+
+        # --- Pase 3: cribado REAL de artefactos -- el gate autoritativo.
+        # Ninguna detección se convierte en Candidate sin pasar por aquí.
+        for detection, characterization, state, reason in kept:
+            check_cancelled()
+            screen = screen_detection(detection, characterization, field_stats)
+            if screen.rejected:
+                n_rejected += 1
+                continue
+            processed_by_id[detection.detection_id] = _ProcessedSource(
+                detection=detection, characterization=characterization, artifact_checks=screen.checks,
+                image_index=image_index, morphology_state=state, morphology_reason=reason,
+            )
+            epoch_detections_by_band.setdefault(image_ref.band, []).append(
+                EpochDetection(image_index, epoch_time, image_ref.band, image_ref.path, detection)
             )
 
-            quality = QualitySummary(
-                overall_level=_QUALITY_LEVEL_FOR_STATE[state],
-                checks=(QualityCheckItem(name="morphology_screen", level=_QUALITY_LEVEL_FOR_STATE[state], detail=reason),),
-            )
-            snr = Quantity(value=detection.peak_snr, error=None, unit="dimensionless", kind=ValueKind.OBSERVED, method=detection.method)
+    # --- Agrupación multiépoca, POR BANDA: el dithering entre tomas del
+    # mismo campo mueve la misma fuente a píxeles distintos, así que solo
+    # tiene sentido emparejar detecciones de la MISMA banda entre sí (ver
+    # `discovery/source_tracks.py`). Bandas distintas de la misma toma
+    # (p. ej. Hα y OIII) nunca se funden en una traza -- no son épocas de
+    # lo mismo, son mediciones simultáneas de bandas distintas.
+    tracks: list[SourceTrack] = []
+    for band, epoch_dets in epoch_detections_by_band.items():
+        tracking = group_detections_into_tracks(
+            epoch_dets, match_radius_arcsec=match_radius_arcsec, observation_id=f"{observation.observation_id}-{band}",
+        )
+        tracks.extend(tracking.tracks)
 
-            candidates.append(
-                Candidate.create(
-                    candidate_id=f"{observation.observation_id}-{detection.detection_id}",
-                    observation_id=observation.observation_id,
-                    detection_id=detection.detection_id,
-                    position=characterization.position,
-                    morphology=detection.morphology,
-                    size=characterization.fwhm,
-                    snr=snr,
-                    bands=detection.bands,
-                    catalog_matches=catalog_matches,
-                    catalog_non_matches=catalog_non_matches,
-                    provenance=detection.provenance,
-                    identification_state=identification_state,
-                    quality=quality,
-                )
+    # --- Por cada traza física: variabilidad/movimiento (si hay >= 2
+    # épocas), identificación (una sola vez, sobre la época de
+    # referencia), vector de anomalía, cadena de evidencia y Candidate.
+    for track in tracks:
+        check_cancelled()
+        reference_detection = track.reference.detection
+        reference = processed_by_id[reference_detection.detection_id]
+
+        temporal: TemporalEvidence | None = None
+        motion: MotionEvidence | None = None
+        if track.n_epochs >= 2:
+            brightness_epochs = _brightness_epochs(track, processed_by_id)
+            if len(brightness_epochs) >= 2:
+                temporal = analyze_variability(brightness_epochs, detection_id=reference_detection.detection_id)
+            motion = analyze_motion(track, detection_id=reference_detection.detection_id, pipeline_version=pipeline_version)
+
+        identification_state, catalog_matches, catalog_non_matches = identify_detection(
+            reference_detection, match_radius_arcsec=match_radius_arcsec, mag_limit=gaia_mag_limit,
+        )
+
+        field_stats = field_stats_by_image.get(reference.image_index, FieldStatistics(n_sources=0, median_fwhm_px=None, fwhm_scatter_px=None))
+        anomaly = build_anomaly_vector(
+            detection_id=reference_detection.detection_id,
+            characterization=reference.characterization,
+            temporal=temporal,
+            motion=motion,
+            field_median_fwhm_px=field_stats.median_fwhm_px,
+            field_fwhm_scatter_px=field_stats.fwhm_scatter_px,
+        )
+        evidence_chain = build_evidence_chain(
+            detection_id=reference_detection.detection_id,
+            anomaly=anomaly,
+            temporal=temporal,
+            motion=motion,
+            catalog_matches=catalog_matches,
+            catalog_non_matches=catalog_non_matches,
+            artifact_checks=reference.artifact_checks,
+        )
+
+        final_state = _upgrade_identification_state(identification_state, temporal, motion)
+        quality = QualitySummary(
+            overall_level=_QUALITY_LEVEL_FOR_STATE[reference.morphology_state],
+            checks=(QualityCheckItem(name="morphology_screen", level=_QUALITY_LEVEL_FOR_STATE[reference.morphology_state], detail=reference.morphology_reason),),
+        )
+        snr = Quantity(value=reference_detection.peak_snr, error=None, unit="dimensionless", kind=ValueKind.OBSERVED, method=reference_detection.method)
+
+        candidates.append(
+            Candidate.create(
+                candidate_id=f"{observation.observation_id}-{reference_detection.detection_id}",
+                observation_id=observation.observation_id,
+                detection_id=reference_detection.detection_id,
+                position=reference.characterization.position,
+                morphology=reference_detection.morphology,
+                size=reference.characterization.fwhm,
+                snr=snr,
+                bands=reference_detection.bands,
+                catalog_matches=catalog_matches,
+                catalog_non_matches=catalog_non_matches,
+                temporal_evidence=temporal,
+                motion_evidence=motion,
+                anomaly_evidence=anomaly,
+                artifact_checks=reference.artifact_checks,
+                provenance=reference_detection.provenance,
+                identification_state=final_state,
+                evidence_chain=evidence_chain,
+                quality=quality,
             )
+        )
 
     report(1.0, f"Completado: {len(candidates)} candidatos de {n_detected} detecciones")
     summary = DiscoveryRunSummary(

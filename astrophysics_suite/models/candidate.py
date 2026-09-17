@@ -25,6 +25,7 @@ from astrophysics_suite.core.provenance import Provenance
 from astrophysics_suite.core.quantity import Quantity
 from astrophysics_suite.models.anomaly import AnomalyVector
 from astrophysics_suite.models.detection import MorphologySummary, SkyPosition
+from astrophysics_suite.models.evidence import EvidenceChain
 from astrophysics_suite.models.physical import PhysicalInference
 from astrophysics_suite.models.temporal import MotionEvidence, TemporalEvidence
 
@@ -219,6 +220,13 @@ class Candidate:
     quality: QualitySummary
     provenance: Provenance
     identification_state: IdentificationState
+    evidence_chain: EvidenceChain | None = None
+    """La cadena de evidencia auditable que sustenta (o no) este
+    candidato -- ver `evidence/chain_builder.py`. `None` cuando el
+    pipeline que produjo este Candidate no la construyó (p. ej. rutas
+    heredadas o de prueba anteriores a su introducción), nunca un
+    marcador de "sin evidencia": esa distinción vive en
+    `EvidenceChain.items`, que puede estar vacía legítimamente."""
     review_state: ReviewState = ReviewState.PENDING
     review_notes: tuple[ReviewNote, ...] = ()
 
@@ -246,6 +254,7 @@ class Candidate:
         anomaly_evidence: AnomalyVector | None = None,
         ai_evidence: tuple[AIAssessment, ...] = (),
         artifact_checks: tuple[ArtifactCheck, ...] = (),
+        evidence_chain: EvidenceChain | None = None,
     ) -> "Candidate":
         return cls(
             schema_version=SCHEMA_VERSION,
@@ -269,6 +278,7 @@ class Candidate:
             quality=quality,
             provenance=provenance,
             identification_state=identification_state,
+            evidence_chain=evidence_chain,
             review_state=ReviewState.PENDING,
             review_notes=(),
         )
@@ -313,6 +323,7 @@ class Candidate:
             "quality": self.quality.to_dict(),
             "provenance": self.provenance.to_dict(),
             "identification_state": self.identification_state.value,
+            "evidence_chain": self.evidence_chain.to_dict() if self.evidence_chain else None,
             "review_state": self.review_state.value,
             "review_notes": [n.to_dict() for n in self.review_notes],
         }
@@ -341,6 +352,7 @@ class Candidate:
             quality=QualitySummary.from_dict(data["quality"]),
             provenance=Provenance.from_dict(data["provenance"]),
             identification_state=IdentificationState(data["identification_state"]),
+            evidence_chain=EvidenceChain.from_dict(data["evidence_chain"]) if data.get("evidence_chain") else None,
             review_state=ReviewState(data.get("review_state", ReviewState.PENDING.value)),
             review_notes=tuple(ReviewNote.from_dict(n) for n in data.get("review_notes", ())),
         )

@@ -8,6 +8,7 @@ por falta de WCS -- comportamiento correcto, no un mock).
 from __future__ import annotations
 
 import math
+from datetime import datetime, timedelta
 
 import numpy as np
 
@@ -390,3 +391,87 @@ def test_run_generic_discovery_leaves_a_mono_image_untouched(tmp_path, monkeypat
 
     assert summary.cfa_status[0].state == CFA_STATE_NOT_CFA
     assert loaded[observation.images[0].path].legacy_image.data.shape == shape_before, "una imagen monocroma no debe binificarse"
+
+
+def _write_fits_with_wcs_and_epoch(path, data, *, crval, date_obs: str, pixel_scale_arcsec: float = 1.0):
+    """FITS real con WCS válido Y `DATE-OBS` -- lo que necesitan a la vez
+    `discovery/source_tracks.py` (agrupar por coordenadas celestes) y
+    `temporal/motion.py` (tiempo real de cada época)."""
+    from astropy.io import fits
+    from astropy.wcs import WCS
+
+    wcs = WCS(naxis=2)
+    wcs.wcs.crpix = [data.shape[1] / 2.0, data.shape[0] / 2.0]
+    wcs.wcs.cdelt = [-pixel_scale_arcsec / 3600.0, pixel_scale_arcsec / 3600.0]
+    wcs.wcs.crval = list(crval)
+    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    header = wcs.to_header()
+    header["DATE-OBS"] = date_obs
+    fits.PrimaryHDU(data.astype(np.float32), header=header).writeto(path)
+
+
+def test_run_generic_discovery_groups_multi_epoch_detections_into_one_candidate_per_physical_source(tmp_path, monkeypatch):
+    """La comprobación central de esta fase de cierre (ver el docstring del
+    módulo): antes de agrupar por traza, 3 imágenes del mismo campo con 2
+    fuentes reales cada una producían 6 candidatos -- 3 duplicados por
+    fuente física. Agrupando por `discovery/source_tracks.py` deben
+    quedar exactamente 2: uno por fuente real, cada uno con su evidencia
+    temporal/de movimiento real de las 3 épocas adjunta.
+
+    Además reproduce, con datos reales (no simulados a mano), el caso
+    correcto y el caso "trampa" del motor de movimiento: una fuente
+    estática con jitter de centroide real NO debe declararse en
+    movimiento, y una fuente que sí se desplaza sí debe hacerlo -- con
+    significancia derivada del residuo real del ajuste, no inventada."""
+    monkeypatch.setattr(gaia_module, "query_gaia_neighbors", lambda *a, **k: [])
+
+    shape = (160, 160)
+    crval = (200.0, -10.0)
+    t0 = datetime(2026, 9, 10, 20, 0, 0)
+
+    static_xy = (60.0, 60.0)
+    step_px = 1.0  # separación entre épocas consecutivas, dentro del radio de emparejamiento
+    moving_xy_per_epoch = [(90.0 + step_px * i, 90.0) for i in range(3)]
+
+    image_refs = []
+    for i in range(3):
+        positions = [static_xy, moving_xy_per_epoch[i]]
+        field = _star_field(shape, positions, amplitude=3000.0, sigma=1.6, background=200.0, seed=100 + i)
+        path = tmp_path / f"epoch_{i}.fits"
+        date_obs = (t0 + timedelta(minutes=5 * i)).isoformat()
+        _write_fits_with_wcs_and_epoch(path, field, crval=crval, date_obs=date_obs)
+        image_refs.append((str(path), "L"))
+
+    observation, loaded = build_observation(image_refs, observation_id="OBS-MULTI-0001", target_name="Campo multiépoca")
+    candidates, summary = run_generic_discovery(observation, loaded, threshold_sigma=5.0, match_radius_arcsec=3.0)
+
+    assert summary.n_images == 3
+    assert summary.n_candidates == 2, [(c.candidate_id, c.position.ra_deg, c.position.dec_deg) for c in candidates]
+
+    moving = [c for c in candidates if c.identification_state is IdentificationState.MOVING_SOURCE_CANDIDATE]
+    assert len(moving) == 1, [c.identification_state.value for c in candidates]
+    moving_candidate = moving[0]
+    assert moving_candidate.motion_evidence is not None
+    assert moving_candidate.motion_evidence.moving_source_candidate is True
+    assert moving_candidate.motion_evidence.n_epochs_used == 3
+    assert moving_candidate.motion_evidence.pm_total.value > 1.0  # "/h, muy por encima del jitter de centroide
+    # La significancia real viene del residuo del ajuste, nunca de un valor fijo.
+    assert "σ" in moving_candidate.motion_evidence.pm_total.notes[-1]
+    assert moving_candidate.evidence_chain is not None
+    categories = {item.category for item in moving_candidate.evidence_chain.items}
+    assert "motion_evidence" in categories
+    assert "astrometric_anomaly" in categories
+
+    static_candidate = next(c for c in candidates if c is not moving_candidate)
+    assert static_candidate.identification_state is not IdentificationState.MOVING_SOURCE_CANDIDATE
+    assert static_candidate.motion_evidence is not None
+    assert static_candidate.motion_evidence.n_epochs_used == 3
+    assert static_candidate.motion_evidence.moving_source_candidate is False, (
+        "el jitter de centroide real de una fuente fija no debe superar el umbral de significancia"
+    )
+
+    for candidate in candidates:
+        assert candidate.evidence_chain is not None
+        from astrophysics_suite.models.candidate import Candidate
+
+        assert Candidate.from_dict(candidate.to_dict()) == candidate

@@ -54,6 +54,51 @@ def test_detect_point_sources_finds_injected_stars(tmp_path):
         assert d.position.dec_deg is None
 
 
+def test_detect_point_sources_ids_collide_across_images_of_the_same_observation_without_image_index(tmp_path):
+    # Regresión documentada: `det_id` es una etiqueta de componente conexa
+    # LOCAL a cada imagen (reinicia en cada llamada), así que sin
+    # `image_index` dos imágenes de la MISMA Observation con el mismo
+    # número de fuentes producen detection_id idénticos -- una colisión
+    # real que sobrescribía en silencio la fuente de la primera imagen en
+    # cualquier estructura indexada por detection_id (encontrada
+    # ejecutando el pipeline multiépoca real).
+    positions = [(30, 30), (70, 45)]
+    field_a = _synthetic_star_field((128, 128), positions, seed=1)
+    field_b = _synthetic_star_field((128, 128), positions, seed=2)
+    path_a, path_b = tmp_path / "epoch_a.fits", tmp_path / "epoch_b.fits"
+    _write_minimal_fits_2d(path_a, field_a, pixel_scale_arcsec=1.0)
+    _write_minimal_fits_2d(path_b, field_b, pixel_scale_arcsec=1.0)
+
+    detections_a = detect_point_sources(load_image(str(path_a), band="L"), observation_id="OBS-COLLIDE", band="L", threshold_sigma=4.0)
+    detections_b = detect_point_sources(load_image(str(path_b), band="L"), observation_id="OBS-COLLIDE", band="L", threshold_sigma=4.0)
+
+    ids_a = {d.detection_id for d in detections_a}
+    ids_b = {d.detection_id for d in detections_b}
+    assert ids_a & ids_b, "esta prueba documenta la colisión real sin image_index -- si deja de colisionar, revisar detect_point_sources"
+
+
+def test_detect_point_sources_image_index_makes_ids_unique_across_the_observation(tmp_path):
+    positions = [(30, 30), (70, 45)]
+    field_a = _synthetic_star_field((128, 128), positions, seed=1)
+    field_b = _synthetic_star_field((128, 128), positions, seed=2)
+    path_a, path_b = tmp_path / "epoch_a.fits", tmp_path / "epoch_b.fits"
+    _write_minimal_fits_2d(path_a, field_a, pixel_scale_arcsec=1.0)
+    _write_minimal_fits_2d(path_b, field_b, pixel_scale_arcsec=1.0)
+
+    detections_a = detect_point_sources(
+        load_image(str(path_a), band="L"), observation_id="OBS-UNIQUE", band="L", threshold_sigma=4.0, image_index=0,
+    )
+    detections_b = detect_point_sources(
+        load_image(str(path_b), band="L"), observation_id="OBS-UNIQUE", band="L", threshold_sigma=4.0, image_index=1,
+    )
+
+    ids_a = {d.detection_id for d in detections_a}
+    ids_b = {d.detection_id for d in detections_b}
+    assert not (ids_a & ids_b)
+    for detection_id in ids_a | ids_b:
+        assert "OBS-UNIQUE" in detection_id
+
+
 def test_detect_point_sources_returns_serializable_detections(tmp_path):
     field = _synthetic_star_field((64, 64), [(32, 32)])
     path = tmp_path / "field_HA.fits"

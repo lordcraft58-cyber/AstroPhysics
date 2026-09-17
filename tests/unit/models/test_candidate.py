@@ -105,6 +105,35 @@ def test_mark_reviewed_rejects_returning_to_pending():
         candidate.mark_reviewed(new_state=ReviewState.PENDING, author="x", note="", reviewed_at=datetime.now(timezone.utc))
 
 
+def test_candidate_without_evidence_chain_roundtrips_as_none():
+    candidate = _sample_candidate()
+    assert candidate.evidence_chain is None
+    restored = Candidate.from_dict(candidate.to_dict())
+    assert restored.evidence_chain is None
+
+
+def test_candidate_evidence_chain_roundtrips():
+    from astrophysics_suite.evidence.chain_builder import build_evidence_chain
+
+    chain = build_evidence_chain(
+        detection_id="DET-0001",
+        catalog_non_matches=(CatalogQuery(catalog="Gaia DR3", radius_arcsec=3.0, reason="sin fuentes Gaia en el radio de búsqueda"),),
+    )
+    candidate = Candidate.create(
+        candidate_id="CAND-0002", observation_id="OBS-0001", detection_id="DET-0001",
+        position=SkyPosition(x_px=1.0, y_px=1.0),
+        morphology=MorphologySummary(morphology_class=MorphologyClass.POINT_SOURCE, area_px=9.0, elongation=1.1, compactness=0.6),
+        quality=QualitySummary(overall_level=QualityLevel.PASS),
+        provenance=Provenance.now(pipeline_version="t", engine="t", engine_version="1.0"),
+        identification_state=IdentificationState.UNMATCHED,
+        evidence_chain=chain,
+    )
+    assert candidate.evidence_chain is chain
+    restored = Candidate.from_dict(candidate.to_dict())
+    assert restored.evidence_chain == chain
+    assert restored == candidate
+
+
 def test_candidate_never_declares_discovery():
     """Ningún estado de Candidate significa "descubrimiento confirmado" --
     ni siquiera DISCOVERY_REVIEW, que pide explícitamente revisión humana."""
