@@ -122,6 +122,52 @@ def test_saving_and_reopening_a_session_roundtrips_real_candidates_via_the_menu(
         assert main_window.session_state.candidates.count(candidate) == 2
 
 
+def test_recent_sessions_menu_lists_and_reopens_a_real_saved_session(qapp, tmp_path, monkeypatch):
+    # Antes no había ninguna forma de reabrir una sesión reciente salvo
+    # recordar la ruta a mano -- ahora "Archivo -> Sesiones recientes"
+    # lista de verdad lo que se guardó/abrió en esta máquina y permite
+    # reabrirlo con un clic, sin volver a pasar por el diálogo nativo.
+    from legacy.AstroPhysicsSuite_v57_3_COMMERCIAL import _write_minimal_fits_2d
+    from qt_app.main_window import MainWindow
+    from services.app_preferences import AppPreferencesStore
+
+    window = MainWindow(preferences=AppPreferencesStore(tmp_path / "prefs.json"))
+    try:
+        assert len(window.recent_sessions_menu.actions()) == 1
+        assert not window.recent_sessions_menu.actions()[0].isEnabled()
+
+        field = _star_field((96, 96), [(30, 30), (60, 60)])
+        path = tmp_path / "field_OIII.fits"
+        _write_minimal_fits_2d(path, field)
+        window._start_discovery("Campo sesiones recientes", [(str(path), "OIII")])
+        deadline = time.monotonic() + 10.0
+        while window._discovery_job is not None and time.monotonic() < deadline:
+            qapp.processEvents()
+            time.sleep(0.02)
+        qapp.processEvents()
+        assert window.session_state.candidates
+        original_candidates = list(window.session_state.candidates)
+
+        session_path = tmp_path / "sesion.apssession.json"
+        monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(session_path), "")))
+        window._save_session_dialog()
+
+        actions = window.recent_sessions_menu.actions()
+        assert len(actions) == 1
+        assert actions[0].isEnabled()
+        assert actions[0].text() == session_path.name
+        assert actions[0].toolTip() == str(session_path)
+
+        # Reabrir desde el menú -- sin volver a pasar por QFileDialog.
+        monkeypatch.setattr(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (_ for _ in ()).throw(AssertionError("no debería abrirse el diálogo nativo"))))
+        actions[0].trigger()
+        qapp.processEvents()
+
+        assert len(window.session_state.candidates) == 2 * len(original_candidates)
+    finally:
+        window.close()
+
+
 def test_save_session_dialog_warns_instead_of_opening_a_dialog_when_there_is_nothing_to_save(qapp, main_window, monkeypatch):
     def _fail_if_called(*a, **k):
         raise AssertionError("no debería abrirse el diálogo de guardado sin nada que guardar")

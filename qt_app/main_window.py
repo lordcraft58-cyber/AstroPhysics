@@ -6,6 +6,7 @@ a través de `qt_app.processes.registry` (misma disciplina que ya regía
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -56,6 +57,8 @@ from services.discovery_service import DiscoveryJob, DiscoveryParams
 from services.session_state import SessionState
 
 _TUTORIAL_SHOW_ON_STARTUP_KEY = "tutorial_show_on_startup"
+_RECENT_SESSIONS_PREFERENCE_KEY = "recent_sessions"
+_MAX_RECENT_SESSIONS = 8
 
 APP_TITLE = "AstroPhysics Suite -- Taller de Procesamiento"
 PIPELINE_VERSION = "0.5.0-dev"
@@ -162,6 +165,8 @@ class MainWindow(QMainWindow):
         self.open_session_action = QAction("A&brir sesión...", self)
         self.open_session_action.triggered.connect(self._open_session_dialog)
         self.file_menu.addAction(self.open_session_action)
+        self.recent_sessions_menu = self.file_menu.addMenu("Sesiones &recientes")
+        self._rebuild_recent_sessions_menu()
         self.file_menu.addSeparator()
         exit_action = QAction("&Salir", self)
         exit_action.setShortcut("Ctrl+Q")
@@ -657,13 +662,17 @@ class MainWindow(QMainWindow):
             return
         logger.info("Sesión guardada en %s (%d candidato(s), %d observación/es)", path, len(self.session_state.candidates), len(self.session_state.observations))
         self.statusBar().showMessage(f"Sesión guardada en {path}", 6000)
+        self._remember_recent_session(path)
 
     def _open_session_dialog(self) -> None:
-        from astrophysics_suite.io.session_export import load_session
-
         path, _ = QFileDialog.getOpenFileName(self, "Abrir sesión", "", "Sesión AstroPhysics Suite (*.apssession.json);;JSON (*.json);;Todos los archivos (*.*)")
         if not path:
             return
+        self._open_session_from_path(path)
+
+    def _open_session_from_path(self, path: str) -> None:
+        from astrophysics_suite.io.session_export import load_session
+
         try:
             loaded = load_session(path)
         except Exception as exc:  # noqa: BLE001 -- error real de lectura, debe ser visible
@@ -675,6 +684,37 @@ class MainWindow(QMainWindow):
         )
         logger.info("Sesión abierta desde %s (%d candidato(s), %d observación/es)", path, len(loaded.candidates), len(loaded.observations))
         self.statusBar().showMessage(f"Sesión abierta desde {path}: {len(loaded.candidates)} candidato(s) añadidos", 6000)
+        self._remember_recent_session(path)
+
+    def _recent_sessions(self) -> list[str]:
+        raw = self.preferences.get(_RECENT_SESSIONS_PREFERENCE_KEY, "")
+        if not raw:
+            return []
+        try:
+            paths = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        return [p for p in paths if isinstance(p, str)]
+
+    def _remember_recent_session(self, path: str) -> None:
+        recent = [p for p in self._recent_sessions() if p != path]
+        recent.insert(0, path)
+        self.preferences.set(_RECENT_SESSIONS_PREFERENCE_KEY, json.dumps(recent[:_MAX_RECENT_SESSIONS]))
+        self._rebuild_recent_sessions_menu()
+
+    def _rebuild_recent_sessions_menu(self) -> None:
+        self.recent_sessions_menu.clear()
+        recent = self._recent_sessions()
+        if not recent:
+            empty_action = QAction("(ninguna todavía)", self)
+            empty_action.setEnabled(False)
+            self.recent_sessions_menu.addAction(empty_action)
+            return
+        for path in recent:
+            action = QAction(Path(path).name, self)
+            action.setToolTip(path)
+            action.triggered.connect(lambda checked=False, p=path: self._open_session_from_path(p))
+            self.recent_sessions_menu.addAction(action)
 
     def _export_last_table(self) -> None:
         if self._last_result_table is None:
