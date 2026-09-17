@@ -209,3 +209,34 @@ def test_estimate_approx_scale_from_header_derives_from_focal_length_and_pixel_s
 def test_estimate_approx_scale_from_header_returns_none_without_enough_info():
     assert estimate_approx_scale_from_header({}) is None
     assert estimate_approx_scale_from_header({"FOCALLEN": 900.0}) is None
+
+
+def test_solve_plate_attaches_real_provenance_on_success(monkeypatch):
+    data, gaia_rows, truth = _synthetic_field_and_catalog(rotation_deg=23.0, scale_arcsec_px=1.2)
+    monkeypatch.setattr(plate_solve_module, "query_gaia_neighbors", _radius_filtered_gaia_mock(gaia_rows))
+
+    result = solve_plate(
+        data, header={}, approx_ra_deg=truth["ra0"] + 0.02, approx_dec_deg=truth["dec0"] - 0.015,
+        approx_scale_arcsec_px=1.2 * 1.03, rotation_step_deg=5.0, threshold_sigma=6.0,
+        pipeline_version="9.9.9-test",
+    )
+
+    assert result.success, result.reason
+    assert result.provenance is not None
+    assert result.provenance.engine == "astrometry.plate_solve"
+    assert result.provenance.engine_version
+    assert result.provenance.pipeline_version == "9.9.9-test"
+
+
+def test_solve_plate_attaches_real_provenance_on_failure(monkeypatch):
+    # Un intento fallido también es procedencia real: qué motor y qué
+    # versión lo intentó y no pudo, no solo los éxitos.
+    monkeypatch.setattr(plate_solve_module, "query_gaia_neighbors", lambda *a, **k: [])
+    data = np.full((100, 100), 200.0)  # campo plano, sin estrellas
+
+    result = solve_plate(data, header={}, approx_ra_deg=150.0, approx_dec_deg=20.0, approx_scale_arcsec_px=1.0, pipeline_version="9.9.9-test")
+
+    assert not result.success
+    assert result.provenance is not None
+    assert result.provenance.engine == "astrometry.plate_solve"
+    assert result.provenance.pipeline_version == "9.9.9-test"

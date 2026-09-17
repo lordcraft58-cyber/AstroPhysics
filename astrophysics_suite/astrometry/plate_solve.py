@@ -29,16 +29,19 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 from scipy.spatial import cKDTree
 
 from astrophysics_suite.astrometry.wcs_fit import WCSSolution, fit_wcs, gnomonic_project
 from astrophysics_suite.catalogs.gaia import query_gaia_neighbors
+from astrophysics_suite.core.provenance import Provenance
 from astrophysics_suite.detection.point_sources import detect_point_sources_in_array
 
 PROVIDER_NAME = "local (rejilla de rotación + emparejamiento Gaia, sin binario/servicio externo)"
+ENGINE_NAME = "astrometry.plate_solve"
+ENGINE_VERSION = "1.0"
 
 
 def estimate_approx_pointing_from_header(header: dict) -> tuple[float, float] | None:
@@ -109,6 +112,13 @@ class PlateSolveResult:
     """Motivo del fallo si `success=False`; resumen legible si `success=True`."""
     rotation_deg: float | None = None
     mirrored: bool | None = None
+    provenance: Provenance | None = None
+    """Procedencia real del intento -- qué motor (`ENGINE_NAME` de este
+    módulo o de `blind_solve.py`), qué versión y con qué versión del
+    pipeline, tanto si tuvo éxito como si no: un intento fallido también
+    es procedencia real (qué se probó y no pudo). `None` solo si el
+    resultado se construyó fuera de `solve_plate`/`solve_plate_blind`
+    (no debería ocurrir en producción)."""
 
 
 def _build_trial_cd(scale_deg_per_px: float, rotation_rad: float, parity: int) -> np.ndarray:
@@ -193,6 +203,43 @@ def _robust_fit_wcs(
 
 
 def solve_plate(
+    data: np.ndarray,
+    header: dict,
+    *,
+    approx_ra_deg: float | None = None,
+    approx_dec_deg: float | None = None,
+    approx_scale_arcsec_px: float | None = None,
+    fwhm_px: float = 3.0,
+    threshold_sigma: float = 5.0,
+    max_stars: int = 40,
+    match_radius_arcsec: float = 4.0,
+    rotation_step_deg: float = 2.0,
+    allow_flip: bool = True,
+    min_matched_stars: int = 6,
+    max_rms_arcsec: float = 2.0,
+    gaia_mag_limit: float = 16.0,
+    timeout_s: float = 30.0,
+    pointing_uncertainty_arcsec: float = 600.0,
+    pipeline_version: str = "",
+) -> PlateSolveResult:
+    """Resuelve el WCS de `data` de forma automática -- envoltorio
+    delgado sobre `_solve_plate_core` (mismos parámetros y comportamiento,
+    ver su docstring) que adjunta `PlateSolveResult.provenance` --
+    `pipeline_version` con la que se produjo este intento concreto, tanto
+    si tuvo éxito como si no."""
+    result = _solve_plate_core(
+        data, header,
+        approx_ra_deg=approx_ra_deg, approx_dec_deg=approx_dec_deg, approx_scale_arcsec_px=approx_scale_arcsec_px,
+        fwhm_px=fwhm_px, threshold_sigma=threshold_sigma, max_stars=max_stars,
+        match_radius_arcsec=match_radius_arcsec, rotation_step_deg=rotation_step_deg, allow_flip=allow_flip,
+        min_matched_stars=min_matched_stars, max_rms_arcsec=max_rms_arcsec, gaia_mag_limit=gaia_mag_limit,
+        timeout_s=timeout_s, pointing_uncertainty_arcsec=pointing_uncertainty_arcsec,
+    )
+    provenance = Provenance.now(pipeline_version=pipeline_version, engine=ENGINE_NAME, engine_version=ENGINE_VERSION)
+    return replace(result, provenance=provenance)
+
+
+def _solve_plate_core(
     data: np.ndarray,
     header: dict,
     *,

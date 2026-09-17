@@ -43,6 +43,7 @@ from astrophysics_suite.imtools.debayer import bayer_pattern_from_header, debaye
 from astrophysics_suite.catalogs.gaia import identify_detection
 from astrophysics_suite.catalogs.simbad import resolve_object_coordinates
 from astrophysics_suite.core.enums import IdentificationState, QualityLevel, ValueKind
+from astrophysics_suite.core.provenance import Provenance
 from astrophysics_suite.core.quantity import Quantity
 from astrophysics_suite.detection.point_sources import detect_point_sources
 from astrophysics_suite.discovery.source_tracks import EpochDetection, SourceTrack, group_detections_into_tracks
@@ -216,7 +217,7 @@ def _debayer_if_cfa(loaded: LoadedImage, image_ref, *, auto_debayer: bool) -> Im
 
 def _ensure_wcs(
     loaded: LoadedImage, image_ref, *, target_name: str, auto_plate_solve: bool,
-    report: Callable[[float, str], None], progress_fraction: float,
+    report: Callable[[float, str], None], progress_fraction: float, pipeline_version: str = "",
 ) -> ImageWCSStatus:
     """Se asegura de que `loaded.legacy_image.wcs` esté disponible antes
     de detectar fuentes, intentando plate solving automático si falta --
@@ -242,7 +243,10 @@ def _ensure_wcs(
         approx_ra, approx_dec, pointing_source = approx
         pointing_note = f" (puntero: {pointing_source})"
         report(progress_fraction, f"Resolviendo WCS automáticamente para {image_ref.band}{pointing_note}...")
-        pointed_result = solve_plate(fits_image.data, fits_image.header or {}, approx_ra_deg=approx_ra, approx_dec_deg=approx_dec)
+        pointed_result = solve_plate(
+            fits_image.data, fits_image.header or {}, approx_ra_deg=approx_ra, approx_dec_deg=approx_dec,
+            pipeline_version=pipeline_version,
+        )
         if pointed_result.success:
             fits_image.wcs = wcs_solution_to_astropy(pointed_result.solution)
             return ImageWCSStatus(
@@ -257,7 +261,7 @@ def _ensure_wcs(
     # cielo", así que sin ninguna descarga previa esto falla explícito,
     # no inventa nada.
     report(progress_fraction, f"Intentando resolución de placa ciega (sin puntero) para {image_ref.band}...")
-    blind_result = _try_blind_solve(fits_image)
+    blind_result = _try_blind_solve(fits_image, pipeline_version=pipeline_version)
     if blind_result.success:
         fits_image.wcs = wcs_solution_to_astropy(blind_result.solution)
         return ImageWCSStatus(
@@ -281,7 +285,7 @@ def _ensure_wcs(
     )
 
 
-def _try_blind_solve(fits_image) -> PlateSolveResult:
+def _try_blind_solve(fits_image, *, pipeline_version: str = "") -> PlateSolveResult:
     """Intenta resolución ciega usando TODO lo que haya en la caché local
     de Gaia (`CatalogCache.all_rows()`), sin importar qué zona del cielo
     cubra -- es justo el caso "no sé dónde apunta esto" el que necesita
@@ -293,8 +297,11 @@ def _try_blind_solve(fits_image) -> PlateSolveResult:
         return PlateSolveResult(
             success=False, solution=None, provider=blind_solve.PROVIDER_NAME, n_detected_stars=0, n_catalog_stars=0, n_matched=0,
             reason=f"no se pudo leer la caché local de catálogos ({type(exc).__name__}: {exc})",
+            provenance=Provenance.now(pipeline_version=pipeline_version, engine=blind_solve.ENGINE_NAME, engine_version=blind_solve.ENGINE_VERSION),
         )
-    return blind_solve.solve_plate_blind(fits_image.data, fits_image.header or {}, catalog_rows=catalog_rows)
+    return blind_solve.solve_plate_blind(
+        fits_image.data, fits_image.header or {}, catalog_rows=catalog_rows, pipeline_version=pipeline_version,
+    )
 
 
 @dataclass(frozen=True)
@@ -461,7 +468,7 @@ def run_generic_discovery(
         wcs_statuses.append(
             _ensure_wcs(
                 loaded, image_ref, target_name=observation.target_name, auto_plate_solve=auto_plate_solve,
-                report=report, progress_fraction=image_index / n_images,
+                report=report, progress_fraction=image_index / n_images, pipeline_version=pipeline_version,
             )
         )
         epoch_time = _parse_epoch_time(loaded.legacy_image.header or {})

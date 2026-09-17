@@ -47,16 +47,19 @@ from __future__ import annotations
 import itertools
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 from scipy.spatial import cKDTree
 
 from astrophysics_suite.astrometry.plate_solve import PlateSolveResult, solve_plate
 from astrophysics_suite.astrometry.wcs_fit import fit_wcs, gnomonic_project
+from astrophysics_suite.core.provenance import Provenance
 from astrophysics_suite.detection.point_sources import detect_point_sources_in_array
 
 PROVIDER_NAME = "local (hashing geométrico de asterismos contra catálogo local, sin puntero previo)"
+ENGINE_NAME = "astrometry.blind_solve"
+ENGINE_VERSION = "1.0"
 
 #: Vecinos más cercanos usados para formar el asterismo de cada estrella
 #: -- 3 vecinos + la propia estrella = grupos de 4, el mínimo real que
@@ -268,6 +271,41 @@ def solve_plate_blind(
     max_candidates_tried: int = 25,
     seed_pointing_uncertainty_arcsec: float = 300.0,
     timeout_s: float = 60.0,
+    pipeline_version: str = "",
+    **solve_plate_kwargs,
+) -> PlateSolveResult:
+    """Resuelve el WCS de `data` SIN ningún puntero aproximado -- envoltorio
+    delgado sobre `_solve_plate_blind_core` (mismos parámetros y
+    comportamiento, ver su docstring) que adjunta al resultado FINAL la
+    procedencia del motor CIEGO (`ENGINE_NAME` de este módulo) -- distinta
+    de la que cada intento interno de verificación lleva ya por su cuenta
+    vía `plate_solve.solve_plate`, que también recibe `pipeline_version`."""
+    result = _solve_plate_blind_core(
+        data, header, catalog_rows=catalog_rows, fwhm_px=fwhm_px, threshold_sigma=threshold_sigma,
+        max_image_stars=max_image_stars, max_catalog_stars=max_catalog_stars, k_neighbors=k_neighbors,
+        code_tolerance=code_tolerance, max_candidates_tried=max_candidates_tried,
+        seed_pointing_uncertainty_arcsec=seed_pointing_uncertainty_arcsec, timeout_s=timeout_s,
+        pipeline_version=pipeline_version, **solve_plate_kwargs,
+    )
+    provenance = Provenance.now(pipeline_version=pipeline_version, engine=ENGINE_NAME, engine_version=ENGINE_VERSION)
+    return replace(result, provenance=provenance)
+
+
+def _solve_plate_blind_core(
+    data: np.ndarray,
+    header: dict,
+    *,
+    catalog_rows: list[dict],
+    fwhm_px: float = 3.0,
+    threshold_sigma: float = 5.0,
+    max_image_stars: int = DEFAULT_MAX_IMAGE_STARS,
+    max_catalog_stars: int = DEFAULT_MAX_CATALOG_STARS,
+    k_neighbors: int = DEFAULT_K_NEIGHBORS,
+    code_tolerance: float = DEFAULT_CODE_TOLERANCE,
+    max_candidates_tried: int = 25,
+    seed_pointing_uncertainty_arcsec: float = 300.0,
+    timeout_s: float = 60.0,
+    pipeline_version: str = "",
     **solve_plate_kwargs,
 ) -> PlateSolveResult:
     """Resuelve el WCS de `data` SIN ningún puntero aproximado -- ni del
@@ -336,6 +374,7 @@ def solve_plate_blind(
             fwhm_px=fwhm_px, threshold_sigma=threshold_sigma,
             pointing_uncertainty_arcsec=seed_pointing_uncertainty_arcsec,
             timeout_s=max(1.0, timeout_s - (time.monotonic() - start_time)),
+            pipeline_version=pipeline_version,
             **solve_plate_kwargs,
         )
         if last_result.success:

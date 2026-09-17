@@ -216,3 +216,31 @@ def test_solve_plate_blind_does_not_false_positive_on_an_unrelated_catalog(monke
         f"un catálogo sin relación real con la imagen NUNCA debe producir una solución -- "
         f"crval devuelto: {result.solution.crval_deg if result.solution else None}"
     )
+
+
+def test_solve_plate_blind_attaches_real_provenance_on_success(monkeypatch):
+    data, catalog_rows, truth = _wide_catalog_and_image()
+    assert truth["n_in_field"] >= 15
+    monkeypatch.setattr(plate_solve_module, "query_gaia_neighbors", _radius_filtered_gaia_mock(catalog_rows))
+
+    result = solve_plate_blind(
+        data, header={}, catalog_rows=catalog_rows, threshold_sigma=6.0, min_matched_stars=6, pipeline_version="9.9.9-test",
+    )
+
+    assert result.success, result.reason
+    assert result.provenance is not None
+    # Provenance del motor CIEGO -- no la del intento interno de
+    # plate_solve.solve_plate que verificó la semilla.
+    assert result.provenance.engine == "astrometry.blind_solve"
+    assert result.provenance.engine_version
+    assert result.provenance.pipeline_version == "9.9.9-test"
+
+
+def test_solve_plate_blind_attaches_real_provenance_on_failure():
+    data = np.full((100, 100), 200.0, dtype=np.float32)
+    result = solve_plate_blind(data, header={}, catalog_rows=[], pipeline_version="9.9.9-test")
+
+    assert not result.success
+    assert result.provenance is not None
+    assert result.provenance.engine == "astrometry.blind_solve"
+    assert result.provenance.pipeline_version == "9.9.9-test"

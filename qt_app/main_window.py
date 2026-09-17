@@ -27,6 +27,7 @@ from astrophysics_suite.spectroscopy.wavelength import find_arc_lines
 from astrophysics_suite.tables.table import Table
 from qt_app.astrometry.registration_dialog import RegistrationDialog
 from qt_app.astrometry.star_pair_registration_dialog import StarPairConfigDialog
+from qt_app.astrometry.blind_solve_dialog import BlindPlateSolveDialog
 from qt_app.astrometry.plate_solve_dialog import PlateSolveDialog
 from qt_app.astrometry.wcs_fit_dialog import WCSFitDialog
 from qt_app.candidates.candidate_detail_widget import CandidateDetailWidget
@@ -189,6 +190,9 @@ class MainWindow(QMainWindow):
         self.plate_solve_action = QAction("&Resolver placa automáticamente...", self)
         self.plate_solve_action.triggered.connect(self._open_plate_solve_dialog)
         self.astrometry_menu.addAction(self.plate_solve_action)
+        self.blind_plate_solve_action = QAction("Resolver placa en &ciego (sin puntero)...", self)
+        self.blind_plate_solve_action.triggered.connect(self._open_blind_plate_solve_dialog)
+        self.astrometry_menu.addAction(self.blind_plate_solve_action)
         wcs_fit_action = QAction("Ajustar WCS &manualmente (clic + coordenadas)...", self)
         wcs_fit_action.triggered.connect(self._open_wcs_fit_flow)
         self.astrometry_menu.addAction(wcs_fit_action)
@@ -519,6 +523,28 @@ class MainWindow(QMainWindow):
             view.title, solution.rms_residual_arcsec, solution.n_stars,
         )
         self.statusBar().showMessage(f"WCS resuelto automáticamente para {view.title} (RMS={solution.rms_residual_arcsec:.3f}\").", 6000)
+        self._offer_to_save_wcs_fits_copy(view, solution)
+
+    def _open_blind_plate_solve_dialog(self) -> None:
+        view = self._active_image_view()
+        if view is None:
+            self.statusBar().showMessage("Abre o selecciona una imagen antes de resolver la placa.", 5000)
+            return
+        dialog = BlindPlateSolveDialog(view.data, view.header, self)
+        if dialog.exec() != BlindPlateSolveDialog.DialogCode.Accepted:
+            return
+        solution = dialog.result_solution()
+        if solution is None:
+            return
+        view.fitted_wcs_solution = solution
+        table = dialog.result_table()
+        if table is not None:
+            self._last_result_table = table
+        logger.info(
+            "Placa resuelta en ciego (sin puntero) para %s: RMS=%.3f\" con %d estrella(s).",
+            view.title, solution.rms_residual_arcsec, solution.n_stars,
+        )
+        self.statusBar().showMessage(f"WCS resuelto en ciego para {view.title} (RMS={solution.rms_residual_arcsec:.3f}\").", 6000)
         self._offer_to_save_wcs_fits_copy(view, solution)
 
     def _offer_to_save_wcs_fits_copy(self, view: ImageView, solution) -> None:
