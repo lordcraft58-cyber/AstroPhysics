@@ -255,6 +255,9 @@ def test_continuum_fit_process_runs_on_central_row():
     result = process.run(data, _default_params(process))
     assert result.output_data is None
     assert "Continuo ajustado" in result.summary
+    plot_data = result.artifacts["spectrum"]
+    assert [s.label for s in plot_data.series] == ["Flujo", "Continuo ajustado"]
+    assert plot_data.series[1].style == "dashed"
 
 
 def test_psf_photometry_process_requires_picking_and_recovers_flux():
@@ -399,7 +402,7 @@ def test_psf_photometry_process_rejects_no_picked_points():
         raise AssertionError("se esperaba ValueError sin posiciones marcadas")
 
 
-def test_spectral_trace_process_requires_one_point_and_extracts_strip():
+def test_spectral_trace_process_requires_one_point_and_produces_a_real_spectrum():
     process = _get("spectroscopy.trace")
     assert process.requires_picking == 1
 
@@ -414,9 +417,12 @@ def test_spectral_trace_process_requires_one_point_and_extracts_strip():
     process_params["_picked_points"] = [(0.0, 20.0)]
     result = process.run(data, process_params)
 
-    assert result.output_data is not None
-    assert result.output_data.shape == (20, width)
+    assert result.output_data is None
     assert "Traza extraída" in result.summary
+    plot_data = result.artifacts["spectrum"]
+    assert len(plot_data.series) == 1
+    assert plot_data.series[0].x.size == width
+    assert plot_data.series[0].y.size == width
 
 
 def test_spectral_trace_process_rejects_wrong_number_of_points():
@@ -496,3 +502,44 @@ def test_statistics_process_reports_known_values_and_builds_histogram_image():
     assert "media=50.50" in result.summary
     assert "n=100" in result.summary
     assert len(result.log_lines) == 2
+
+
+def test_line_measurement_process_produces_a_spectrum_with_a_measurement_window_marker():
+    width = 200
+    columns = np.arange(width, dtype=np.float64)
+    line_pixel, continuum_level, amplitude = 100.0, 500.0, 4000.0
+    row = continuum_level + amplitude * np.exp(-((columns - line_pixel) ** 2) / (2 * 3.0**2))
+    data = np.tile(row, (21, 1))
+
+    process = _get("spectroscopy.line")
+    params = _default_params(process)
+    params["_picked_points"] = [(line_pixel, 10.0)]
+    result = process.run(data, params)
+
+    assert result.output_data is None
+    plot_data = result.artifacts["spectrum"]
+    assert [s.label for s in plot_data.series] == ["Flujo", "Continuo ajustado"]
+    assert len(plot_data.markers) == 1
+    marker = plot_data.markers[0]
+    assert marker.x_start < line_pixel < marker.x_end
+
+
+def test_multi_aperture_process_produces_one_spectrum_series_per_aperture():
+    height, width = 60, 150
+    rows = np.arange(height)[:, np.newaxis]
+    data = np.full((height, width), 80.0)
+    for center, flux in ((15.0, 3000.0), (45.0, 5000.0)):
+        profile = np.exp(-((rows - center) ** 2) / (2 * 2.0**2))
+        profile /= profile.sum(axis=0, keepdims=True)
+        data = data + flux * profile
+
+    process = _get("spectroscopy.multiaperture")
+    params = _default_params(process)
+    params["_picked_points"] = [(0.0, 15.0), (0.0, 45.0)]
+    result = process.run(data, params)
+
+    assert result.output_data is None
+    plot_data = result.artifacts["spectrum"]
+    assert len(plot_data.series) == 2
+    assert plot_data.series[0].color != plot_data.series[1].color
+    assert all(s.x.size == width for s in plot_data.series)

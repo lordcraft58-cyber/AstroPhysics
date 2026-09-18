@@ -19,6 +19,8 @@ from PySide6.QtCore import Qt, QPointF  # noqa: E402
 from PySide6.QtGui import QMouseEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
+from qt_app.spectroscopy.spectrum_view import SpectrumView  # noqa: E402
+
 
 def _display_available() -> bool:
     try:
@@ -242,6 +244,9 @@ def test_spectral_trace_process_runs_end_to_end_via_click(qapp, main_window):
     qapp.processEvents()
 
     assert len(main_window.mdi.subWindowList()) == windows_before + 1  # la traza extraída abre una ventana nueva
+    spectrum_view = main_window.mdi.subWindowList()[-1].widget()
+    assert isinstance(spectrum_view, SpectrumView)
+    assert spectrum_view._data.series[0].y.size == width
 
 
 def _two_object_spectral_field(height=60, width=150, *, centers=(15.0, 45.0), fluxes=(3000.0, 5000.0)):
@@ -276,6 +281,9 @@ def test_multi_aperture_process_auto_detects_and_extracts_two_real_objects(qapp,
     assert len(main_window.mdi.subWindowList()) == windows_before + 1  # las dos aperturas extraídas abren una ventana nueva
     assert main_window._last_result_table is not None
     assert len(main_window._last_result_table.rows) == 2
+    spectrum_view = main_window.mdi.subWindowList()[-1].widget()
+    assert isinstance(spectrum_view, SpectrumView)
+    assert len(spectrum_view._data.series) == 2
 
 
 def test_multi_aperture_process_runs_via_two_manual_clicks(qapp, main_window):
@@ -305,6 +313,9 @@ def test_multi_aperture_process_runs_via_two_manual_clicks(qapp, main_window):
 
     assert main_window._last_result_table is not None
     assert len(main_window._last_result_table.rows) == 2
+    spectrum_view = main_window.mdi.subWindowList()[-1].widget()
+    assert isinstance(spectrum_view, SpectrumView)
+    assert len(spectrum_view._data.series) == 2
 
 
 def test_line_measurement_process_runs_end_to_end_via_click(qapp, main_window):
@@ -338,6 +349,10 @@ def test_line_measurement_process_runs_end_to_end_via_click(qapp, main_window):
     row_values = main_window._last_result_table.rows[0]
     center_px = row_values[0]
     assert center_px == pytest.approx(line_pixel, abs=2.0)
+
+    spectrum_view = main_window.mdi.subWindowList()[-1].widget()
+    assert isinstance(spectrum_view, SpectrumView)
+    assert len(spectrum_view._data.markers) == 1
 
 
 def test_picking_process_cancelled_does_not_run_worker(qapp, main_window):

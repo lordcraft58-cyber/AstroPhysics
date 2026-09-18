@@ -81,9 +81,12 @@ def test_combine_spectra_dialog_combines_two_open_windows_end_to_end(qapp, main_
     assert main_window._last_result_table is not None
     assert len(main_window._last_result_table.rows) == width
 
+    from qt_app.spectroscopy.spectrum_view import SpectrumView
+
     combined_view = main_window.mdi.subWindowList()[-1].widget()
+    assert isinstance(combined_view, SpectrumView)
     expected = _spectrum_row(width, 1000.0)
-    np.testing.assert_allclose(combined_view.data[0, :], expected, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(combined_view._data.series[0].y, expected, rtol=0.0, atol=1e-6)
 
 
 def test_combine_spectra_dialog_rejects_mixed_calibration_state(qapp, main_window):

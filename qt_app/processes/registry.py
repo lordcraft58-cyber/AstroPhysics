@@ -42,6 +42,7 @@ from astrophysics_suite.spectroscopy.multiaperture import extract_multi_aperture
 from astrophysics_suite.spectroscopy.trace import extract_optimal, extract_sum, trace_spectrum
 from astrophysics_suite.tables.table import Table
 from qt_app.processes.base import ParameterSpec, ProcessDefinition, ProcessResult
+from qt_app.spectroscopy.spectrum_plot_data import SpectrumMarker, SpectrumPlotData, SpectrumSeries, series_color
 
 
 def _run_debayer(data: np.ndarray, params: dict) -> ProcessResult:
@@ -354,14 +355,14 @@ def _run_spectral_trace(data: np.ndarray, params: dict) -> ProcessResult:
         snr = np.where(spectrum.flux_uncertainty > 0, spectrum.flux / spectrum.flux_uncertainty, 0.0)
     median_snr = float(np.median(snr))
 
-    # el taller todavía no tiene un visor de espectros 1D dedicado -- se
-    # repite el perfil extraído en varias filas para que sea una tira
-    # visible e inspeccionable con STF, en vez de perder el resultado por
-    # falta de un widget de gráfico (ver "Qué queda").
-    strip = np.tile(spectrum.flux, (20, 1))
+    pixel = np.arange(spectrum.flux.size, dtype=np.float64)
+    plot_data = SpectrumPlotData(
+        series=(SpectrumSeries(label="Flujo extraído", x=pixel, y=spectrum.flux),),
+        x_label="Píxel (dispersión)", y_label="Flujo extraído (ADU)",
+    )
     method = "óptima (Horne 1986)" if params["optimal_extraction"] else "suma simple"
     summary = f"Traza extraída ({method}) desde y={y0:.1f} en x={x0:.1f}; RMS de traza={trace.rms_residual_px:.2f} px, S/N mediana={median_snr:.1f}."
-    return ProcessResult(output_data=strip, summary=summary)
+    return ProcessResult(output_data=None, summary=summary, artifacts={"spectrum": plot_data})
 
 
 def _run_multi_aperture(data: np.ndarray, params: dict) -> ProcessResult:
@@ -387,14 +388,17 @@ def _run_multi_aperture(data: np.ndarray, params: dict) -> ProcessResult:
     if not result.apertures:
         raise ValueError("ninguna de las aperturas marcadas se pudo trazar/extraer: " + "; ".join(f.reason for f in result.failures))
 
-    # sin visor de espectros 1D dedicado (misma limitación ya documentada
-    # para spectroscopy.trace): cada apertura se muestra como una franja
-    # propia, separadas por una fila en negro para distinguirlas a simple vista.
-    separator = np.zeros((2, data.shape[1]))
-    strips = [np.tile(a.spectrum.flux, (10, 1)) for a in result.apertures]
-    output_data = strips[0]
-    for strip in strips[1:]:
-        output_data = np.vstack([output_data, separator, strip])
+    plot_data = SpectrumPlotData(
+        series=tuple(
+            SpectrumSeries(
+                label=f"Apertura {a.aperture_id} (y={a.initial_center_px:.1f} px)",
+                x=np.arange(a.spectrum.flux.size, dtype=np.float64), y=a.spectrum.flux,
+                color=series_color(i),
+            )
+            for i, a in enumerate(result.apertures)
+        ),
+        x_label="Píxel (dispersión)", y_label="Flujo extraído (ADU)",
+    )
 
     method = "óptima (Horne 1986)" if params["optimal_extraction"] else "suma simple"
     failed_note = f", {len(result.failures)} fallida(s)" if result.failures else ""
@@ -405,7 +409,7 @@ def _run_multi_aperture(data: np.ndarray, params: dict) -> ProcessResult:
         units=("", "px", "px", "ADU"),
         rows=tuple((a.aperture_id, a.initial_center_px, a.trace.rms_residual_px, float(np.median(a.spectrum.flux))) for a in result.apertures),
     )
-    return ProcessResult(output_data=output_data, summary=summary, log_lines=tuple(log_lines), table=table)
+    return ProcessResult(output_data=None, summary=summary, log_lines=tuple(log_lines), table=table, artifacts={"spectrum": plot_data})
 
 
 def _run_continuum_fit_central_row(data: np.ndarray, params: dict) -> ProcessResult:
@@ -415,7 +419,14 @@ def _run_continuum_fit_central_row(data: np.ndarray, params: dict) -> ProcessRes
 
     fit = fit_continuum(pixel, flux, degree=int(params["degree"]), sigma_clip=params["sigma_clip"])
     summary = f"Continuo ajustado sobre la fila central (grado {int(params['degree'])}); RMS={fit.rms_residual:.2f}, {fit.n_rejected} píxel(es) rechazados."
-    return ProcessResult(output_data=None, summary=summary)
+    plot_data = SpectrumPlotData(
+        series=(
+            SpectrumSeries(label="Flujo", x=pixel, y=flux),
+            SpectrumSeries(label="Continuo ajustado", x=pixel, y=fit.continuum, color=series_color(1), style="dashed"),
+        ),
+        x_label="Píxel (fila central)", y_label="Flujo (ADU)",
+    )
+    return ProcessResult(output_data=None, summary=summary, artifacts={"spectrum": plot_data})
 
 
 def _run_line_measurement_central_row(data: np.ndarray, params: dict) -> ProcessResult:
@@ -476,7 +487,15 @@ def _run_line_measurement_central_row(data: np.ndarray, params: dict) -> Process
             ),
         ),
     )
-    return ProcessResult(output_data=None, summary=summary, log_lines=log_lines, table=table)
+    plot_data = SpectrumPlotData(
+        series=(
+            SpectrumSeries(label="Flujo", x=pixel, y=flux),
+            SpectrumSeries(label="Continuo ajustado", x=pixel, y=continuum_fit.continuum, color=series_color(1), style="dashed"),
+        ),
+        x_label="Píxel (fila central)", y_label="Flujo (ADU)",
+        markers=(SpectrumMarker(x_start=result.window[0], x_end=result.window[1], label="Ventana de medición"),),
+    )
+    return ProcessResult(output_data=None, summary=summary, log_lines=log_lines, table=table, artifacts={"spectrum": plot_data})
 
 
 def _run_crop(data: np.ndarray, params: dict) -> ProcessResult:

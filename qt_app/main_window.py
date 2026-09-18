@@ -50,6 +50,8 @@ from qt_app.reduction.build_master_frame_dialog import BuildMasterFrameDialog
 from qt_app.reduction.master_frame_library import MasterFrameLibrary
 from qt_app.reduction.reduce_session_dialog import ReduceSessionDialog, SessionReductionOutcome
 from qt_app.spectroscopy.combine_spectra_dialog import CombineSpectraDialog
+from qt_app.spectroscopy.spectrum_plot_data import SpectrumPlotData, SpectrumSeries
+from qt_app.spectroscopy.spectrum_view import SpectrumView
 from qt_app.spectroscopy.wavelength_fit_dialog import WavelengthFitDialog
 from qt_app.theme import DARK, build_stylesheet
 from qt_app.tutorial.tutorial_overlay import TutorialOverlay
@@ -363,6 +365,27 @@ class MainWindow(QMainWindow):
     def _on_pixel_hovered(self, x_px: float, y_px: float, value: float) -> None:
         value_text = f"{value:.2f}" if value == value else "--"  # value == value es False solo para NaN
         self.readout_label.setText(f"X: {x_px:.1f}  Y: {y_px:.1f}  Valor: {value_text}")
+
+    def add_spectrum_window(self, plot_data: SpectrumPlotData, title: str) -> QMdiSubWindow:
+        view = SpectrumView(plot_data, title, self.mdi)
+        view.value_hovered.connect(self._on_spectrum_value_hovered)
+
+        sub_window = QMdiSubWindow()
+        sub_window.setWidget(view)
+        sub_window.setWindowTitle(title)
+        sub_window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.mdi.addSubWindow(sub_window)
+        sub_window.resize(640, 420)
+        sub_window.show()
+
+        logger.info("Espectro: %s (%d serie(s)) -- rueda para acercar/alejar, arrastrar para desplazar, doble clic para restablecer la vista.", title, len(plot_data.series))
+        return sub_window
+
+    def _on_spectrum_value_hovered(self, x: float, y: float) -> None:
+        if x != x:  # NaN fuera del área de la gráfica
+            self.readout_label.setText("X: --  Y: --")
+            return
+        self.readout_label.setText(f"X: {x:.2f}  Y: {y:.2f}")
 
     def _active_image_view(self) -> ImageView | None:
         sub_window = self.mdi.activeSubWindow()
@@ -802,17 +825,18 @@ class MainWindow(QMainWindow):
 
     def _on_spectra_combined(self, result, table: Table) -> None:
         self._last_result_table = table
-        valid = ~np.isnan(result.flux)
-        n_valid = int(np.count_nonzero(valid))
-        # solo para la tira 1D de visualización (misma limitación ya
-        # documentada para spectroscopy.trace: sin visor de espectros
-        # dedicado) -- los NaN reales de puntos sin cobertura se quedan
-        # tal cual en `table`/`result`, nunca se inventa el hueco ahí.
-        fill_value = float(np.median(result.flux[valid])) if n_valid > 0 else 0.0
-        display_flux = np.where(valid, result.flux, fill_value)
-        strip = np.tile(display_flux, (20, 1))
+        n_valid = int(np.count_nonzero(~np.isnan(result.flux)))
+        wavelength_unit = table.units[0] if table.units else ""
+        x_label = f"Longitud de onda ({wavelength_unit})" if wavelength_unit else "Longitud de onda"
+        # el visor real respeta los NaN de puntos sin cobertura como
+        # huecos reales en el trazo -- nunca se rellenan con un valor
+        # inventado solo para poder dibujar algo.
+        plot_data = SpectrumPlotData(
+            series=(SpectrumSeries(label=f"Combinado ({result.method})", x=result.wavelength, y=result.flux),),
+            x_label=x_label, y_label="Flujo (ADU)",
+        )
         title = f"Espectro combinado ({result.method}, {n_valid}/{result.wavelength.size} pts)"
-        self.add_image_window(strip, title)
+        self.add_spectrum_window(plot_data, title)
         logger.info(
             "Espectro combinado (%s): %d/%d punto(s) con dato real. Tabla disponible -- Herramientas -> Exportar última tabla a CSV...",
             result.method, n_valid, result.wavelength.size,
@@ -1075,7 +1099,10 @@ class MainWindow(QMainWindow):
         logger.info("[%s] %s", process.name, result.summary)
         for line in result.log_lines:
             logger.info("    %s", line)
-        if result.output_data is not None:
+        spectrum = result.artifacts.get("spectrum")
+        if spectrum is not None:
+            self.add_spectrum_window(spectrum, f"{view.title} -> {process.name}")
+        elif result.output_data is not None:
             self.add_image_window(result.output_data, f"{view.title} -> {process.name}")
         if result.table is not None:
             self._last_result_table = result.table
