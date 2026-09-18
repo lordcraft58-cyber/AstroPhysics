@@ -38,6 +38,7 @@ from astrophysics_suite.photometry.psf import (
 from astrophysics_suite.reduction.overscan import subtract_overscan
 from astrophysics_suite.spectroscopy.continuum import fit_continuum
 from astrophysics_suite.spectroscopy.lines import measure_line
+from astrophysics_suite.spectroscopy.multiaperture import extract_multi_aperture
 from astrophysics_suite.spectroscopy.trace import extract_optimal, extract_sum, trace_spectrum
 from astrophysics_suite.tables.table import Table
 from qt_app.processes.base import ParameterSpec, ProcessDefinition, ProcessResult
@@ -363,6 +364,50 @@ def _run_spectral_trace(data: np.ndarray, params: dict) -> ProcessResult:
     return ProcessResult(output_data=strip, summary=summary)
 
 
+def _run_multi_aperture(data: np.ndarray, params: dict) -> ProcessResult:
+    points = params.get("_picked_points") or []
+    if not points:
+        raise ValueError("no se marcó ninguna posición -- haz clic sobre cada objeto, o activa 'Detectar automáticamente'")
+    aperture_centers = [y for _x, y in points]
+    uncertainty = np.sqrt(np.clip(data, 1.0, None))
+
+    result = extract_multi_aperture(
+        data, uncertainty, aperture_centers=aperture_centers,
+        optimal_extraction=bool(params["optimal_extraction"]), fit_degree=int(params["fit_degree"]),
+        aperture_half_width=params["aperture_half_width"], bg_offset=params["bg_offset"], bg_half_width=params["bg_half_width"],
+    )
+
+    log_lines = [
+        f"Apertura {a.aperture_id}: centro y={a.initial_center_px:.1f} px, RMS de traza={a.trace.rms_residual_px:.2f} px."
+        for a in result.apertures
+    ]
+    log_lines.extend(
+        f"Apertura {f.aperture_id} (y={f.initial_center_px:.1f} px): no se pudo extraer -- {f.reason}" for f in result.failures
+    )
+    if not result.apertures:
+        raise ValueError("ninguna de las aperturas marcadas se pudo trazar/extraer: " + "; ".join(f.reason for f in result.failures))
+
+    # sin visor de espectros 1D dedicado (misma limitación ya documentada
+    # para spectroscopy.trace): cada apertura se muestra como una franja
+    # propia, separadas por una fila en negro para distinguirlas a simple vista.
+    separator = np.zeros((2, data.shape[1]))
+    strips = [np.tile(a.spectrum.flux, (10, 1)) for a in result.apertures]
+    output_data = strips[0]
+    for strip in strips[1:]:
+        output_data = np.vstack([output_data, separator, strip])
+
+    method = "óptima (Horne 1986)" if params["optimal_extraction"] else "suma simple"
+    failed_note = f", {len(result.failures)} fallida(s)" if result.failures else ""
+    summary = f"{len(result.apertures)} apertura(s) extraída(s) ({method}){failed_note}."
+
+    table = Table(
+        columns=("aperture_id", "center_px", "trace_rms_px", "median_flux"),
+        units=("", "px", "px", "ADU"),
+        rows=tuple((a.aperture_id, a.initial_center_px, a.trace.rms_residual_px, float(np.median(a.spectrum.flux))) for a in result.apertures),
+    )
+    return ProcessResult(output_data=output_data, summary=summary, log_lines=tuple(log_lines), table=table)
+
+
 def _run_continuum_fit_central_row(data: np.ndarray, params: dict) -> ProcessResult:
     row_index = data.shape[0] // 2
     flux = data[row_index, :].astype(np.float64)
@@ -662,6 +707,28 @@ def build_process_registry() -> list[ProcessDefinition]:
             ),
             run=_run_spectral_trace,
             requires_picking=1,
+        ),
+        ProcessDefinition(
+            process_id="spectroscopy.multiaperture",
+            name="Extracción multi-apertura (apall, varios objetos)",
+            category="Espectroscopía",
+            description="Traza y extrae varios objetos reales de la misma imagen (misma rendija o varias fibras) -- equivalente a apall con varias aperturas. Detecta automáticamente los picos del perfil espacial (mediana a lo largo de toda la dispersión), o desactiva 'Detectar automáticamente' para marcar cada centro a mano (clic izquierdo por objeto, clic derecho para terminar). Una apertura que no se puede trazar se informa como fallo real en el registro en vez de detener todo el lote.",
+            parameters=(
+                ParameterSpec(
+                    "auto_detect", "Detectar automáticamente (perfil espacial)", "bool", True,
+                    help_text="Detecta picos reales del perfil espacial colapsado sobre toda la dispersión (mediana robusta) -- desactiva para marcar cada centro a mano.",
+                ),
+                ParameterSpec("min_snr", "S/N mínima de pico (detección automática)", "float", 5.0, minimum=1.0, maximum=50.0),
+                ParameterSpec("min_separation_px", "Separación mínima entre aperturas (px)", "float", 10.0, minimum=1.0, maximum=200.0),
+                ParameterSpec("max_apertures", "Máximo de aperturas (detección automática)", "int", 20, minimum=1, maximum=50),
+                ParameterSpec("fit_degree", "Grado del ajuste de traza", "int", 3, minimum=1, maximum=10),
+                ParameterSpec("aperture_half_width", "Semiancho de apertura (px)", "float", 4.0, minimum=1.0, maximum=100.0),
+                ParameterSpec("bg_offset", "Desplazamiento del fondo (px)", "float", 10.0, minimum=1.0, maximum=200.0),
+                ParameterSpec("bg_half_width", "Semiancho del fondo (px)", "float", 4.0, minimum=1.0, maximum=100.0),
+                ParameterSpec("optimal_extraction", "Extracción óptima (Horne)", "bool", True),
+            ),
+            run=_run_multi_aperture,
+            requires_picking=0,
         ),
         ProcessDefinition(
             process_id="spectroscopy.line",

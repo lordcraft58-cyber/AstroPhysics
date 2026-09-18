@@ -244,6 +244,69 @@ def test_spectral_trace_process_runs_end_to_end_via_click(qapp, main_window):
     assert len(main_window.mdi.subWindowList()) == windows_before + 1  # la traza extraída abre una ventana nueva
 
 
+def _two_object_spectral_field(height=60, width=150, *, centers=(15.0, 45.0), fluxes=(3000.0, 5000.0)):
+    rows = np.arange(height)[:, np.newaxis]
+    data = np.full((height, width), 80.0)
+    for center, flux in zip(centers, fluxes):
+        profile = np.exp(-((rows - center) ** 2) / (2 * 2.0**2))
+        profile /= profile.sum(axis=0, keepdims=True)
+        data = data + flux * profile
+    return data
+
+
+def test_multi_aperture_process_auto_detects_and_extracts_two_real_objects(qapp, main_window):
+    data = _two_object_spectral_field()
+    sub_window = main_window.add_image_window(data, "multi_object_spectrum.fits")
+    main_window.mdi.setActiveSubWindow(sub_window)
+    qapp.processEvents()
+
+    process = main_window._process_by_id["spectroscopy.multiaperture"]
+    params = {p.name: p.default for p in process.parameters}
+    assert params["auto_detect"] is True
+
+    windows_before = len(main_window.mdi.subWindowList())
+    main_window._run_process("spectroscopy.multiaperture", params)  # auto_detect=True: nunca entra en picking
+
+    deadline = time.monotonic() + 10.0
+    while main_window._active_worker is not None and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.02)
+    qapp.processEvents()
+
+    assert len(main_window.mdi.subWindowList()) == windows_before + 1  # las dos aperturas extraídas abren una ventana nueva
+    assert main_window._last_result_table is not None
+    assert len(main_window._last_result_table.rows) == 2
+
+
+def test_multi_aperture_process_runs_via_two_manual_clicks(qapp, main_window):
+    data = _two_object_spectral_field()
+    sub_window = main_window.add_image_window(data, "multi_object_manual.fits")
+    main_window.mdi.setActiveSubWindow(sub_window)
+    qapp.processEvents()
+    view = sub_window.widget()
+
+    process = main_window._process_by_id["spectroscopy.multiaperture"]
+    params = {p.name: p.default for p in process.parameters}
+    params["auto_detect"] = False
+    main_window._run_process("spectroscopy.multiaperture", params)
+    qapp.processEvents()
+    assert view._picking is True
+
+    _click(view, 0.0, 15.0, Qt.MouseButton.LeftButton)
+    _click(view, 0.0, 45.0, Qt.MouseButton.LeftButton)
+    _click(view, 0.0, 0.0, Qt.MouseButton.RightButton)  # termina la marca manual (requires_picking=0)
+    qapp.processEvents()
+
+    deadline = time.monotonic() + 10.0
+    while main_window._active_worker is not None and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.02)
+    qapp.processEvents()
+
+    assert main_window._last_result_table is not None
+    assert len(main_window._last_result_table.rows) == 2
+
+
 def test_line_measurement_process_runs_end_to_end_via_click(qapp, main_window):
     height, width = 41, 200
     columns = np.arange(width, dtype=np.float64)

@@ -25,6 +25,7 @@ from astrophysics_suite.discovery.pipeline import (
     WCS_STATE_SOLVE_NOT_RUN,
 )
 from astrophysics_suite.photometry.psf import select_psf_reference_stars
+from astrophysics_suite.spectroscopy.multiaperture import find_aperture_centers
 from astrophysics_suite.spectroscopy.wavelength import find_arc_lines
 from astrophysics_suite.tables.table import Table
 from qt_app.astrometry.registration_dialog import RegistrationDialog
@@ -986,7 +987,22 @@ class MainWindow(QMainWindow):
         fwhm_px = float(params.get("detect_fwhm_px", 3.0))
         threshold_sigma = float(params.get("detect_threshold_sigma", 5.0))
 
-        if process.process_id == "photometry.psf":
+        if process.process_id == "spectroscopy.multiaperture":
+            centers = find_aperture_centers(
+                view.data,
+                min_snr=float(params.get("min_snr", 5.0)),
+                min_separation_px=float(params.get("min_separation_px", 10.0)),
+                max_apertures=int(params.get("max_apertures", 20)),
+            )
+            if not centers:
+                self.statusBar().showMessage(
+                    "Detección automática: no se encontró ningún objeto en el perfil espacial -- baja la S/N mínima o marca las posiciones a mano.",
+                    6000,
+                )
+                return
+            points = [(0.0, c) for c in centers]
+            message = f"Detección automática (perfil espacial): {len(points)} apertura(s) encontrada(s)."
+        elif process.process_id == "photometry.psf":
             candidates = detect_psf_candidates(view.data, fwhm_px=fwhm_px, threshold_sigma=threshold_sigma)
             selected = select_psf_reference_stars(
                 candidates,
