@@ -11,6 +11,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import QDockWidget, QFileDialog, QInputDialog, QLabel, QMainWindow, QMdiArea, QMdiSubWindow, QMessageBox, QProgressBar
@@ -47,6 +48,7 @@ from qt_app.reduction.apply_calibration_dialog import ApplyCalibrationDialog
 from qt_app.reduction.build_master_frame_dialog import BuildMasterFrameDialog
 from qt_app.reduction.master_frame_library import MasterFrameLibrary
 from qt_app.reduction.reduce_session_dialog import ReduceSessionDialog, SessionReductionOutcome
+from qt_app.spectroscopy.combine_spectra_dialog import CombineSpectraDialog
 from qt_app.spectroscopy.wavelength_fit_dialog import WavelengthFitDialog
 from qt_app.theme import DARK, build_stylesheet
 from qt_app.tutorial.tutorial_overlay import TutorialOverlay
@@ -224,6 +226,9 @@ class MainWindow(QMainWindow):
         wavelength_fit_action = QAction("&Calibrar longitud de onda (detectar líneas)...", self)
         wavelength_fit_action.triggered.connect(self._open_wavelength_fit_flow)
         self.spectroscopy_menu.addAction(wavelength_fit_action)
+        combine_spectra_action = QAction("Co&mbinar espectros...", self)
+        combine_spectra_action.triggered.connect(self._open_combine_spectra_dialog)
+        self.spectroscopy_menu.addAction(combine_spectra_action)
 
         self.view_menu = self.menuBar().addMenu("&Vista")
         self.stf_action = QAction("Alternar STF en la imagen activa", self)
@@ -784,6 +789,34 @@ class MainWindow(QMainWindow):
             view.title, solution.rms_residual, solution.degree, len(table.rows),
         )
         self.statusBar().showMessage(f"Longitud de onda calibrada para {view.title} (RMS={solution.rms_residual:.4f}).", 6000)
+
+    def _open_combine_spectra_dialog(self) -> None:
+        views = self._image_views_by_title()
+        if len(views) < 2:
+            self.statusBar().showMessage("Abre al menos dos imágenes antes de combinar espectros.", 5000)
+            return
+        dialog = CombineSpectraDialog(views, self)
+        dialog.combined.connect(self._on_spectra_combined)
+        dialog.exec()
+
+    def _on_spectra_combined(self, result, table: Table) -> None:
+        self._last_result_table = table
+        valid = ~np.isnan(result.flux)
+        n_valid = int(np.count_nonzero(valid))
+        # solo para la tira 1D de visualización (misma limitación ya
+        # documentada para spectroscopy.trace: sin visor de espectros
+        # dedicado) -- los NaN reales de puntos sin cobertura se quedan
+        # tal cual en `table`/`result`, nunca se inventa el hueco ahí.
+        fill_value = float(np.median(result.flux[valid])) if n_valid > 0 else 0.0
+        display_flux = np.where(valid, result.flux, fill_value)
+        strip = np.tile(display_flux, (20, 1))
+        title = f"Espectro combinado ({result.method}, {n_valid}/{result.wavelength.size} pts)"
+        self.add_image_window(strip, title)
+        logger.info(
+            "Espectro combinado (%s): %d/%d punto(s) con dato real. Tabla disponible -- Herramientas -> Exportar última tabla a CSV...",
+            result.method, n_valid, result.wavelength.size,
+        )
+        self.statusBar().showMessage(f"Espectro combinado ({result.method}) -- {n_valid}/{result.wavelength.size} puntos con dato real.", 6000)
 
     def _open_build_master_frame_dialog(self) -> None:
         dialog = BuildMasterFrameDialog(self.master_frame_library, self, preferences=self.preferences)
