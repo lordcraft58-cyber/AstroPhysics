@@ -37,6 +37,7 @@ from astrophysics_suite.photometry.psf import (
 )
 from astrophysics_suite.reduction.overscan import subtract_overscan
 from astrophysics_suite.spectroscopy.continuum import fit_continuum
+from astrophysics_suite.spectroscopy.lines import measure_line
 from astrophysics_suite.spectroscopy.trace import extract_optimal, extract_sum, trace_spectrum
 from astrophysics_suite.tables.table import Table
 from qt_app.processes.base import ParameterSpec, ProcessDefinition, ProcessResult
@@ -372,6 +373,67 @@ def _run_continuum_fit_central_row(data: np.ndarray, params: dict) -> ProcessRes
     return ProcessResult(output_data=None, summary=summary)
 
 
+def _run_line_measurement_central_row(data: np.ndarray, params: dict) -> ProcessResult:
+    points = params.get("_picked_points") or []
+    if not points:
+        raise ValueError("no se marcó ninguna posición -- haz clic sobre el pico de la línea antes de medir")
+    x0, _y0 = points[0]
+
+    row_index = data.shape[0] // 2
+    flux = data[row_index, :].astype(np.float64)
+    pixel = np.arange(flux.size, dtype=np.float64)
+    # mismo modelo de ruido Poisson aproximado que photometry.aperture --
+    # sin ganancia/lectura reales, pero mejor que dejar el error sin
+    # propagar cuando hay una aproximación razonable disponible.
+    flux_uncertainty = np.sqrt(np.clip(data, 1.0, None))[row_index, :].astype(np.float64)
+
+    continuum_fit = fit_continuum(pixel, flux, degree=int(params["degree"]), sigma_clip=params["sigma_clip"])
+    window_halfwidth = params["window_halfwidth_px"]
+
+    result = measure_line(
+        pixel, flux, continuum_fit.continuum,
+        expected_wavelength=x0, window_halfwidth=window_halfwidth, flux_uncertainty=flux_uncertainty,
+    )
+    if result is None:
+        raise ValueError(
+            f"La ventana [{x0 - window_halfwidth:.1f}, {x0 + window_halfwidth:.1f}] px deja menos de 3 "
+            "puntos reales dentro del espectro -- amplía la ventana o revisa dónde hiciste clic."
+        )
+
+    fwhm_text = f"{result.fwhm:.2f} px" if result.fwhm is not None else "N/D (el perfil no cruza la media altura dentro de la ventana)"
+    ew_text = (
+        f"{result.equivalent_width:.2f} ± {result.equivalent_width_error:.2f} px"
+        if result.equivalent_width is not None
+        else "N/D (continuo no positivo en toda la ventana)"
+    )
+    flux_error_text = f"{result.integrated_flux_error:.1f}" if result.integrated_flux_error is not None else "N/D"
+    summary = (
+        f"Centro={result.center_wavelength:.2f} px  ·  FWHM={fwhm_text}  ·  "
+        f"Flujo integrado={result.integrated_flux:.1f} ± {flux_error_text}  ·  EW={ew_text}"
+    )
+    log_lines = (
+        f"Ventana de medición: [{result.window[0]:.1f}, {result.window[1]:.1f}] px ({result.n_points} punto(s) reales).",
+        f"Ajuste de continuo: grado {int(params['degree'])}, {continuum_fit.n_rejected} píxel(es) rechazados por sigma-clip.",
+        "Eje horizontal en píxeles de la fila central sin calibrar -- misma convención que 'Ajuste de continuo (fila central)'; "
+        "usa 'Calibrar longitud de onda' primero si necesitas el resultado en unidades físicas.",
+    )
+    table = Table(
+        columns=("center_px", "fwhm_px", "integrated_flux", "integrated_flux_error", "equivalent_width_px", "equivalent_width_error_px"),
+        units=("px", "px", "ADU·px", "ADU·px", "px", "px"),
+        rows=(
+            (
+                result.center_wavelength,
+                result.fwhm if result.fwhm is not None else float("nan"),
+                result.integrated_flux,
+                result.integrated_flux_error if result.integrated_flux_error is not None else float("nan"),
+                result.equivalent_width if result.equivalent_width is not None else float("nan"),
+                result.equivalent_width_error if result.equivalent_width_error is not None else float("nan"),
+            ),
+        ),
+    )
+    return ProcessResult(output_data=None, summary=summary, log_lines=log_lines, table=table)
+
+
 def _run_crop(data: np.ndarray, params: dict) -> ProcessResult:
     points = params.get("_picked_points") or []
     if len(points) != 2:
@@ -599,6 +661,19 @@ def build_process_registry() -> list[ProcessDefinition]:
                 ParameterSpec("optimal_extraction", "Extracción óptima (Horne)", "bool", True),
             ),
             run=_run_spectral_trace,
+            requires_picking=1,
+        ),
+        ProcessDefinition(
+            process_id="spectroscopy.line",
+            name="Medición de línea (splot)",
+            category="Espectroscopía",
+            description="Centroide, FWHM, ancho equivalente y flujo integrado de una línea real sobre la fila central, tratada como espectro 1D igual que 'Ajuste de continuo' -- equivalente a splot/fitprofs. Al pulsar Aplicar, marca con un clic dónde está el pico de la línea (el taller nunca la busca por su cuenta); el ancho de ventana define hasta dónde se integra a cada lado.",
+            parameters=(
+                ParameterSpec("window_halfwidth_px", "Semiancho de ventana (px)", "float", 15.0, minimum=1.0, maximum=500.0),
+                ParameterSpec("degree", "Grado del ajuste de continuo", "int", 3, minimum=1, maximum=10),
+                ParameterSpec("sigma_clip", "Umbral σ de rechazo del continuo", "float", 2.5, minimum=0.5, maximum=10.0),
+            ),
+            run=_run_line_measurement_central_row,
             requires_picking=1,
         ),
         # La calibración en longitud de onda necesita que el usuario

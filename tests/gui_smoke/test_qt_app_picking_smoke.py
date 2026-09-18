@@ -244,6 +244,39 @@ def test_spectral_trace_process_runs_end_to_end_via_click(qapp, main_window):
     assert len(main_window.mdi.subWindowList()) == windows_before + 1  # la traza extraída abre una ventana nueva
 
 
+def test_line_measurement_process_runs_end_to_end_via_click(qapp, main_window):
+    height, width = 41, 200
+    columns = np.arange(width, dtype=np.float64)
+    line_pixel, continuum_level, line_amplitude = 100.0, 500.0, 4000.0
+    row = continuum_level + line_amplitude * np.exp(-((columns - line_pixel) ** 2) / (2 * 3.0**2))
+    data = np.tile(row, (height, 1))
+    sub_window = main_window.add_image_window(data, "line_measurement.fits")
+    main_window.mdi.setActiveSubWindow(sub_window)
+    qapp.processEvents()
+    view = sub_window.widget()
+
+    process = main_window._process_by_id["spectroscopy.line"]
+    params = {p.name: p.default for p in process.parameters}
+    main_window._run_process("spectroscopy.line", params)
+    qapp.processEvents()
+    assert view._picking is True
+
+    _click(view, line_pixel, height / 2.0, Qt.MouseButton.LeftButton)  # un único clic: termina sola (requires_picking=1)
+    qapp.processEvents()
+
+    deadline = time.monotonic() + 10.0
+    while main_window._active_worker is not None and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.02)
+    qapp.processEvents()
+
+    assert main_window.properties.apply_button.isEnabled()
+    assert main_window._last_result_table is not None
+    row_values = main_window._last_result_table.rows[0]
+    center_px = row_values[0]
+    assert center_px == pytest.approx(line_pixel, abs=2.0)
+
+
 def test_picking_process_cancelled_does_not_run_worker(qapp, main_window):
     data = _psf_field()
     sub_window = main_window.add_image_window(data, "cancel_flow.fits")
