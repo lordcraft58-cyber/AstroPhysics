@@ -31,6 +31,7 @@ from astrophysics_suite.tables.table import Table
 from qt_app.astrometry.registration_dialog import RegistrationDialog
 from qt_app.astrometry.star_pair_registration_dialog import StarPairConfigDialog
 from qt_app.astrometry.blind_solve_dialog import BlindPlateSolveDialog
+from qt_app.astrometry.optical_wcs_dialog import OpticalWCSDialog
 from qt_app.astrometry.plate_solve_dialog import PlateSolveDialog
 from qt_app.astrometry.wcs_fit_dialog import WCSFitDialog
 from qt_app.candidates.candidate_detail_widget import CandidateDetailWidget
@@ -205,6 +206,10 @@ class MainWindow(QMainWindow):
         self.reduction_menu.addAction(reduce_session_action)
 
         self.astrometry_menu = self.menuBar().addMenu("A&strometría")
+        self.optical_wcs_action = QAction("WCS desde la &óptica (cámara + focal)...", self)
+        self.optical_wcs_action.triggered.connect(self._open_optical_wcs_dialog)
+        self.astrometry_menu.addAction(self.optical_wcs_action)
+        self.astrometry_menu.addSeparator()
         self.plate_solve_action = QAction("&Resolver placa automáticamente...", self)
         self.plate_solve_action.triggered.connect(self._open_plate_solve_dialog)
         self.astrometry_menu.addAction(self.plate_solve_action)
@@ -661,6 +666,29 @@ class MainWindow(QMainWindow):
         view.fitted_wcs_solution = solution
         if view.source_path:
             self.session_state.set_wcs_solution(view.source_path, solution)
+
+    def _open_optical_wcs_dialog(self) -> None:
+        view = self._active_image_view()
+        if view is None:
+            self.statusBar().showMessage("Abre o selecciona una imagen antes de construir su WCS desde la óptica.", 5000)
+            return
+        dialog = OpticalWCSDialog(view.data.shape, view.header, self)
+        dialog.built.connect(lambda solution, setup, v=view: self._on_optical_wcs_built(v, solution, setup))
+        dialog.exec()
+
+    def _on_optical_wcs_built(self, view: ImageView, solution, setup) -> None:
+        self._remember_wcs_solution(view, solution)
+        width_deg, height_deg = setup.field_of_view_deg
+        logger.info(
+            "WCS construido desde la óptica para %s: %s a %.0f mm -> %.4f \"/px, campo %.1f' x %.1f'. "
+            "Solución declarada por el usuario (sin ajuste contra estrellas), centrada en RA=%.6f° Dec=%.6f°.",
+            view.title, setup.camera_name, setup.focal_length_mm, setup.pixel_scale_arcsec,
+            width_deg * 60, height_deg * 60, solution.crval_deg[0], solution.crval_deg[1],
+        )
+        self.statusBar().showMessage(
+            f"WCS desde la óptica para {view.title}: {setup.pixel_scale_arcsec:.4f}\"/px, "
+            f"campo {width_deg * 60:.1f}' × {height_deg * 60:.1f}'.", 8000
+        )
 
     def _on_wcs_fitted(self, view: ImageView, solution, table: Table) -> None:
         self._remember_wcs_solution(view, solution)

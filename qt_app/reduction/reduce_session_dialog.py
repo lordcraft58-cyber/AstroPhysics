@@ -295,7 +295,10 @@ class ReduceSessionDialog(QDialog):
         return [self.file_list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.file_list.count())]
 
     def _pick_fringe_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Patrón de franjas maestro", "", "FITS (*.fits *.fit *.fts);;Todos los archivos (*.*)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Patrón de franjas maestro", "",
+            "FITS/XISF (*.fits *.fit *.fts *.xisf);;FITS (*.fits *.fit *.fts);;XISF (*.xisf);;Todos los archivos (*.*)",
+        )
         if path:
             self._fringe_path = path
             self.fringe_label.setText(Path(path).name)
