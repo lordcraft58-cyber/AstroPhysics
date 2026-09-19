@@ -36,6 +36,7 @@ from scipy.spatial import cKDTree
 
 from astrophysics_suite.astrometry.wcs_fit import WCSSolution, fit_wcs, gnomonic_project
 from astrophysics_suite.catalogs.gaia import query_gaia_neighbors
+from astrophysics_suite.instruments.optics import pixel_scale_arcsec_per_px
 from astrophysics_suite.core.provenance import Provenance
 from astrophysics_suite.detection.point_sources import detect_point_sources_in_array
 
@@ -96,7 +97,9 @@ def estimate_approx_scale_from_header(header: dict) -> float | None:
         except (ValueError, TypeError):
             return None
         if math.isfinite(focal_mm) and focal_mm > 0 and math.isfinite(pixel_um) and pixel_um > 0:
-            return 206265.0 * (pixel_um / 1000.0) / focal_mm
+            # misma fórmula que usa el WCS desde óptica -- una sola
+            # implementación, nunca dos que puedan divergir.
+            return pixel_scale_arcsec_per_px(pixel_size_um=pixel_um, focal_length_mm=focal_mm)
     return None
 
 
