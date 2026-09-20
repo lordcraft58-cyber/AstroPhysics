@@ -52,6 +52,7 @@ from qt_app.reduction.build_master_frame_dialog import BuildMasterFrameDialog
 from qt_app.reduction.master_frame_library import MasterFrameLibrary
 from qt_app.reduction.reduce_session_dialog import ReduceSessionDialog, SessionReductionOutcome
 from qt_app.spectroscopy.combine_spectra_dialog import CombineSpectraDialog
+from qt_app.spectroscopy.flux_calibration_dialog import FluxCalibrationDialog
 from qt_app.spectroscopy.radial_velocity_dialog import RadialVelocityDialog
 from qt_app.spectroscopy.spectrum_plot_data import SpectrumPlotData, SpectrumSeries
 from qt_app.spectroscopy.spectrum_view import SpectrumView
@@ -249,6 +250,9 @@ class MainWindow(QMainWindow):
         synthetic_photometry_action = QAction("Magnitud fotométrica &sintética...", self)
         synthetic_photometry_action.triggered.connect(self._open_synthetic_photometry_dialog)
         self.spectroscopy_menu.addAction(synthetic_photometry_action)
+        flux_calibration_action = QAction("Calibración de &flujo absoluta (estrella estándar)...", self)
+        flux_calibration_action.triggered.connect(self._open_flux_calibration_dialog)
+        self.spectroscopy_menu.addAction(flux_calibration_action)
 
         self.view_menu = self.menuBar().addMenu("&Vista")
         self.stf_action = QAction("Alternar STF en la imagen activa", self)
@@ -960,6 +964,19 @@ class MainWindow(QMainWindow):
             )
             return
         dialog = SyntheticPhotometryDialog(view, self)
+        dialog.exec()
+        table = dialog.result_table()
+        if table is not None:
+            self._last_result_table = table
+
+    def _open_flux_calibration_dialog(self) -> None:
+        views = self._image_views_by_title()
+        if len(views) < 2:
+            self.statusBar().showMessage(
+                "Abre al menos dos ventanas (estrella estándar + científica) antes de calibrar el flujo.", 5000
+            )
+            return
+        dialog = FluxCalibrationDialog(views, self)
         dialog.exec()
         table = dialog.result_table()
         if table is not None:
