@@ -53,6 +53,7 @@ from qt_app.reduction.build_master_frame_dialog import BuildMasterFrameDialog
 from qt_app.reduction.master_frame_library import MasterFrameLibrary
 from qt_app.reduction.reduce_session_dialog import ReduceSessionDialog, SessionReductionOutcome
 from qt_app.spectroscopy.combine_spectra_dialog import CombineSpectraDialog
+from qt_app.spectroscopy.template_comparison_dialog import TemplateComparisonDialog
 from qt_app.spectroscopy.flexure_correction_dialog import FlexureCorrectionDialog
 from qt_app.spectroscopy.telluric_correction_dialog import TelluricCorrectionDialog
 from qt_app.spectroscopy.flux_calibration_dialog import FluxCalibrationDialog
@@ -265,6 +266,9 @@ class MainWindow(QMainWindow):
         telluric_correction_action = QAction("Corrección de absorción &telúrica...", self)
         telluric_correction_action.triggered.connect(self._open_telluric_correction_dialog)
         self.spectroscopy_menu.addAction(telluric_correction_action)
+        template_comparison_action = QAction("Comparar con &plantilla de referencia...", self)
+        template_comparison_action.triggered.connect(self._open_template_comparison_dialog)
+        self.spectroscopy_menu.addAction(template_comparison_action)
 
         self.view_menu = self.menuBar().addMenu("&Vista")
         self.stf_action = QAction("Alternar STF en la imagen activa", self)
@@ -1038,6 +1042,17 @@ class MainWindow(QMainWindow):
             )
             return
         dialog = TelluricCorrectionDialog(views, self)
+        dialog.exec()
+        table = dialog.result_table()
+        if table is not None:
+            self._last_result_table = table
+
+    def _open_template_comparison_dialog(self) -> None:
+        views = self._image_views_by_title()
+        if not views:
+            self.statusBar().showMessage("Abre una imagen ya calibrada en longitud de onda antes de comparar con una plantilla.", 5000)
+            return
+        dialog = TemplateComparisonDialog(views, self)
         dialog.exec()
         table = dialog.result_table()
         if table is not None:
