@@ -52,6 +52,7 @@ from qt_app.reduction.build_master_frame_dialog import BuildMasterFrameDialog
 from qt_app.reduction.master_frame_library import MasterFrameLibrary
 from qt_app.reduction.reduce_session_dialog import ReduceSessionDialog, SessionReductionOutcome
 from qt_app.spectroscopy.combine_spectra_dialog import CombineSpectraDialog
+from qt_app.spectroscopy.radial_velocity_dialog import RadialVelocityDialog
 from qt_app.spectroscopy.spectrum_plot_data import SpectrumPlotData, SpectrumSeries
 from qt_app.spectroscopy.spectrum_view import SpectrumView
 from qt_app.spectroscopy.wavelength_fit_dialog import WavelengthFitDialog
@@ -241,6 +242,9 @@ class MainWindow(QMainWindow):
         save_spectrum_action = QAction("&Guardar espectro calibrado (FITS)...", self)
         save_spectrum_action.triggered.connect(self._save_calibrated_spectrum_fits)
         self.spectroscopy_menu.addAction(save_spectrum_action)
+        radial_velocity_action = QAction("Medir &velocidad radial...", self)
+        radial_velocity_action.triggered.connect(self._open_radial_velocity_dialog)
+        self.spectroscopy_menu.addAction(radial_velocity_action)
 
         self.view_menu = self.menuBar().addMenu("&Vista")
         self.stf_action = QAction("Alternar STF en la imagen activa", self)
@@ -922,6 +926,23 @@ class MainWindow(QMainWindow):
             return
         logger.info("Espectro calibrado de %s guardado en %s (%s)", view.title, path, view.wavelength_calibration_record.source.value)
         self.statusBar().showMessage(f"Espectro calibrado guardado en {path}", 6000)
+
+    def _open_radial_velocity_dialog(self) -> None:
+        view = self._active_image_view()
+        if view is None:
+            self.statusBar().showMessage("Abre o selecciona una imagen antes de medir velocidad radial.", 5000)
+            return
+        if view.fitted_wavelength_solution is None:
+            self.statusBar().showMessage(
+                f"{view.title} no tiene una calibración en longitud de onda ajustada todavía -- "
+                "usa antes \"Calibrar longitud de onda...\".", 7000,
+            )
+            return
+        dialog = RadialVelocityDialog(view, self)
+        dialog.exec()
+        table = dialog.result_table()
+        if table is not None:
+            self._last_result_table = table
 
     def _open_combine_spectra_dialog(self) -> None:
         views = self._image_views_by_title()
