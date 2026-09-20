@@ -1320,6 +1320,11 @@ class MainWindow(QMainWindow):
         zeropoint_fit = result.artifacts.get("zeropoint_fit")
         if zeropoint_fit is not None and view.source_path:
             self.session_state.set_zeropoint_fit(view.source_path, zeropoint_fit)
+        wavelength_calibration_record = result.artifacts.get("wavelength_calibration_record")
+        if wavelength_calibration_record is not None:
+            view.fitted_wavelength_solution = wavelength_calibration_record.solution
+            view.wavelength_calibration_record = wavelength_calibration_record
+            view.wavelength_calibration_spectrum = result.artifacts.get("wavelength_calibration_spectrum")
 
     def _on_process_failed(self, message: str) -> None:
         self.properties.apply_button.setEnabled(True)

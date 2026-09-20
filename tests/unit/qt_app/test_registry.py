@@ -663,6 +663,73 @@ def test_identify_lines_process_reports_both_air_and_vacuum_catalog_wavelengths(
     assert catalog_vacuum > catalog_air
 
 
+def test_reference_star_calibration_process_infers_a_provisional_wavelength_solution():
+    # estrella sintética A0V-like con Balmer real en posiciones conocidas
+    true_wave0, true_dispersion = 4000.0, 2.0
+    width = 2000
+    pixel = np.arange(width, dtype=np.float64)
+    continuum_level = 200.0
+    flux = np.full(width, continuum_level)
+    from astrophysics_suite.spectroscopy.line_catalog import BALMER_LINES
+    for line in BALMER_LINES:
+        true_pixel = (line.wavelength_air_angstrom - true_wave0) / true_dispersion
+        if 0 <= true_pixel < width:
+            flux -= 40.0 * np.exp(-((pixel - true_pixel) ** 2) / (2 * 2.5**2))
+    data = np.tile(flux, (21, 1))
+
+    process = _get("spectroscopy.reference_star_calibration")
+    params = _default_params(process)
+    params["catalog"] = "Balmer (H, estelar)"
+    params["approx_dispersion_angstrom_per_px"] = true_dispersion * 1.01
+    params["approx_wavelength_at_pixel0"] = true_wave0 + 10.0
+    params["tolerance_angstrom"] = 40.0
+    params["_header"] = {"OBJECT": "Vega (sintética)"}
+
+    result = process.run(data, params)
+
+    assert "PROVISIONAL" in result.summary
+    assert "Vega (sintética)" in result.summary
+    record = result.artifacts["wavelength_calibration_record"]
+    assert record.reference_object == "Vega (sintética)"
+    assert record.source.value == "reference_star"
+    assert record.solution.pixel_to_wavelength(0.0) == pytest.approx(true_wave0, abs=5.0)
+    assert result.artifacts["wavelength_calibration_spectrum"] is not None
+    assert result.table is not None and len(result.table.rows) == 1
+
+
+def test_reference_star_calibration_process_falls_back_to_an_honest_placeholder_without_a_real_object_header():
+    from astrophysics_suite.spectroscopy.line_catalog import BALMER_LINES
+
+    true_wave0, true_dispersion = 4000.0, 2.0
+    width = 2000
+    pixel = np.arange(width, dtype=np.float64)
+    flux = np.full(width, 200.0)
+    for line in BALMER_LINES:
+        true_pixel = (line.wavelength_air_angstrom - true_wave0) / true_dispersion
+        if 0 <= true_pixel < width:
+            flux -= 40.0 * np.exp(-((pixel - true_pixel) ** 2) / (2 * 2.5**2))
+    data = np.tile(flux, (21, 1))
+
+    process = _get("spectroscopy.reference_star_calibration")
+    params = _default_params(process)
+    params["catalog"] = "Balmer (H, estelar)"
+    params["approx_dispersion_angstrom_per_px"] = true_dispersion * 1.01
+    params["approx_wavelength_at_pixel0"] = true_wave0 + 10.0
+    params["tolerance_angstrom"] = 40.0
+
+    result = process.run(data, params)
+    record = result.artifacts["wavelength_calibration_record"]
+    assert "sin nombre" in record.reference_object
+
+
+def test_reference_star_calibration_process_raises_honestly_when_nothing_matches():
+    data = np.full((21, 200), 200.0)  # continuo puro, sin ninguna línea real
+    process = _get("spectroscopy.reference_star_calibration")
+    params = _default_params(process)
+    with pytest.raises(ValueError):
+        process.run(data, params)
+
+
 def test_multi_aperture_process_produces_one_spectrum_series_per_aperture():
     height, width = 60, 150
     rows = np.arange(height)[:, np.newaxis]

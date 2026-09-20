@@ -49,7 +49,9 @@ from astrophysics_suite.spectroscopy.line_catalog import (
 from astrophysics_suite.spectroscopy.line_profile_fit import fit_gaussian_line, fit_voigt_line, spectral_resolution
 from astrophysics_suite.spectroscopy.wavelength import local_dispersion_at_pixel
 from astrophysics_suite.spectroscopy.lines import measure_line
+from astrophysics_suite.spectroscopy.calibration_provenance import build_wavelength_provenance
 from astrophysics_suite.spectroscopy.object_line_identification import identify_object_lines_in_spectrum
+from astrophysics_suite.spectroscopy.reference_star_calibration import calibrate_from_reference_star
 from astrophysics_suite.spectroscopy.qc_report import (
     QCReport,
     pixel_quality_metric,
@@ -1015,6 +1017,54 @@ def _run_identify_object_lines(data: np.ndarray, params: dict) -> ProcessResult:
     return ProcessResult(output_data=None, summary=summary, log_lines=log_lines, table=table, artifacts={"spectrum": plot_data})
 
 
+def _run_reference_star_calibration(data: np.ndarray, params: dict) -> ProcessResult:
+    """Calibración en longitud de onda PROVISIONAL por estrella de
+    referencia (§13) -- misma convención de fila central que "Calibrar
+    longitud de onda..." (`_open_wavelength_fit_flow`), pero detectando
+    líneas de objeto reales (absorción Y emisión) contra un catálogo de
+    objeto en vez de líneas de arco. `reference_object` se lee del
+    `OBJECT` real de la cabecera FITS si lo hay -- nunca se inventa un
+    nombre de estrella."""
+    row_index = data.shape[0] // 2
+    flux = data[row_index, :].astype(np.float64)
+    pixel = np.arange(flux.size, dtype=np.float64)
+    continuum_fit = fit_continuum(pixel, flux, degree=int(params["continuum_degree"]), sigma_clip=params["sigma_clip"])
+
+    header = params.get("_header")
+    object_name = (header or {}).get("OBJECT")
+    reference_object = str(object_name).strip() if object_name else "(objeto sin nombre en la cabecera FITS)"
+
+    try:
+        record = calibrate_from_reference_star(
+            pixel, flux, continuum_fit.continuum, _OBJECT_LINE_CATALOGS[params["catalog"]],
+            approx_dispersion_angstrom_per_px=params["approx_dispersion_angstrom_per_px"],
+            approx_wavelength_at_pixel0=params["approx_wavelength_at_pixel0"],
+            tolerance_angstrom=params["tolerance_angstrom"], reference_object=reference_object,
+            degree=int(params["degree"]), min_snr=params["min_snr"],
+        )
+    except ValueError as exc:
+        raise ValueError(f"No se pudo inferir una calibración por estrella de referencia: {exc}") from exc
+
+    provenance = build_wavelength_provenance(record)
+    summary = (
+        f"Calibración PROVISIONAL por estrella de referencia ({reference_object}): grado {record.solution.degree}, "
+        f"{record.n_lines_used} línea(s) real(es) usada(s) (RMS={record.solution.rms_residual:.4f} Å)."
+    )
+    log_lines = tuple(record.describe()) + tuple(f"AVISO: {w}" for w in provenance.warnings)
+    table = Table(
+        columns=("degree", "n_lines_used", "n_lines_rejected", "rms_residual_angstrom", "reference_object"),
+        units=("", "", "", "Å", ""),
+        rows=((
+            record.solution.degree, record.n_lines_used, record.n_lines_rejected,
+            record.solution.rms_residual, reference_object,
+        ),),
+    )
+    return ProcessResult(
+        output_data=None, summary=summary, log_lines=log_lines, table=table,
+        artifacts={"wavelength_calibration_record": record, "wavelength_calibration_spectrum": flux},
+    )
+
+
 def _run_crop(data: np.ndarray, params: dict) -> ProcessResult:
     points = params.get("_picked_points") or []
     if len(points) != 2:
@@ -1386,6 +1436,23 @@ def build_process_registry(*, profile_store: InstrumentProfileStore | None = Non
                 ParameterSpec("flag_telluric", "Avisar de solape con bandas telúricas conocidas", "bool", True),
             ),
             run=_run_identify_object_lines,
+        ),
+        ProcessDefinition(
+            process_id="spectroscopy.reference_star_calibration",
+            name="Calibrar por estrella de referencia",
+            category="Espectroscopía",
+            description="Infiere una calibración en longitud de onda PROVISIONAL (§13) sobre la fila central, a partir de líneas reales de objeto (Balmer, Ca II, Na D...) detectadas y emparejadas contra el catálogo elegido -- SIN necesitar una lámpara de calibración real. Nunca al mismo nivel de fiabilidad que una lámpara: la posición de una línea estelar depende también de velocidad radial y ensanchamiento, avisado explícitamente en el registro de operaciones. La dispersión/origen aproximados (de la óptica conocida del instrumento, o de una calibración previa) son responsabilidad tuya -- el taller nunca los supone. Sin selección de posiciones: opera sobre toda la fila central de una vez. La estrella de referencia se toma del OBJECT real de la cabecera FITS si lo tiene.",
+            parameters=(
+                ParameterSpec("catalog", "Catálogo de líneas de la estrella", "choice", "Balmer (H, estelar)", choices=tuple(_OBJECT_LINE_CATALOGS)),
+                ParameterSpec("approx_dispersion_angstrom_per_px", "Dispersión aprox. (Å/px)", "float", 1.4, minimum=0.01, maximum=100.0),
+                ParameterSpec("approx_wavelength_at_pixel0", "λ en píxel 0 aprox. (Å)", "float", 3800.0, minimum=0.0, maximum=20000.0),
+                ParameterSpec("tolerance_angstrom", "Tolerancia de emparejamiento (Å)", "float", 15.0, minimum=0.1, maximum=500.0),
+                ParameterSpec("degree", "Grado del polinomio", "int", 1, minimum=1, maximum=6),
+                ParameterSpec("continuum_degree", "Grado del ajuste de continuo", "int", 3, minimum=1, maximum=10),
+                ParameterSpec("sigma_clip", "Umbral σ de rechazo del continuo", "float", 2.5, minimum=0.5, maximum=10.0),
+                ParameterSpec("min_snr", "S/N mínima de detección", "float", 5.0, minimum=1.0, maximum=50.0),
+            ),
+            run=_run_reference_star_calibration,
         ),
         # La calibración en longitud de onda necesita que el usuario
         # empareje cada línea de arco detectada con una longitud de onda
