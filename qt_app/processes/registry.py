@@ -37,6 +37,7 @@ from astrophysics_suite.photometry.psf import (
 )
 from astrophysics_suite.reduction.overscan import subtract_overscan
 from astrophysics_suite.spectroscopy.continuum import fit_continuum
+from astrophysics_suite.spectroscopy.frame2d import PixelFlag, build_pixel_mask
 from astrophysics_suite.spectroscopy.line_catalog import (
     BALMER_LINES,
     CALCIUM_LINES,
@@ -350,16 +351,42 @@ def _run_psf_photometry(data: np.ndarray, params: dict) -> ProcessResult:
     return ProcessResult(output_data=output_data, summary=summary, log_lines=tuple(log_lines), table=table)
 
 
+def _saturation_mask_from_header(data: np.ndarray, params: dict) -> tuple[np.ndarray | None, int, float | None]:
+    """Máscara de saturación real desde `header['SATURATE']` (nunca un
+    umbral inventado -- si la cabecera real no lo trae, la detección
+    queda inactiva, misma disciplina que `detection.finder`/`frame2d.
+    build_pixel_mask`, del que este helper es solo el punto de entrada
+    para los procesos de traza/extracción de la GUI). Devuelve la
+    máscara (o `None` sin `SATURATE` real), cuántos píxeles saturados
+    hay en TODO el fotograma, y el umbral real usado."""
+    header = params.get("_header")
+    if not header:
+        return None, 0, None
+    value = header.get("SATURATE")
+    if value is None:
+        return None, 0, None
+    try:
+        saturate_adu = float(value)
+    except (TypeError, ValueError):
+        return None, 0, None
+    if not (np.isfinite(saturate_adu) and saturate_adu > 0):
+        return None, 0, None
+    mask = build_pixel_mask(data, saturate_adu=saturate_adu)
+    n_saturated = int(np.count_nonzero(mask & np.uint16(PixelFlag.SATURATED)))
+    return mask, n_saturated, saturate_adu
+
+
 def _run_spectral_trace(data: np.ndarray, params: dict) -> ProcessResult:
     points = params.get("_picked_points") or []
     if len(points) != 1:
         raise ValueError("se necesita exactamente un clic marcando el centro espacial inicial de la traza")
     x0, y0 = points[0]
 
-    trace = trace_spectrum(data, initial_center_px=y0, fit_degree=int(params["fit_degree"]))
+    mask, n_saturated, saturate_adu = _saturation_mask_from_header(data, params)
+    trace = trace_spectrum(data, initial_center_px=y0, fit_degree=int(params["fit_degree"]), mask=mask)
     uncertainty = np.sqrt(np.clip(data, 1.0, None))
     extractor = extract_optimal if params["optimal_extraction"] else extract_sum
-    spectrum = extractor(data, uncertainty, trace, aperture_half_width=params["aperture_half_width"])
+    spectrum = extractor(data, uncertainty, trace, aperture_half_width=params["aperture_half_width"], mask=mask)
 
     # Una columna que no se pudo medir queda flux=NaN (nunca 0.0): se
     # excluye de la estadística en vez de arrastrar un cero falso a la
@@ -376,9 +403,10 @@ def _run_spectral_trace(data: np.ndarray, params: dict) -> ProcessResult:
     )
     method = "óptima (Horne 1986)" if params["optimal_extraction"] else "suma simple"
     invalid_note = f"; {n_invalid} columna(s) sin medida real (huecos en el gráfico)" if n_invalid else ""
+    saturation_note = f"; {n_saturated} píxel(es) saturado(s) (SATURATE={saturate_adu:.0f} ADU) excluido(s)" if n_saturated else ""
     summary = (
         f"Traza extraída ({method}) desde y={y0:.1f} en x={x0:.1f}; RMS de traza={trace.rms_residual_px:.2f} px, "
-        f"S/N mediana={median_snr:.1f}{invalid_note}."
+        f"S/N mediana={median_snr:.1f}{invalid_note}{saturation_note}."
     )
     return ProcessResult(output_data=None, summary=summary, artifacts={"spectrum": plot_data})
 
@@ -389,11 +417,13 @@ def _run_multi_aperture(data: np.ndarray, params: dict) -> ProcessResult:
         raise ValueError("no se marcó ninguna posición -- haz clic sobre cada objeto, o activa 'Detectar automáticamente'")
     aperture_centers = [y for _x, y in points]
     uncertainty = np.sqrt(np.clip(data, 1.0, None))
+    mask, n_saturated, saturate_adu = _saturation_mask_from_header(data, params)
 
     result = extract_multi_aperture(
         data, uncertainty, aperture_centers=aperture_centers,
         optimal_extraction=bool(params["optimal_extraction"]), fit_degree=int(params["fit_degree"]),
         aperture_half_width=params["aperture_half_width"], bg_offset=params["bg_offset"], bg_half_width=params["bg_half_width"],
+        mask=mask,
     )
     # flux=NaN en columnas sin medida real (nunca 0.0, ver spectroscopy/trace.py):
     # se excluyen de la mediana en vez de sesgarla hacia abajo.
@@ -422,7 +452,8 @@ def _run_multi_aperture(data: np.ndarray, params: dict) -> ProcessResult:
 
     method = "óptima (Horne 1986)" if params["optimal_extraction"] else "suma simple"
     failed_note = f", {len(result.failures)} fallida(s)" if result.failures else ""
-    summary = f"{len(result.apertures)} apertura(s) extraída(s) ({method}){failed_note}."
+    saturation_note = f" ({n_saturated} píxel(es) saturado(s), SATURATE={saturate_adu:.0f} ADU, excluido(s))" if n_saturated else ""
+    summary = f"{len(result.apertures)} apertura(s) extraída(s) ({method}){failed_note}{saturation_note}."
 
     table = Table(
         columns=("aperture_id", "center_px", "trace_rms_px", "median_flux"),
@@ -452,11 +483,12 @@ def _run_extended_extraction(data: np.ndarray, params: dict) -> ProcessResult:
         regions.append(SpatialRegion(row_start=row_start, row_end=row_end, label=f"región {i // 2 + 1}"))
 
     uncertainty = np.sqrt(np.clip(data, 1.0, None))
+    mask, n_saturated, saturate_adu = _saturation_mask_from_header(data, params)
     sky_windows = (
         SkyWindow(offset_px=-params["bg_offset"], half_width_px=params["bg_half_width"]),
         SkyWindow(offset_px=params["bg_offset"], half_width_px=params["bg_half_width"]),
     )
-    result = extract_multi_region(data, uncertainty, regions, sky_windows=sky_windows)
+    result = extract_multi_region(data, uncertainty, regions, mask=mask, sky_windows=sky_windows)
 
     log_lines = [
         f"{e.region.label}: filas {e.region.row_start:.1f}-{e.region.row_end:.1f} px."
@@ -482,7 +514,8 @@ def _run_extended_extraction(data: np.ndarray, params: dict) -> ProcessResult:
     )
 
     failed_note = f", {len(result.failures)} fallida(s)" if result.failures else ""
-    summary = f"{len(result.extractions)} región(es) extendida(s) extraída(s) por suma simple{failed_note}."
+    saturation_note = f" ({n_saturated} píxel(es) saturado(s), SATURATE={saturate_adu:.0f} ADU, excluido(s))" if n_saturated else ""
+    summary = f"{len(result.extractions)} región(es) extendida(s) extraída(s) por suma simple{failed_note}{saturation_note}."
 
     table = Table(
         columns=("region", "row_start_px", "row_end_px", "median_flux"),

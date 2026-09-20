@@ -8,7 +8,7 @@ import math
 import numpy as np
 import pytest
 
-from qt_app.processes.registry import build_process_registry
+from qt_app.processes.registry import _saturation_mask_from_header, build_process_registry
 
 
 def _get(process_id: str):
@@ -543,3 +543,74 @@ def test_multi_aperture_process_produces_one_spectrum_series_per_aperture():
     assert len(plot_data.series) == 2
     assert plot_data.series[0].color != plot_data.series[1].color
     assert all(s.x.size == width for s in plot_data.series)
+
+
+def test_saturation_mask_from_header_inactive_without_a_real_saturate_value():
+    data = np.full((5, 5), 100.0)
+
+    mask, n_saturated, saturate_adu = _saturation_mask_from_header(data, {})
+    assert mask is None and n_saturated == 0 and saturate_adu is None
+
+    mask, n_saturated, saturate_adu = _saturation_mask_from_header(data, {"_header": {}})
+    assert mask is None and n_saturated == 0 and saturate_adu is None
+
+    mask, n_saturated, saturate_adu = _saturation_mask_from_header(data, {"_header": {"SATURATE": "no-numerico"}})
+    assert mask is None and n_saturated == 0 and saturate_adu is None
+
+    mask, n_saturated, saturate_adu = _saturation_mask_from_header(data, {"_header": {"SATURATE": -1.0}})
+    assert mask is None and n_saturated == 0 and saturate_adu is None
+
+
+def test_saturation_mask_from_header_detects_real_saturated_pixels():
+    data = np.full((5, 5), 100.0)
+    data[0, 0] = 500.0
+    data[2, 3] = 500.0
+
+    mask, n_saturated, saturate_adu = _saturation_mask_from_header(data, {"_header": {"SATURATE": 400.0}})
+
+    assert n_saturated == 2
+    assert saturate_adu == 400.0
+    assert mask is not None
+    assert mask.shape == data.shape
+
+
+def test_spectral_trace_process_excludes_saturated_pixels_and_reports_them():
+    height, width = 41, 150
+    yy, _xx = np.mgrid[0:height, 0:width]
+    flux_per_col = 3000.0
+    profile = np.exp(-(((yy - 20.0) ** 2)) / (2 * 2.0**2))
+    profile /= profile.sum(axis=0, keepdims=True)
+    data = 80.0 + flux_per_col * profile
+    # umbral elegido para saturar SOLO la fila del pico (fila 20, ~678 ADU
+    # en este perfil) y no las filas vecinas (~608 ADU) -- deja evidencia
+    # real de sobra para que la extracción por suma simple siga siendo
+    # posible, en vez de vaciar toda la apertura.
+    saturate_adu = 650.0
+    n_expected_saturated = int(np.count_nonzero(data >= 0.999 * saturate_adu))
+    assert n_expected_saturated == width  # una fila entera (la del pico) en las 150 columnas
+
+    process = _get("spectroscopy.trace")
+    params = _default_params(process)
+    params["optimal_extraction"] = False
+    params["_picked_points"] = [(0.0, 20.0)]
+    params["_header"] = {"SATURATE": saturate_adu}
+    result = process.run(data, params)
+
+    assert "saturado" in result.summary
+    assert str(n_expected_saturated) in result.summary
+
+
+def test_spectral_trace_process_stays_inactive_without_a_real_saturate_header():
+    height, width = 41, 150
+    yy, _xx = np.mgrid[0:height, 0:width]
+    profile = np.exp(-(((yy - 20.0) ** 2)) / (2 * 2.0**2))
+    profile /= profile.sum(axis=0, keepdims=True)
+    data = 80.0 + 3000.0 * profile
+
+    process = _get("spectroscopy.trace")
+    params = _default_params(process)
+    params["_picked_points"] = [(0.0, 20.0)]
+    params["_header"] = {}  # sin SATURATE real -- nunca se inventa un umbral
+    result = process.run(data, params)
+
+    assert "saturado" not in result.summary
