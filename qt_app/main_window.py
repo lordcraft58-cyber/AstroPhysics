@@ -1215,6 +1215,7 @@ class MainWindow(QMainWindow):
         params = dict(params)
         params["_wcs"] = view.wcs
         params["_header"] = view.header
+        params["_wavelength_solution"] = view.fitted_wavelength_solution
 
         worker = ProcessWorker(process.run, view.data, params, self)
         worker.finished_ok.connect(lambda result, p=process, v=view: self._on_process_finished(p, v, result))

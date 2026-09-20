@@ -37,8 +37,16 @@ from astrophysics_suite.photometry.psf import (
 )
 from astrophysics_suite.reduction.overscan import subtract_overscan
 from astrophysics_suite.spectroscopy.continuum import fit_continuum
+from astrophysics_suite.spectroscopy.line_catalog import (
+    BALMER_LINES,
+    CALCIUM_LINES,
+    NEBULAR_EMISSION_LINES,
+    SODIUM_LINES,
+    STELLAR_NEBULAR_LINES,
+)
 from astrophysics_suite.spectroscopy.line_profile_fit import fit_gaussian_line, fit_voigt_line
 from astrophysics_suite.spectroscopy.lines import measure_line
+from astrophysics_suite.spectroscopy.object_line_identification import identify_object_lines_in_spectrum
 from astrophysics_suite.spectroscopy.multiaperture import extract_multi_aperture
 from astrophysics_suite.spectroscopy.trace import extract_optimal, extract_sum, trace_spectrum
 from astrophysics_suite.tables.table import Table
@@ -597,6 +605,80 @@ def _run_line_profile_fit_central_row(data: np.ndarray, params: dict) -> Process
     return ProcessResult(output_data=None, summary=summary, log_lines=log_lines, table=table, artifacts={"spectrum": plot_data})
 
 
+_OBJECT_LINE_CATALOGS: dict[str, tuple] = {
+    "Balmer (H, estelar)": BALMER_LINES,
+    "Ca II H&K (estelar)": CALCIUM_LINES,
+    "Na D (estelar/interestelar)": SODIUM_LINES,
+    "Nebulares ([O III]/[N II]/[S II])": NEBULAR_EMISSION_LINES,
+    "Todas (estelar + nebular)": STELLAR_NEBULAR_LINES,
+}
+
+
+def _run_identify_object_lines(data: np.ndarray, params: dict) -> ProcessResult:
+    solution = params.get("_wavelength_solution")
+    if solution is None:
+        raise ValueError(
+            "Esta imagen no tiene una calibración en longitud de onda ajustada todavía -- usa antes "
+            "\"Calibrar longitud de onda...\" (menú Espectroscopía)."
+        )
+
+    row_index = data.shape[0] // 2
+    flux = data[row_index, :].astype(np.float64)
+    pixel = np.arange(flux.size, dtype=np.float64)
+    wavelength = np.asarray(solution.pixel_to_wavelength(pixel), dtype=np.float64)
+
+    continuum_fit = fit_continuum(wavelength, flux, degree=int(params["degree"]), sigma_clip=params["sigma_clip"], reject=params["continuum_reject"])
+    catalog = _OBJECT_LINE_CATALOGS[params["catalog"]]
+    tolerance_angstrom = params["tolerance_angstrom"]
+
+    matches = identify_object_lines_in_spectrum(
+        wavelength, flux, continuum_fit.continuum, catalog,
+        min_snr=params["min_snr"], min_separation_angstrom=params["min_separation_angstrom"],
+        tolerance_angstrom=tolerance_angstrom, flag_telluric=params["flag_telluric"],
+    )
+
+    n_type_mismatch = sum(1 for m in matches if not m.line_type_agrees)
+    n_telluric = sum(1 for m in matches if m.telluric_overlap is not None)
+    summary = (
+        f"{len(matches)} línea(s) identificada(s) contra «{params['catalog']}» "
+        f"({n_type_mismatch} con el tipo (absorción/emisión) sin concordar, {n_telluric} solapando una banda telúrica conocida)."
+        if matches else f"Ninguna línea real detectada coincide con «{params['catalog']}» dentro de {tolerance_angstrom:g} Å."
+    )
+    log_lines = (
+        f"Ajuste de continuo: grado {int(params['degree'])}, {continuum_fit.n_rejected} píxel(es) rechazados por sigma-clip.",
+        "SUGERENCIAS únicamente (§10/§21): ninguna identificación se acepta automáticamente -- revisa cada una, "
+        "en particular las marcadas con tipo sin concordar o solape telúrico, antes de darlas por buenas.",
+    )
+    table = Table(
+        columns=("catalog_label", "element", "detected_wavelength", "catalog_wavelength", "residual_angstrom", "confidence", "type_agrees", "telluric_band"),
+        units=("", "", "Å", "Å", "Å", "", "", ""),
+        rows=tuple(
+            (
+                m.catalog_line.label, m.catalog_line.element, m.detected_wavelength,
+                m.catalog_line.wavelength_air_angstrom, m.residual_angstrom, m.confidence,
+                "sí" if m.line_type_agrees else "NO", m.telluric_overlap.name if m.telluric_overlap else "",
+            )
+            for m in matches
+        ),
+    )
+    markers = tuple(
+        SpectrumMarker(
+            x_start=m.detected_wavelength - tolerance_angstrom, x_end=m.detected_wavelength + tolerance_angstrom,
+            label=m.catalog_line.label + (" ¿telúrica?" if m.telluric_overlap else ""),
+            color="#e05252" if not m.line_type_agrees else ("#e0a852" if m.telluric_overlap else "#f0b429"),
+        )
+        for m in matches
+    )
+    plot_data = SpectrumPlotData(
+        series=(
+            SpectrumSeries(label="Flujo", x=wavelength, y=flux),
+            SpectrumSeries(label="Continuo ajustado", x=wavelength, y=continuum_fit.continuum, color=series_color(1), style="dashed"),
+        ),
+        x_label="Longitud de onda (Å)", y_label="Flujo (ADU)", markers=markers,
+    )
+    return ProcessResult(output_data=None, summary=summary, log_lines=log_lines, table=table, artifacts={"spectrum": plot_data})
+
+
 def _run_crop(data: np.ndarray, params: dict) -> ProcessResult:
     points = params.get("_picked_points") or []
     if len(points) != 2:
@@ -875,6 +957,23 @@ def build_process_registry() -> list[ProcessDefinition]:
             ),
             run=_run_line_profile_fit_central_row,
             requires_picking=1,
+        ),
+        ProcessDefinition(
+            process_id="spectroscopy.identify_lines",
+            name="Identificar líneas automáticamente",
+            category="Espectroscopía",
+            description="Detecta desviaciones reales del continuo sobre la fila central YA calibrada en longitud de onda (exige haber usado antes \"Calibrar longitud de onda...\") y sugiere, para cada una, la línea de catálogo más cercana -- nunca acepta una identificación automáticamente: revisa el tipo (absorción/emisión, marcado si no concuerda) y el posible solape con una banda telúrica conocida antes de darla por buena. Sin selección de posiciones: opera sobre todo el espectro de una vez.",
+            parameters=(
+                ParameterSpec("catalog", "Catálogo de líneas", "choice", "Todas (estelar + nebular)", choices=tuple(_OBJECT_LINE_CATALOGS)),
+                ParameterSpec("degree", "Grado del ajuste de continuo", "int", 3, minimum=1, maximum=10),
+                ParameterSpec("continuum_reject", "Rechazo del continuo", "choice", "both", choices=("both", "absorption", "emission")),
+                ParameterSpec("sigma_clip", "Umbral σ de rechazo del continuo", "float", 2.5, minimum=0.5, maximum=10.0),
+                ParameterSpec("min_snr", "S/N mínima de detección", "float", 5.0, minimum=1.0, maximum=50.0),
+                ParameterSpec("min_separation_angstrom", "Separación mínima entre líneas (Å)", "float", 2.0, minimum=0.1, maximum=200.0),
+                ParameterSpec("tolerance_angstrom", "Tolerancia de emparejamiento (Å)", "float", 3.0, minimum=0.1, maximum=200.0),
+                ParameterSpec("flag_telluric", "Avisar de solape con bandas telúricas conocidas", "bool", True),
+            ),
+            run=_run_identify_object_lines,
         ),
         # La calibración en longitud de onda necesita que el usuario
         # empareje cada línea de arco detectada con una longitud de onda
