@@ -51,11 +51,12 @@ from astrophysics_suite.spectroscopy.lines import measure_line
 from astrophysics_suite.spectroscopy.object_line_identification import identify_object_lines_in_spectrum
 from astrophysics_suite.spectroscopy.extended_extraction import SpatialRegion, extract_multi_region
 from astrophysics_suite.spectroscopy.multiaperture import extract_multi_aperture
-from astrophysics_suite.spectroscopy.trace import SkyWindow, extract_optimal, extract_sum, trace_spectrum
+from astrophysics_suite.spectroscopy.trace import DEFAULT_SKY_WINDOWS, SkyWindow, extract_optimal, extract_sum, trace_spectrum
 from astrophysics_suite.tables.table import Table
 from qt_app.processes.base import ParameterSpec, ProcessDefinition, ProcessResult
 from services.instrument_profiles import InstrumentProfileStore
 from qt_app.spectroscopy.spectrum_plot_data import SpectrumMarker, SpectrumPlotData, SpectrumSeries, series_color
+from qt_app.spectroscopy.trace_overlay_data import TraceOverlay
 
 
 def _run_debayer(data: np.ndarray, params: dict) -> ProcessResult:
@@ -496,7 +497,11 @@ def _run_spectral_trace(data: np.ndarray, params: dict) -> ProcessResult:
         f"Traza extraída ({method}) desde y={y0:.1f} en x={x0:.1f}; RMS de traza={trace.rms_residual_px:.2f} px, "
         f"S/N mediana={median_snr:.1f}{invalid_note}{saturation_note}{noise_note}."
     )
-    return ProcessResult(output_data=None, summary=summary, artifacts={"spectrum": plot_data})
+    overlay = TraceOverlay(
+        trace_columns=trace.columns.astype(np.float64), trace_center_px=trace.center_px,
+        aperture_half_width=float(params["aperture_half_width"]), sky_windows=DEFAULT_SKY_WINDOWS, label="Traza",
+    )
+    return ProcessResult(output_data=None, summary=summary, artifacts={"spectrum": plot_data, "trace_overlay": overlay})
 
 
 def _run_multi_aperture(data: np.ndarray, params: dict) -> ProcessResult:
@@ -549,7 +554,22 @@ def _run_multi_aperture(data: np.ndarray, params: dict) -> ProcessResult:
         units=("", "px", "px", "ADU"),
         rows=tuple((a.aperture_id, a.initial_center_px, a.trace.rms_residual_px, float(np.nanmedian(a.spectrum.flux))) for a in result.apertures),
     )
-    return ProcessResult(output_data=None, summary=summary, log_lines=tuple(log_lines), table=table, artifacts={"spectrum": plot_data})
+    sky_windows = (
+        SkyWindow(offset_px=-params["bg_offset"], half_width_px=params["bg_half_width"]),
+        SkyWindow(offset_px=params["bg_offset"], half_width_px=params["bg_half_width"]),
+    )
+    overlays = tuple(
+        TraceOverlay(
+            trace_columns=a.trace.columns.astype(np.float64), trace_center_px=a.trace.center_px,
+            aperture_half_width=float(params["aperture_half_width"]), sky_windows=sky_windows,
+            label=f"Apertura {a.aperture_id}",
+        )
+        for a in result.apertures
+    )
+    return ProcessResult(
+        output_data=None, summary=summary, log_lines=tuple(log_lines), table=table,
+        artifacts={"spectrum": plot_data, "trace_overlay": overlays},
+    )
 
 
 def _run_extended_extraction(data: np.ndarray, params: dict) -> ProcessResult:
@@ -615,7 +635,19 @@ def _run_extended_extraction(data: np.ndarray, params: dict) -> ProcessResult:
             for e in result.extractions
         ),
     )
-    return ProcessResult(output_data=None, summary=summary, log_lines=tuple(log_lines), table=table, artifacts={"spectrum": plot_data})
+    n_columns = data.shape[1]
+    overlays = tuple(
+        TraceOverlay(
+            trace_columns=np.arange(n_columns, dtype=np.float64),
+            trace_center_px=np.full(n_columns, e.region.center_px, dtype=np.float64),
+            aperture_half_width=e.region.half_width_px, sky_windows=sky_windows, label=e.region.label,
+        )
+        for e in result.extractions
+    )
+    return ProcessResult(
+        output_data=None, summary=summary, log_lines=tuple(log_lines), table=table,
+        artifacts={"spectrum": plot_data, "trace_overlay": overlays},
+    )
 
 
 def _run_continuum_fit_central_row(data: np.ndarray, params: dict) -> ProcessResult:

@@ -812,3 +812,64 @@ def test_spectral_trace_process_reports_a_saved_instrument_profile_in_the_summar
     result = process.run(data, params)
 
     assert "perfil de instrumento «ZWO ASI294MM»" in result.summary
+
+
+def test_spectral_trace_process_reports_a_real_trace_overlay():
+    height, width = 41, 150
+    yy, _xx = np.mgrid[0:height, 0:width]
+    profile_shape = np.exp(-(((yy - 20.0) ** 2)) / (2 * 2.0**2))
+    profile_shape /= profile_shape.sum(axis=0, keepdims=True)
+    data = 80.0 + 3000.0 * profile_shape
+
+    process = _get("spectroscopy.trace")
+    params = _default_params(process)
+    params["_picked_points"] = [(0.0, 20.0)]
+    result = process.run(data, params)
+
+    overlay = result.artifacts["trace_overlay"]
+    assert overlay.trace_columns.size == width
+    assert overlay.trace_center_px.size == width
+    np.testing.assert_allclose(overlay.trace_center_px, 20.0, atol=1.0)
+    assert overlay.aperture_half_width == params["aperture_half_width"]
+    assert len(overlay.sky_windows) == 2
+
+
+def test_multi_aperture_process_reports_one_trace_overlay_per_aperture():
+    height, width = 60, 150
+    rows = np.arange(height)[:, np.newaxis]
+    data = np.full((height, width), 80.0)
+    for center, flux in ((15.0, 3000.0), (45.0, 5000.0)):
+        profile = np.exp(-((rows - center) ** 2) / (2 * 2.0**2))
+        profile /= profile.sum(axis=0, keepdims=True)
+        data = data + flux * profile
+
+    process = _get("spectroscopy.multiaperture")
+    params = _default_params(process)
+    params["_picked_points"] = [(0.0, 15.0), (0.0, 45.0)]
+    result = process.run(data, params)
+
+    overlays = result.artifacts["trace_overlay"]
+    assert len(overlays) == 2
+    assert overlays[0].label == "Apertura 1"
+    assert overlays[1].label == "Apertura 2"
+    np.testing.assert_allclose(overlays[0].trace_center_px, 15.0, atol=1.0)
+    np.testing.assert_allclose(overlays[1].trace_center_px, 45.0, atol=1.0)
+
+
+def test_extended_extraction_process_reports_one_constant_overlay_per_region():
+    height, width = 80, 150
+    data = np.full((height, width), 80.0)
+    data[20:60, :] += 100.0
+
+    process = _get("spectroscopy.extended_extraction")
+    params = _default_params(process)
+    params["bg_offset"] = 40.0
+    params["_picked_points"] = [(0.0, 20.0), (0.0, 39.0)]
+    result = process.run(data, params)
+
+    overlays = result.artifacts["trace_overlay"]
+    assert len(overlays) == 1
+    overlay = overlays[0]
+    assert overlay.trace_columns.size == width
+    np.testing.assert_allclose(overlay.trace_center_px, 29.5)  # centro real de la región 20-39
+    assert overlay.aperture_half_width == pytest.approx(9.5)

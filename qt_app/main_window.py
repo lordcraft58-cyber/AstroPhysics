@@ -1311,6 +1311,9 @@ class MainWindow(QMainWindow):
             self.add_spectrum_window(spectrum, f"{view.title} -> {process.name}")
         elif result.output_data is not None:
             self.add_image_window(result.output_data, f"{view.title} -> {process.name}")
+        trace_overlay = result.artifacts.get("trace_overlay")
+        if trace_overlay is not None:
+            view.set_trace_overlay(trace_overlay)
         if result.table is not None:
             self._last_result_table = result.table
             logger.info("    Tabla disponible (%d fila(s)) -- Herramientas -> Exportar última tabla a CSV...", len(result.table.rows))
