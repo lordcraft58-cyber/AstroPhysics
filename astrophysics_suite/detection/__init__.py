@@ -1,8 +1,9 @@
-"""Detection Engine (Fase 6, slice 1).
+"""Detection Engine.
 
-Ver docs/audit/07-FASE6-REFACTOR-PROGRESIVO-SLICE1.md. Delega el
-algoritmo de detección (DAOStarFinder vía `legacy...detect_point_sources`)
-y la medición de forma por fuente (`legacy...enrich_star_rows`, momentos
-de segundo orden reales) en el código heredado ya probado -- lo nuevo es
-la traducción a `Detection`/`SkyPosition`/`MorphologySummary` (Fase 4).
+Detección de fuentes puntuales real (DAOStarFinder vía `finder.py`, con
+reserva propia en Python puro) y medición de forma por fuente
+(`finder.enrich_detections`, momentos de segundo orden reales) --
+migrado por completo del monolito legado (docs/audit/54-CIERRE-DETECTION.md).
+`point_sources.py` traduce el resultado a `Detection`/`SkyPosition`/
+`MorphologySummary` (Fase 4).
 """
