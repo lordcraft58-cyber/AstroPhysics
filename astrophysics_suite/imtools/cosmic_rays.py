@@ -20,6 +20,8 @@ from dataclasses import dataclass
 import numpy as np
 from scipy import ndimage
 
+from astrophysics_suite.imtools.ccd_noise import ccd_noise_adu
+
 _LAPLACIAN_KERNEL = np.array([[0.0, -1.0, 0.0], [-1.0, 4.0, -1.0], [0.0, -1.0, 0.0]])
 
 
@@ -50,9 +52,7 @@ def _subsample_laplacian(data: np.ndarray) -> np.ndarray:
 
 
 def _noise_model(median5: np.ndarray, *, gain_e_per_adu: float, read_noise_e: float) -> np.ndarray:
-    signal_e = np.clip(median5, a_min=0.0, a_max=None) * gain_e_per_adu
-    noise_e = np.sqrt(signal_e + read_noise_e**2)
-    return np.clip(noise_e / gain_e_per_adu, a_min=1e-6, a_max=None)
+    return ccd_noise_adu(median5, gain_e_per_adu=gain_e_per_adu, read_noise_e=read_noise_e)
 
 
 def _fine_structure_image(data: np.ndarray, *, floor: float) -> np.ndarray:
