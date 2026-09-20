@@ -33,6 +33,31 @@ class ZeropointFit:
     perdía (el llamador solo sabía CUÁNTAS se rechazaron, no CUÁLES) --
     documentado como limitación real en docs/audit/19-FASE14-TABLAS.md."""
 
+    def to_dict(self) -> dict:
+        """Forma serializable a JSON, sin pérdida -- incluida la máscara
+        de qué estrellas sobrevivieron al sigma-clip."""
+        return {
+            "zeropoint_mag": float(self.zeropoint_mag),
+            "zeropoint_uncertainty_mag": float(self.zeropoint_uncertainty_mag),
+            "n_stars_used": int(self.n_stars_used),
+            "n_stars_rejected": int(self.n_stars_rejected),
+            "residuals_mag": [float(v) for v in self.residuals_mag],
+            "rms_residual_mag": float(self.rms_residual_mag),
+            "used_mask": [bool(v) for v in self.used_mask],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ZeropointFit":
+        return cls(
+            zeropoint_mag=float(data["zeropoint_mag"]),
+            zeropoint_uncertainty_mag=float(data["zeropoint_uncertainty_mag"]),
+            n_stars_used=int(data["n_stars_used"]),
+            n_stars_rejected=int(data["n_stars_rejected"]),
+            residuals_mag=tuple(float(v) for v in data.get("residuals_mag", ())),
+            rms_residual_mag=float(data["rms_residual_mag"]),
+            used_mask=tuple(bool(v) for v in data.get("used_mask", ())),
+        )
+
 
 def fit_zeropoint(
     instrumental_mags: list[float],

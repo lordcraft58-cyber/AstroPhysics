@@ -87,6 +87,30 @@ class WCSSolution:
         offset = np.linalg.solve(self.cd_matrix_deg_per_px, np.array([xi[0], eta[0]]))
         return float(offset[0] + self.crpix_px[0]), float(offset[1] + self.crpix_px[1])
 
+    def to_dict(self) -> dict:
+        """Forma serializable a JSON -- sin pérdida: la matriz CD se
+        guarda como listas de float nativos (un `np.ndarray` no es
+        serializable) y `from_dict` la reconstruye igual."""
+        return {
+            "crval_deg": [float(v) for v in self.crval_deg],
+            "crpix_px": [float(v) for v in self.crpix_px],
+            "cd_matrix_deg_per_px": [[float(v) for v in row] for row in self.cd_matrix_deg_per_px],
+            "residuals_arcsec": [float(v) for v in self.residuals_arcsec],
+            "rms_residual_arcsec": float(self.rms_residual_arcsec),
+            "n_stars": int(self.n_stars),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> WCSSolution:
+        return cls(
+            crval_deg=(float(data["crval_deg"][0]), float(data["crval_deg"][1])),
+            crpix_px=(float(data["crpix_px"][0]), float(data["crpix_px"][1])),
+            cd_matrix_deg_per_px=np.asarray(data["cd_matrix_deg_per_px"], dtype=np.float64),
+            residuals_arcsec=tuple(float(v) for v in data.get("residuals_arcsec", ())),
+            rms_residual_arcsec=float(data["rms_residual_arcsec"]),
+            n_stars=int(data["n_stars"]),
+        )
+
 
 def wcs_solution_from_astropy(wcs, *, crpix_px: tuple[float, float] | None = None) -> WCSSolution:
     """Convierte un WCS real ya cargado de un FITS (`astropy.wcs.WCS`,

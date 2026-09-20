@@ -712,6 +712,11 @@ class MainWindow(QMainWindow):
             save_session(
                 path, project_name=self.session_state.project_name,
                 observations=self.session_state.observations, candidates=self.session_state.candidates,
+                # las calibraciones por imagen ya no mueren al cerrar:
+                # un WCS ajustado a mano o construido desde la óptica, y
+                # el punto cero real, viajan con la sesión.
+                wcs_solutions=self.session_state.wcs_solutions,
+                zeropoint_fits=self.session_state.zeropoint_fits,
             )
         except Exception as exc:  # noqa: BLE001 -- error real de escritura, debe ser visible
             logger.error("No se pudo guardar la sesión en %s: %s", path, exc)
@@ -739,7 +744,14 @@ class MainWindow(QMainWindow):
         self.session_state.load_saved_session(
             project_name=loaded.project_name, observations=list(loaded.observations), candidates=list(loaded.candidates),
         )
-        logger.info("Sesión abierta desde %s (%d candidato(s), %d observación/es)", path, len(loaded.candidates), len(loaded.observations))
+        for image_path, solution in loaded.wcs_solutions.items():
+            self.session_state.set_wcs_solution(image_path, solution)
+        for image_path, fit in loaded.zeropoint_fits.items():
+            self.session_state.set_zeropoint_fit(image_path, fit)
+        logger.info(
+            "Sesión abierta desde %s (%d candidato(s), %d observación/es, %d WCS, %d punto(s) cero)",
+            path, len(loaded.candidates), len(loaded.observations), len(loaded.wcs_solutions), len(loaded.zeropoint_fits),
+        )
         self.statusBar().showMessage(f"Sesión abierta desde {path}: {len(loaded.candidates)} candidato(s) añadidos", 6000)
         self._remember_recent_session(path)
 

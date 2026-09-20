@@ -7,6 +7,7 @@ sobrevive sin pérdida -- el mismo nivel de exigencia que
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 import numpy as np
 import pytest
@@ -101,3 +102,76 @@ def test_save_session_on_an_empty_project_still_produces_a_valid_reloadable_file
     assert loaded.project_name == "Vacío"
     assert loaded.observations == ()
     assert loaded.candidates == ()
+
+
+def _wcs_solution():
+    from astrophysics_suite.astrometry.optical_wcs import build_wcs_from_optics
+
+    return build_wcs_from_optics(
+        center_ra_deg=11.087505, center_dec_deg=41.412641,
+        pixel_scale_arcsec=1.0355, image_shape=(3008, 3008), rotation_deg=17.5,
+    )
+
+
+def _zeropoint_fit():
+    from astrophysics_suite.photometry.calibration import ZeropointFit
+
+    return ZeropointFit(
+        zeropoint_mag=24.31, zeropoint_uncertainty_mag=0.042,
+        n_stars_used=18, n_stars_rejected=3,
+        residuals_mag=(0.01, -0.02, 0.005), rms_residual_mag=0.031,
+        used_mask=(True, True, False, True),
+    )
+
+
+def test_session_roundtrips_the_wcs_and_zeropoint_of_each_image(tmp_path):
+    """El P0 nº9 del usuario: hasta ahora un WCS ajustado a mano o
+    construido desde la óptica moría al cerrar la aplicación."""
+    out_path = tmp_path / "calibrated_session.json"
+    solution, fit = _wcs_solution(), _zeropoint_fit()
+
+    save_session(
+        str(out_path), project_name="M31", observations=[], candidates=[],
+        wcs_solutions={"/datos/light_0001.fit": solution},
+        zeropoint_fits={"/datos/light_0001.fit": fit},
+    )
+    loaded = load_session(str(out_path))
+
+    restored = loaded.wcs_solutions["/datos/light_0001.fit"]
+    assert restored.crval_deg == pytest.approx(solution.crval_deg)
+    assert restored.crpix_px == solution.crpix_px
+    np.testing.assert_allclose(restored.cd_matrix_deg_per_px, solution.cd_matrix_deg_per_px, rtol=0, atol=0)
+    # y sigue apuntando al mismo sitio del cielo de verdad, no solo en los números
+    assert restored.pixel_to_sky(100.0, 250.0) == pytest.approx(solution.pixel_to_sky(100.0, 250.0))
+
+    restored_fit = loaded.zeropoint_fits["/datos/light_0001.fit"]
+    assert restored_fit == fit  # dataclass completa, máscara de sigma-clip incluida
+
+
+def test_session_without_calibrations_loads_them_empty_not_invented(tmp_path):
+    out_path = tmp_path / "plain_session.json"
+    save_session(str(out_path), project_name="P", observations=[], candidates=[])
+    loaded = load_session(str(out_path))
+    assert loaded.wcs_solutions == {}
+    assert loaded.zeropoint_fits == {}
+
+
+def test_old_v1_sessions_still_load(tmp_path):
+    """Compatibilidad real hacia atrás: las sesiones ya guardadas por el
+    usuario son v1 y no traían calibraciones -- deben seguir abriéndose."""
+    from astrophysics_suite.core.provenance import Provenance
+
+    out_path = tmp_path / "v1_session.json"
+    out_path.write_text(json.dumps({
+        "schema_version": 1,
+        "project_name": "Sesión antigua",
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+        "provenance": Provenance.now(pipeline_version="", engine="io.session_export", engine_version="1.0").to_dict(),
+        "observations": [],
+        "candidates": [],
+    }), encoding="utf-8")
+
+    loaded = load_session(str(out_path))
+    assert loaded.project_name == "Sesión antigua"
+    assert loaded.wcs_solutions == {}
+    assert loaded.zeropoint_fits == {}
