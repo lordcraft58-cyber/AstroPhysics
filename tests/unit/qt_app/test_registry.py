@@ -8,7 +8,7 @@ import math
 import numpy as np
 import pytest
 
-from qt_app.processes.registry import _saturation_mask_from_header, build_process_registry
+from qt_app.processes.registry import _saturation_mask_from_header, _uncertainty_adu, build_process_registry
 
 
 def _get(process_id: str):
@@ -614,3 +614,74 @@ def test_spectral_trace_process_stays_inactive_without_a_real_saturate_header():
     result = process.run(data, params)
 
     assert "saturado" not in result.summary
+
+
+def test_uncertainty_adu_falls_back_to_sqrt_adu_without_a_real_gain():
+    data = np.array([100.0, 400.0])
+
+    uncertainty, note = _uncertainty_adu(data, {})
+    np.testing.assert_allclose(uncertainty, np.sqrt(data))
+    assert note is None
+
+    uncertainty, note = _uncertainty_adu(data, {"_header": {"GAIN": "no-numerico"}})
+    np.testing.assert_allclose(uncertainty, np.sqrt(data))
+    assert note is None
+
+    uncertainty, note = _uncertainty_adu(data, {"_header": {"GAIN": -2.0}})
+    np.testing.assert_allclose(uncertainty, np.sqrt(data))
+    assert note is None
+
+
+def test_uncertainty_adu_uses_real_gain_and_read_noise_when_available():
+    data = np.array([100.0, 400.0])
+
+    uncertainty, note = _uncertainty_adu(data, {"_header": {"GAIN": 2.0, "RDNOISE": 5.0}})
+
+    expected = np.sqrt(data * 2.0 + 5.0**2) / 2.0
+    np.testing.assert_allclose(uncertainty, expected)
+    assert "GAIN=2" in note
+    assert "RDNOISE=5" in note
+
+
+def test_uncertainty_adu_uses_real_gain_without_read_noise():
+    data = np.array([100.0])
+
+    uncertainty, note = _uncertainty_adu(data, {"_header": {"GAIN": 2.0}})
+
+    expected = np.sqrt(data * 2.0) / 2.0
+    np.testing.assert_allclose(uncertainty, expected)
+    assert "GAIN=2" in note
+    assert "RDNOISE" not in note
+
+
+def test_spectral_trace_process_reports_the_real_noise_model_when_gain_is_available():
+    height, width = 41, 150
+    yy, _xx = np.mgrid[0:height, 0:width]
+    profile = np.exp(-(((yy - 20.0) ** 2)) / (2 * 2.0**2))
+    profile /= profile.sum(axis=0, keepdims=True)
+    data = 80.0 + 3000.0 * profile
+
+    process = _get("spectroscopy.trace")
+    params = _default_params(process)
+    params["_picked_points"] = [(0.0, 20.0)]
+    params["_header"] = {"GAIN": 1.5, "RDNOISE": 4.0}
+    result = process.run(data, params)
+
+    assert "ruido real" in result.summary
+    assert "GAIN=1.5" in result.summary
+
+
+def test_spectral_trace_process_reports_the_approximate_noise_model_without_gain():
+    height, width = 41, 150
+    yy, _xx = np.mgrid[0:height, 0:width]
+    profile = np.exp(-(((yy - 20.0) ** 2)) / (2 * 2.0**2))
+    profile /= profile.sum(axis=0, keepdims=True)
+    data = 80.0 + 3000.0 * profile
+
+    process = _get("spectroscopy.trace")
+    params = _default_params(process)
+    params["_picked_points"] = [(0.0, 20.0)]
+    params["_header"] = {}
+    result = process.run(data, params)
+
+    assert "ruido Poisson aproximado" in result.summary

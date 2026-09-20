@@ -13,6 +13,7 @@ import numpy as np
 from legacy.AstroPhysicsSuite_v57_3_COMMERCIAL import angular_separation_arcsec
 
 from astrophysics_suite.catalogs.gaia import query_gaia_neighbors
+from astrophysics_suite.imtools.ccd_noise import ccd_noise_adu
 from astrophysics_suite.imtools.cosmic_rays import detect_cosmic_rays
 from astrophysics_suite.imtools.debayer import (
     BAYER_PATTERNS,
@@ -376,6 +377,36 @@ def _saturation_mask_from_header(data: np.ndarray, params: dict) -> tuple[np.nda
     return mask, n_saturated, saturate_adu
 
 
+def _header_positive_float(header: dict | None, key: str) -> float | None:
+    if not header:
+        return None
+    value = header.get(key)
+    if value is None:
+        return None
+    try:
+        candidate = float(value)
+    except (TypeError, ValueError):
+        return None
+    return candidate if np.isfinite(candidate) and candidate > 0 else None
+
+
+def _uncertainty_adu(data: np.ndarray, params: dict) -> tuple[np.ndarray, str | None]:
+    """Incertidumbre real en ADU: usa `GAIN`/`RDNOISE` reales de la
+    cabecera cuando existen (`ccd_noise_adu`, ruido de disparo en
+    ELECTRONES reales + ruido de lectura, convertido de vuelta a ADU) --
+    nunca inventa una ganancia. Sin `GAIN` real, cae al modelo aproximado
+    `sqrt(ADU)` (equivalente a asumir gain=1 e-/ADU sin ruido de lectura)
+    ya usado en todo el taller, y lo declara como tal (`None`) en vez de
+    aparentar precisión que no tiene."""
+    header = params.get("_header")
+    gain = _header_positive_float(header, "GAIN")
+    if gain is None:
+        return np.sqrt(np.clip(data, 1.0, None)), None
+    read_noise = _header_positive_float(header, "RDNOISE") or 0.0
+    note = f"GAIN={gain:.3g} e-/ADU" + (f", RDNOISE={read_noise:.3g} e-" if read_noise else "")
+    return ccd_noise_adu(data, gain_e_per_adu=gain, read_noise_e=read_noise), note
+
+
 def _run_spectral_trace(data: np.ndarray, params: dict) -> ProcessResult:
     points = params.get("_picked_points") or []
     if len(points) != 1:
@@ -384,7 +415,7 @@ def _run_spectral_trace(data: np.ndarray, params: dict) -> ProcessResult:
 
     mask, n_saturated, saturate_adu = _saturation_mask_from_header(data, params)
     trace = trace_spectrum(data, initial_center_px=y0, fit_degree=int(params["fit_degree"]), mask=mask)
-    uncertainty = np.sqrt(np.clip(data, 1.0, None))
+    uncertainty, gain_note = _uncertainty_adu(data, params)
     extractor = extract_optimal if params["optimal_extraction"] else extract_sum
     spectrum = extractor(data, uncertainty, trace, aperture_half_width=params["aperture_half_width"], mask=mask)
 
@@ -404,9 +435,10 @@ def _run_spectral_trace(data: np.ndarray, params: dict) -> ProcessResult:
     method = "óptima (Horne 1986)" if params["optimal_extraction"] else "suma simple"
     invalid_note = f"; {n_invalid} columna(s) sin medida real (huecos en el gráfico)" if n_invalid else ""
     saturation_note = f"; {n_saturated} píxel(es) saturado(s) (SATURATE={saturate_adu:.0f} ADU) excluido(s)" if n_saturated else ""
+    noise_note = f"; ruido real ({gain_note})" if gain_note else "; ruido Poisson aproximado (sin GAIN real)"
     summary = (
         f"Traza extraída ({method}) desde y={y0:.1f} en x={x0:.1f}; RMS de traza={trace.rms_residual_px:.2f} px, "
-        f"S/N mediana={median_snr:.1f}{invalid_note}{saturation_note}."
+        f"S/N mediana={median_snr:.1f}{invalid_note}{saturation_note}{noise_note}."
     )
     return ProcessResult(output_data=None, summary=summary, artifacts={"spectrum": plot_data})
 
@@ -416,7 +448,7 @@ def _run_multi_aperture(data: np.ndarray, params: dict) -> ProcessResult:
     if not points:
         raise ValueError("no se marcó ninguna posición -- haz clic sobre cada objeto, o activa 'Detectar automáticamente'")
     aperture_centers = [y for _x, y in points]
-    uncertainty = np.sqrt(np.clip(data, 1.0, None))
+    uncertainty, gain_note = _uncertainty_adu(data, params)
     mask, n_saturated, saturate_adu = _saturation_mask_from_header(data, params)
 
     result = extract_multi_aperture(
@@ -453,7 +485,8 @@ def _run_multi_aperture(data: np.ndarray, params: dict) -> ProcessResult:
     method = "óptima (Horne 1986)" if params["optimal_extraction"] else "suma simple"
     failed_note = f", {len(result.failures)} fallida(s)" if result.failures else ""
     saturation_note = f" ({n_saturated} píxel(es) saturado(s), SATURATE={saturate_adu:.0f} ADU, excluido(s))" if n_saturated else ""
-    summary = f"{len(result.apertures)} apertura(s) extraída(s) ({method}){failed_note}{saturation_note}."
+    noise_note = f" (ruido real: {gain_note})" if gain_note else ""
+    summary = f"{len(result.apertures)} apertura(s) extraída(s) ({method}){failed_note}{saturation_note}{noise_note}."
 
     table = Table(
         columns=("aperture_id", "center_px", "trace_rms_px", "median_flux"),
@@ -482,7 +515,7 @@ def _run_extended_extraction(data: np.ndarray, params: dict) -> ProcessResult:
         row_start, row_end = sorted((float(y1), float(y2)))
         regions.append(SpatialRegion(row_start=row_start, row_end=row_end, label=f"región {i // 2 + 1}"))
 
-    uncertainty = np.sqrt(np.clip(data, 1.0, None))
+    uncertainty, gain_note = _uncertainty_adu(data, params)
     mask, n_saturated, saturate_adu = _saturation_mask_from_header(data, params)
     sky_windows = (
         SkyWindow(offset_px=-params["bg_offset"], half_width_px=params["bg_half_width"]),
@@ -515,7 +548,8 @@ def _run_extended_extraction(data: np.ndarray, params: dict) -> ProcessResult:
 
     failed_note = f", {len(result.failures)} fallida(s)" if result.failures else ""
     saturation_note = f" ({n_saturated} píxel(es) saturado(s), SATURATE={saturate_adu:.0f} ADU, excluido(s))" if n_saturated else ""
-    summary = f"{len(result.extractions)} región(es) extendida(s) extraída(s) por suma simple{failed_note}{saturation_note}."
+    noise_note = f" (ruido real: {gain_note})" if gain_note else ""
+    summary = f"{len(result.extractions)} región(es) extendida(s) extraída(s) por suma simple{failed_note}{saturation_note}{noise_note}."
 
     table = Table(
         columns=("region", "row_start_px", "row_end_px", "median_flux"),
@@ -554,10 +588,11 @@ def _run_line_measurement_central_row(data: np.ndarray, params: dict) -> Process
     row_index = data.shape[0] // 2
     flux = data[row_index, :].astype(np.float64)
     pixel = np.arange(flux.size, dtype=np.float64)
-    # mismo modelo de ruido Poisson aproximado que photometry.aperture --
-    # sin ganancia/lectura reales, pero mejor que dejar el error sin
-    # propagar cuando hay una aproximación razonable disponible.
-    flux_uncertainty = np.sqrt(np.clip(data, 1.0, None))[row_index, :].astype(np.float64)
+    # ruido real (GAIN/RDNOISE de cabecera) si están disponibles, o el
+    # mismo modelo Poisson aproximado (sqrt(ADU)) que photometry.aperture
+    # si no -- ver `_uncertainty_adu`.
+    uncertainty_full, _gain_note = _uncertainty_adu(data, params)
+    flux_uncertainty = uncertainty_full[row_index, :].astype(np.float64)
 
     continuum_fit = fit_continuum(pixel, flux, degree=int(params["degree"]), sigma_clip=params["sigma_clip"])
     window_halfwidth = params["window_halfwidth_px"]
@@ -623,7 +658,8 @@ def _run_line_profile_fit_central_row(data: np.ndarray, params: dict) -> Process
     row_index = data.shape[0] // 2
     flux = data[row_index, :].astype(np.float64)
     pixel = np.arange(flux.size, dtype=np.float64)
-    flux_uncertainty = np.sqrt(np.clip(data, 1.0, None))[row_index, :].astype(np.float64)
+    uncertainty_full, _gain_note = _uncertainty_adu(data, params)
+    flux_uncertainty = uncertainty_full[row_index, :].astype(np.float64)
 
     continuum_fit = fit_continuum(pixel, flux, degree=int(params["degree"]), sigma_clip=params["sigma_clip"])
     window_halfwidth = params["window_halfwidth_px"]
