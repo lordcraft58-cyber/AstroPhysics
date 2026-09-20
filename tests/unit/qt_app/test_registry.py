@@ -685,3 +685,55 @@ def test_spectral_trace_process_reports_the_approximate_noise_model_without_gain
     result = process.run(data, params)
 
     assert "ruido Poisson aproximado" in result.summary
+
+
+def test_quality_map_flags_only_nonfinite_pixels_without_a_real_saturate_header():
+    data = np.full((10, 10), 100.0)
+    data[3, 3] = np.nan
+    data[5, 5] = np.inf
+
+    process = _get("spectroscopy.quality_map")
+    params = _default_params(process)
+    params["_header"] = {}
+    result = process.run(data, params)
+
+    assert result.output_data is not None
+    assert result.output_data[3, 3] != 0.0
+    assert result.output_data[5, 5] != 0.0
+    assert result.output_data[0, 0] == 0.0  # píxel bueno real
+    assert np.count_nonzero(result.output_data) == 2
+    assert "2 píxel(es) marcados" in result.summary
+
+
+def test_quality_map_flags_real_saturated_pixels_with_a_real_saturate_header():
+    data = np.full((10, 10), 100.0)
+    data[2, 2] = 900.0
+    data[7, 7] = 900.0
+
+    process = _get("spectroscopy.quality_map")
+    params = _default_params(process)
+    params["_header"] = {"SATURATE": 800.0}
+    result = process.run(data, params)
+
+    assert result.output_data[2, 2] != 0.0
+    assert result.output_data[7, 7] != 0.0
+    assert np.count_nonzero(result.output_data) == 2
+    assert "SATURATE=800" in "\n".join(result.log_lines)
+
+
+def test_quality_map_detects_cosmic_rays_only_when_requested():
+    rng = np.random.default_rng(3)
+    data = 100.0 + rng.normal(0, 1.0, (30, 30))
+    data[15, 15] += 5000.0  # pico puntiagudo real, típico de un rayo cósmico
+
+    process = _get("spectroscopy.quality_map")
+    params = _default_params(process)
+    params["_header"] = {}
+    params["detect_cosmic_rays"] = False
+    result_off = process.run(data, params)
+    assert result_off.output_data[15, 15] == 0.0  # sin detección activada, no se marca
+
+    params["detect_cosmic_rays"] = True
+    result_on = process.run(data, params)
+    assert result_on.output_data[15, 15] != 0.0
+    assert any("COSMIC_RAY" in line for line in result_on.log_lines)

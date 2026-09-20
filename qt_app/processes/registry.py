@@ -407,6 +407,45 @@ def _uncertainty_adu(data: np.ndarray, params: dict) -> tuple[np.ndarray, str | 
     return ccd_noise_adu(data, gain_e_per_adu=gain, read_noise_e=read_noise), note
 
 
+def _run_quality_map(data: np.ndarray, params: dict) -> ProcessResult:
+    """Mismos umbrales/motor que `_saturation_mask_from_header`/
+    `build_pixel_mask` (ya reales, ya probados) -- la novedad de este
+    proceso es solo mostrarlos píxel a píxel en una imagen nueva en vez
+    de solo un recuento en el resumen de otro proceso."""
+    header = params.get("_header")
+    saturate_adu = _header_positive_float(header, "SATURATE")
+    mask = build_pixel_mask(data, saturate_adu=saturate_adu)
+
+    detect_cr = bool(params.get("detect_cosmic_rays"))
+    cosmic_gain_note = ""
+    if detect_cr:
+        gain = _header_positive_float(header, "GAIN")
+        read_noise = _header_positive_float(header, "RDNOISE") or 0.0
+        cr_result = detect_cosmic_rays(data, gain_e_per_adu=gain or 1.0, read_noise_e=read_noise)
+        mask = mask | (cr_result.mask.astype(np.uint16) * np.uint16(PixelFlag.COSMIC_RAY))
+        cosmic_gain_note = "GAIN real" if gain is not None else "GAIN aproximado=1.0 e-/ADU (sin GAIN real en la cabecera)"
+
+    n_nonfinite = int(np.count_nonzero(mask & np.uint16(PixelFlag.NONFINITE)))
+    n_saturated = int(np.count_nonzero(mask & np.uint16(PixelFlag.SATURATED)))
+    n_cosmic = int(np.count_nonzero(mask & np.uint16(PixelFlag.COSMIC_RAY)))
+    n_bad = int(np.count_nonzero(mask))
+    fraction = n_bad / mask.size if mask.size else 0.0
+
+    log_lines = [
+        f"NONFINITE (NaN/Inf real): {n_nonfinite} píxel(es).",
+        f"SATURATED: {n_saturated} píxel(es)"
+        + (f" (SATURATE={saturate_adu:.0f} ADU real)." if saturate_adu else " (sin SATURATE real en la cabecera -- detección inactiva)."),
+    ]
+    if detect_cr:
+        log_lines.append(f"COSMIC_RAY: {n_cosmic} píxel(es) ({cosmic_gain_note}).")
+
+    summary = (
+        f"Mapa de calidad: {n_bad} píxel(es) marcados ({fraction:.3%} de la imagen) -- "
+        "0 = bueno, valor distinto de 0 = bits de PixelFlag combinados (ver registro)."
+    )
+    return ProcessResult(output_data=mask.astype(np.float64), summary=summary, log_lines=tuple(log_lines))
+
+
 def _run_spectral_trace(data: np.ndarray, params: dict) -> ProcessResult:
     points = params.get("_picked_points") or []
     if len(points) != 1:
@@ -1027,6 +1066,16 @@ def build_process_registry() -> list[ProcessDefinition]:
                 ParameterSpec("sigma_clip", "Umbral σ de rechazo", "float", 2.5, minimum=0.5, maximum=10.0),
             ),
             run=_run_continuum_fit_central_row,
+        ),
+        ProcessDefinition(
+            process_id="spectroscopy.quality_map",
+            name="Mapa de calidad de píxeles (NaN/saturación/rayos cósmicos)",
+            category="Espectroscopía",
+            description="Muestra en una imagen nueva QUÉ píxeles reales se excluirían de cualquier traza/extracción y POR QUÉ (frame2d.PixelFlag: no finito siempre, saturado si SATURATE real está en la cabecera, rayo cósmico real si se activa la detección) -- el mismo motor y los mismos umbrales que ya usan spectroscopy.trace/multiaperture/extended_extraction, aquí visibles píxel a píxel en vez de solo un recuento en el resumen de otro proceso. 0 = píxel bueno.",
+            parameters=(
+                ParameterSpec("detect_cosmic_rays", "Detectar también rayos cósmicos reales (L.A.Cosmic)", "bool", False),
+            ),
+            run=_run_quality_map,
         ),
         ProcessDefinition(
             process_id="spectroscopy.trace",
