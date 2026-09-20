@@ -919,12 +919,16 @@ def _run_identify_object_lines(data: np.ndarray, params: dict) -> ProcessResult:
         "en particular las marcadas con tipo sin concordar o solape telúrico, antes de darlas por buenas.",
     )
     table = Table(
-        columns=("catalog_label", "element", "detected_wavelength", "catalog_wavelength", "residual_angstrom", "confidence", "type_agrees", "telluric_band"),
-        units=("", "", "Å", "Å", "Å", "", "", ""),
+        columns=(
+            "catalog_label", "element", "detected_wavelength", "catalog_wavelength_air",
+            "catalog_wavelength_vacuum", "residual_angstrom", "confidence", "type_agrees", "telluric_band",
+        ),
+        units=("", "", "Å", "Å", "Å", "Å", "", "", ""),
         rows=tuple(
             (
                 m.catalog_line.label, m.catalog_line.element, m.detected_wavelength,
-                m.catalog_line.wavelength_air_angstrom, m.residual_angstrom, m.confidence,
+                m.catalog_line.wavelength_air_angstrom, m.catalog_line.wavelength_vacuum_angstrom,
+                m.residual_angstrom, m.confidence,
                 "sí" if m.line_type_agrees else "NO", m.telluric_overlap.name if m.telluric_overlap else "",
             )
             for m in matches

@@ -86,9 +86,19 @@ def test_radial_velocity_dialog_recovers_a_known_velocity_from_balmer_lines(qapp
     assert dialog._last_result.combined_velocity_km_s == pytest.approx(_TRUE_VELOCITY_KM_S, abs=8.0)
     assert "km/s" in dialog.summary_label.text()
 
+    # columna de longitud de onda de reposo en vacío (§24 -- conecta
+    # air_vacuum.py a este diálogo, además del de identificación de líneas).
+    from astrophysics_suite.spectroscopy.air_vacuum import air_to_vacuum
+
+    assert dialog.table.columnCount() == 5
+    air_rest = float(dialog.table.item(0, 1).text())
+    vacuum_rest = float(dialog.table.item(0, 2).text())
+    assert vacuum_rest == pytest.approx(air_to_vacuum(air_rest), abs=0.01)
+
     table = dialog.result_table()
     assert table is not None
     assert len(table.rows) == len(_BALMER_REST)
+    assert table.columns[:3] == ("line", "rest_wavelength_air", "rest_wavelength_vacuum")
 
 
 def test_radial_velocity_dialog_without_obstime_warns_instead_of_crashing(qapp, main_window):

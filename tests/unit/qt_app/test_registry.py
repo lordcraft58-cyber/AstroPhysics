@@ -580,6 +580,37 @@ def test_line_profile_fit_process_reports_real_resolution_with_a_wavelength_solu
     assert resolution == pytest.approx(expected_resolution, rel=0.1)
 
 
+def test_identify_lines_process_reports_both_air_and_vacuum_catalog_wavelengths():
+    # conecta air_vacuum.py a un consumidor real (§24): el catálogo de
+    # objeto ya da la longitud de onda en aire (convención NIST ASD);
+    # ahora la tabla también informa su equivalente en vacío real.
+    from astrophysics_suite.spectroscopy.air_vacuum import air_to_vacuum
+
+    h_alpha = 6562.8
+    width = 3000
+    wavelength = np.linspace(6400.0, 6700.0, width)
+    flux = 100.0 - 15.0 * np.exp(-((wavelength - h_alpha) ** 2) / (2 * 1.3**2))
+    data = np.tile(flux, (21, 1))
+
+    process = _get("spectroscopy.identify_lines")
+    params = _default_params(process)
+    params["catalog"] = "Balmer (H, estelar)"
+    params["_wavelength_solution"] = fit_wavelength_solution(
+        [0.0, float(width - 1)], [float(wavelength[0]), float(wavelength[-1])], degree=1
+    )
+
+    result = process.run(data, params)
+
+    assert result.table.columns[:5] == (
+        "catalog_label", "element", "detected_wavelength", "catalog_wavelength_air", "catalog_wavelength_vacuum",
+    )
+    row = next(r for r in result.table.rows if r[0] == "H-alpha")
+    catalog_air, catalog_vacuum = row[3], row[4]
+    assert catalog_air == pytest.approx(h_alpha)
+    assert catalog_vacuum == pytest.approx(air_to_vacuum(h_alpha))
+    assert catalog_vacuum > catalog_air
+
+
 def test_multi_aperture_process_produces_one_spectrum_series_per_aperture():
     height, width = 60, 150
     rows = np.arange(height)[:, np.newaxis]

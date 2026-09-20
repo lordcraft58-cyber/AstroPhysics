@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import pytest
 
+from astrophysics_suite.spectroscopy.air_vacuum import air_to_vacuum
 from astrophysics_suite.spectroscopy.line_catalog import (
     ARGON_ARC_LINES,
+    BALMER_LINES,
     HELIUM_ARC_LINES,
     HENEAR_ARC_LINES,
     NEON_ARC_LINES,
@@ -101,3 +103,16 @@ def test_match_lines_to_catalog_rejects_nonpositive_tolerance():
     with pytest.raises(ValueError):
         match_lines_to_catalog([1.0], NEON_ARC_LINES, approx_dispersion_angstrom_per_px=1.0,
                                 approx_wavelength_at_pixel0=5000.0, tolerance_angstrom=0.0)
+
+
+def test_spectral_line_vacuum_wavelength_matches_air_to_vacuum():
+    # H-alpha: mismo valor de referencia ya verificado en test_air_vacuum.py
+    h_alpha = next(line for line in BALMER_LINES if line.label == "H-alpha")
+    assert h_alpha.wavelength_vacuum_angstrom == pytest.approx(air_to_vacuum(h_alpha.wavelength_air_angstrom))
+    assert h_alpha.wavelength_vacuum_angstrom == pytest.approx(6564.6, abs=0.05)
+    assert h_alpha.wavelength_vacuum_angstrom > h_alpha.wavelength_air_angstrom
+
+
+def test_spectral_line_vacuum_wavelength_is_a_real_number_for_every_catalog_line():
+    for line in HENEAR_ARC_LINES + STELLAR_NEBULAR_LINES:
+        assert line.wavelength_vacuum_angstrom > line.wavelength_air_angstrom

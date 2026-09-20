@@ -21,6 +21,8 @@ import math
 from dataclasses import dataclass
 from enum import Enum
 
+from astrophysics_suite.spectroscopy.air_vacuum import air_to_vacuum
+
 
 class LineType(Enum):
     EMISSION = "emission"
@@ -45,6 +47,15 @@ class SpectralLine:
     catálogo de origen la da -- `None`, nunca un valor inventado,
     cuando no hay dato real."""
     reference: str = "NIST ASD"
+
+    @property
+    def wavelength_vacuum_angstrom(self) -> float:
+        """Longitud de onda equivalente en vacío (§24) -- conversión real
+        (`air_vacuum.air_to_vacuum`, Morton 2000), nunca una aproximación
+        distinta: todas las líneas de este catálogo se dan en aire (misma
+        convención que NIST ASD por encima de 2000 Å), así que esto es
+        siempre una conversión, nunca el valor original de la fuente."""
+        return float(air_to_vacuum(self.wavelength_air_angstrom))
 
 
 def _line(wavelength: float, label: str, element: str, ionization: str = "", *,

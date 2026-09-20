@@ -100,8 +100,10 @@ class RadialVelocityDialog(QDialog):
         self.measure_button.clicked.connect(self._on_measure)
         layout.addWidget(self.measure_button)
 
-        self.table = QTableWidget(0, 4, self)
-        self.table.setHorizontalHeaderLabels(["Línea", "λ reposo (Å)", "λ medida (Å)", "Velocidad (km/s)"])
+        self.table = QTableWidget(0, 5, self)
+        self.table.setHorizontalHeaderLabels(
+            ["Línea", "λ reposo aire (Å)", "λ reposo vacío (Å)", "λ medida (Å)", "Velocidad (km/s)"]
+        )
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.table)
 
@@ -172,8 +174,9 @@ class RadialVelocityDialog(QDialog):
         for row, m in enumerate(result.measurements):
             self.table.setItem(row, 0, QTableWidgetItem(m.line.label))
             self.table.setItem(row, 1, QTableWidgetItem(f"{m.line.wavelength_air_angstrom:.3f}"))
-            self.table.setItem(row, 2, QTableWidgetItem(f"{m.measurement.center_wavelength:.3f}"))
-            self.table.setItem(row, 3, QTableWidgetItem(f"{m.velocity_km_s:.2f}"))
+            self.table.setItem(row, 2, QTableWidgetItem(f"{m.line.wavelength_vacuum_angstrom:.3f}"))
+            self.table.setItem(row, 3, QTableWidgetItem(f"{m.measurement.center_wavelength:.3f}"))
+            self.table.setItem(row, 4, QTableWidgetItem(f"{m.velocity_km_s:.2f}"))
 
         if result.n_lines_used == 0:
             self.summary_label.setText(
@@ -220,10 +223,13 @@ class RadialVelocityDialog(QDialog):
         if self._last_result is None or not self._last_result.measurements:
             return None
         return Table(
-            columns=("line", "rest_wavelength", "measured_wavelength", "velocity"),
-            units=("", "Å", "Å", "km/s"),
+            columns=("line", "rest_wavelength_air", "rest_wavelength_vacuum", "measured_wavelength", "velocity"),
+            units=("", "Å", "Å", "Å", "km/s"),
             rows=tuple(
-                (m.line.label, m.line.wavelength_air_angstrom, m.measurement.center_wavelength, m.velocity_km_s)
+                (
+                    m.line.label, m.line.wavelength_air_angstrom, m.line.wavelength_vacuum_angstrom,
+                    m.measurement.center_wavelength, m.velocity_km_s,
+                )
                 for m in self._last_result.measurements
             ),
         )
