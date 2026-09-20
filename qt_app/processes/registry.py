@@ -37,6 +37,7 @@ from astrophysics_suite.photometry.psf import (
 )
 from astrophysics_suite.reduction.overscan import subtract_overscan
 from astrophysics_suite.spectroscopy.continuum import fit_continuum
+from astrophysics_suite.spectroscopy.line_profile_fit import fit_gaussian_line, fit_voigt_line
 from astrophysics_suite.spectroscopy.lines import measure_line
 from astrophysics_suite.spectroscopy.multiaperture import extract_multi_aperture
 from astrophysics_suite.spectroscopy.trace import extract_optimal, extract_sum, trace_spectrum
@@ -508,6 +509,94 @@ def _run_line_measurement_central_row(data: np.ndarray, params: dict) -> Process
     return ProcessResult(output_data=None, summary=summary, log_lines=log_lines, table=table, artifacts={"spectrum": plot_data})
 
 
+def _run_line_profile_fit_central_row(data: np.ndarray, params: dict) -> ProcessResult:
+    points = params.get("_picked_points") or []
+    if not points:
+        raise ValueError("no se marcó ninguna posición -- haz clic sobre el pico de la línea antes de ajustar")
+    x0, _y0 = points[0]
+
+    row_index = data.shape[0] // 2
+    flux = data[row_index, :].astype(np.float64)
+    pixel = np.arange(flux.size, dtype=np.float64)
+    flux_uncertainty = np.sqrt(np.clip(data, 1.0, None))[row_index, :].astype(np.float64)
+
+    continuum_fit = fit_continuum(pixel, flux, degree=int(params["degree"]), sigma_clip=params["sigma_clip"])
+    window_halfwidth = params["window_halfwidth_px"]
+    profile = params["profile"]
+    min_significance_sigma = params["min_significance_sigma"]
+
+    fit_kwargs = dict(
+        expected_wavelength=x0, window_halfwidth=window_halfwidth, flux_uncertainty=flux_uncertainty,
+        min_significance_sigma=min_significance_sigma,
+    )
+    if profile == "gaussian":
+        result = fit_gaussian_line(pixel, flux, continuum_fit.continuum, **fit_kwargs)
+    else:
+        result = fit_voigt_line(pixel, flux, continuum_fit.continuum, **fit_kwargs)
+
+    if result is None:
+        raise ValueError(
+            f"El ajuste {profile} no convergió a una línea real (>= {min_significance_sigma:g}σ) en "
+            f"[{x0 - window_halfwidth:.1f}, {x0 + window_halfwidth:.1f}] px -- revisa dónde hiciste clic, "
+            "amplía la ventana, o baja el umbral de significancia."
+        )
+
+    if profile == "gaussian":
+        fwhm_unc_text = f" ± {result.fwhm_uncertainty:.2f}" if result.fwhm_uncertainty is not None else ""
+        chi2_text = f"{result.reduced_chi_square:.2f}" if result.reduced_chi_square is not None else "N/D (sin incertidumbre real de flujo)"
+        summary = (
+            f"Gaussiana: centro={result.center_wavelength:.2f} ± {result.center_wavelength_uncertainty:.2f} px  ·  "
+            f"FWHM={result.fwhm:.2f}{fwhm_unc_text} px  ·  σ_detección={result.significance:.1f}  ·  χ²_red={chi2_text}"
+        )
+        log_lines = (
+            f"Ventana de ajuste: [{result.window[0]:.1f}, {result.window[1]:.1f}] px ({result.n_points} punto(s) reales).",
+            f"Ajuste de continuo: grado {int(params['degree'])}, {continuum_fit.n_rejected} píxel(es) rechazados por sigma-clip.",
+            "Perfil Gaussiano real (astropy.modeling, mínimos cuadrados no lineales) -- incertidumbre real de la "
+            "matriz de covarianza del ajuste, distinto del centroide de momento de 'Medición de línea (splot)'.",
+        )
+        table = Table(
+            columns=("center_px", "center_unc_px", "fwhm_px", "fwhm_unc_px", "integrated_flux", "integrated_flux_unc", "equivalent_width_px", "significance", "reduced_chi_square"),
+            units=("px", "px", "px", "px", "ADU·px", "ADU·px", "px", "", ""),
+            rows=((
+                result.center_wavelength, result.center_wavelength_uncertainty, result.fwhm, result.fwhm_uncertainty,
+                result.integrated_flux, result.integrated_flux_uncertainty,
+                result.equivalent_width if result.equivalent_width is not None else float("nan"),
+                result.significance, result.reduced_chi_square if result.reduced_chi_square is not None else float("nan"),
+            ),),
+        )
+    else:
+        summary = (
+            f"Voigt: centro={result.center_wavelength:.2f} ± {result.center_wavelength_uncertainty:.2f} px  ·  "
+            f"FWHM_Voigt={result.fwhm_voigt:.2f} px (L={result.fwhm_lorentzian:.2f}, G={result.fwhm_gaussian:.2f})  ·  "
+            f"σ_detección={result.significance:.1f}"
+        )
+        log_lines = (
+            f"Ventana de ajuste: [{result.window[0]:.1f}, {result.window[1]:.1f}] px ({result.n_points} punto(s) reales).",
+            f"Ajuste de continuo: grado {int(params['degree'])}, {continuum_fit.n_rejected} píxel(es) rechazados por sigma-clip.",
+            "Perfil de Voigt real (astropy.modeling.Voigt1D) -- flujo integrado/EW son la integral numérica del "
+            "modelo ajustado, sin incertidumbre propagada (limitación documentada en line_profile_fit.py).",
+        )
+        table = Table(
+            columns=("center_px", "center_unc_px", "fwhm_lorentzian_px", "fwhm_gaussian_px", "fwhm_voigt_px", "integrated_flux", "equivalent_width_px", "significance"),
+            units=("px", "px", "px", "px", "px", "ADU·px", "px", ""),
+            rows=((
+                result.center_wavelength, result.center_wavelength_uncertainty, result.fwhm_lorentzian, result.fwhm_gaussian,
+                result.fwhm_voigt, result.integrated_flux, result.equivalent_width if result.equivalent_width is not None else float("nan"),
+                result.significance,
+            ),),
+        )
+
+    plot_data = SpectrumPlotData(
+        series=(
+            SpectrumSeries(label="Flujo", x=pixel, y=flux),
+            SpectrumSeries(label="Continuo ajustado", x=pixel, y=continuum_fit.continuum, color=series_color(1), style="dashed"),
+        ),
+        x_label="Píxel (fila central)", y_label="Flujo (ADU)",
+        markers=(SpectrumMarker(x_start=result.window[0], x_end=result.window[1], label=f"Ajuste {profile}"),),
+    )
+    return ProcessResult(output_data=None, summary=summary, log_lines=log_lines, table=table, artifacts={"spectrum": plot_data})
+
+
 def _run_crop(data: np.ndarray, params: dict) -> ProcessResult:
     points = params.get("_picked_points") or []
     if len(points) != 2:
@@ -770,6 +859,21 @@ def build_process_registry() -> list[ProcessDefinition]:
                 ParameterSpec("sigma_clip", "Umbral σ de rechazo del continuo", "float", 2.5, minimum=0.5, maximum=10.0),
             ),
             run=_run_line_measurement_central_row,
+            requires_picking=1,
+        ),
+        ProcessDefinition(
+            process_id="spectroscopy.line_profile_fit",
+            name="Ajuste de perfil de línea (Gaussiana/Voigt)",
+            category="Espectroscopía",
+            description="Ajuste paramétrico real por mínimos cuadrados no lineales (astropy.modeling) de una línea sobre la fila central -- a diferencia de 'Medición de línea (splot)' (centroide de momento, sin forma de perfil), da una incertidumbre REAL por parámetro desde la covarianza del ajuste. Nunca acepta un ajuste sin convergencia o por debajo del umbral de significancia como una línea real. Al pulsar Aplicar, marca con un clic dónde está el pico.",
+            parameters=(
+                ParameterSpec("profile", "Perfil", "choice", "gaussian", choices=("gaussian", "voigt")),
+                ParameterSpec("window_halfwidth_px", "Semiancho de ventana (px)", "float", 15.0, minimum=1.0, maximum=500.0),
+                ParameterSpec("degree", "Grado del ajuste de continuo", "int", 3, minimum=1, maximum=10),
+                ParameterSpec("sigma_clip", "Umbral σ de rechazo del continuo", "float", 2.5, minimum=0.5, maximum=10.0),
+                ParameterSpec("min_significance_sigma", "Umbral de detección (σ)", "float", 3.0, minimum=1.0, maximum=50.0),
+            ),
+            run=_run_line_profile_fit_central_row,
             requires_picking=1,
         ),
         # La calibración en longitud de onda necesita que el usuario

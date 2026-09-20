@@ -355,6 +355,50 @@ def test_line_measurement_process_runs_end_to_end_via_click(qapp, main_window):
     assert len(spectrum_view._data.markers) == 1
 
 
+def _synthetic_line_row(*, height=41, width=200, line_pixel=100.0, continuum_level=500.0, amplitude=4000.0, sigma=3.0, seed=9):
+    rng = np.random.default_rng(seed)
+    columns = np.arange(width, dtype=np.float64)
+    row = continuum_level + amplitude * np.exp(-((columns - line_pixel) ** 2) / (2 * sigma**2))
+    row = row + rng.normal(0, 3.0, width)
+    return np.tile(row, (height, 1))
+
+
+@pytest.mark.parametrize("profile", ["gaussian", "voigt"])
+def test_line_profile_fit_process_runs_end_to_end_via_click(qapp, main_window, profile):
+    height, width = 41, 200
+    line_pixel = 100.0
+    data = _synthetic_line_row(height=height, width=width, line_pixel=line_pixel)
+    sub_window = main_window.add_image_window(data, f"line_profile_fit_{profile}.fits")
+    main_window.mdi.setActiveSubWindow(sub_window)
+    qapp.processEvents()
+    view = sub_window.widget()
+
+    process = main_window._process_by_id["spectroscopy.line_profile_fit"]
+    params = {p.name: p.default for p in process.parameters}
+    params["profile"] = profile
+    main_window._run_process("spectroscopy.line_profile_fit", params)
+    qapp.processEvents()
+    assert view._picking is True
+
+    _click(view, line_pixel, height / 2.0, Qt.MouseButton.LeftButton)
+    qapp.processEvents()
+
+    deadline = time.monotonic() + 10.0
+    while main_window._active_worker is not None and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.02)
+    qapp.processEvents()
+
+    assert main_window.properties.apply_button.isEnabled()
+    assert main_window._last_result_table is not None
+    center_px = main_window._last_result_table.rows[0][0]
+    assert center_px == pytest.approx(line_pixel, abs=3.0)
+
+    spectrum_view = main_window.mdi.subWindowList()[-1].widget()
+    assert isinstance(spectrum_view, SpectrumView)
+    assert len(spectrum_view._data.markers) == 1
+
+
 def test_picking_process_cancelled_does_not_run_worker(qapp, main_window):
     data = _psf_field()
     sub_window = main_window.add_image_window(data, "cancel_flow.fits")
