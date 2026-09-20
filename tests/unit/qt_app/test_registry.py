@@ -439,6 +439,58 @@ def test_spectral_trace_process_rejects_wrong_number_of_points():
         raise AssertionError("se esperaba ValueError con más de un punto marcado")
 
 
+def test_qc_report_process_requires_one_point_and_reports_four_real_metrics():
+    process = _get("spectroscopy.qc_report")
+    assert process.requires_picking == 1
+
+    height, width = 41, 150
+    yy, _xx = np.mgrid[0:height, 0:width]
+    profile = np.exp(-(((yy - 20.0) ** 2)) / (2 * 2.0**2))
+    profile /= profile.sum(axis=0, keepdims=True)
+    data = 80.0 + 6000.0 * profile
+
+    params = _default_params(process)
+    params["_picked_points"] = [(0.0, 20.0)]
+    result = process.run(data, params)
+
+    assert result.output_data is None
+    assert "estado global" in result.summary
+    assert result.table is not None
+    assert [row[0] for row in result.table.rows] == [
+        "Traza espacial", "Calibración en longitud de onda", "Relación señal/ruido", "Calidad de píxeles",
+    ]
+    # sin calibración en longitud de onda: N/D real, nunca inventada
+    wavelength_row = result.table.rows[1]
+    assert wavelength_row[1] == "N/D"
+    assert len(result.log_lines) == 4
+
+
+def test_qc_report_process_includes_a_real_wavelength_metric_when_a_solution_exists():
+    process = _get("spectroscopy.qc_report")
+    height, width = 41, 150
+    yy, _xx = np.mgrid[0:height, 0:width]
+    profile = np.exp(-(((yy - 20.0) ** 2)) / (2 * 2.0**2))
+    profile /= profile.sum(axis=0, keepdims=True)
+    data = 80.0 + 6000.0 * profile
+
+    params = _default_params(process)
+    params["_picked_points"] = [(0.0, 20.0)]
+    params["_wavelength_solution"] = fit_wavelength_solution([0.0, float(width - 1)], [4000.0, 4300.0], degree=1)
+    result = process.run(data, params)
+
+    wavelength_row = next(r for r in result.table.rows if r[0] == "Calibración en longitud de onda")
+    assert wavelength_row[1] == "OK"  # RMS=0 para un ajuste lineal exacto de 2 puntos
+
+
+def test_qc_report_process_rejects_wrong_number_of_points():
+    process = _get("spectroscopy.qc_report")
+    data = np.full((30, 30), 100.0)
+    params = _default_params(process)
+    params["_picked_points"] = [(1.0, 1.0), (2.0, 2.0)]
+    with pytest.raises(ValueError):
+        process.run(data, params)
+
+
 def test_crop_process_requires_exactly_two_points():
     process = _get("imtools.crop")
     assert process.requires_picking == 2

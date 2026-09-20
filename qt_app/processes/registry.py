@@ -50,6 +50,13 @@ from astrophysics_suite.spectroscopy.line_profile_fit import fit_gaussian_line, 
 from astrophysics_suite.spectroscopy.wavelength import local_dispersion_at_pixel
 from astrophysics_suite.spectroscopy.lines import measure_line
 from astrophysics_suite.spectroscopy.object_line_identification import identify_object_lines_in_spectrum
+from astrophysics_suite.spectroscopy.qc_report import (
+    QCReport,
+    pixel_quality_metric,
+    snr_metric,
+    trace_quality_metric,
+    wavelength_calibration_quality_metric,
+)
 from astrophysics_suite.spectroscopy.extended_extraction import SpatialRegion, extract_multi_region
 from astrophysics_suite.spectroscopy.multiaperture import extract_multi_aperture
 from astrophysics_suite.spectroscopy.trace import DEFAULT_SKY_WINDOWS, SkyWindow, extract_optimal, extract_sum, trace_spectrum
@@ -503,6 +510,62 @@ def _run_spectral_trace(data: np.ndarray, params: dict) -> ProcessResult:
         aperture_half_width=float(params["aperture_half_width"]), sky_windows=DEFAULT_SKY_WINDOWS, label="Traza",
     )
     return ProcessResult(output_data=None, summary=summary, artifacts={"spectrum": plot_data, "trace_overlay": overlay})
+
+
+def _run_qc_report(data: np.ndarray, params: dict) -> ProcessResult:
+    """Informe de control de calidad unificado (§31) -- reutiliza EXACTAMENTE
+    la misma traza/extracción real que 'Trazar espectro' (mismo clic, mismos
+    parámetros) para no calcular una traza distinta solo para este informe,
+    más la calibración en longitud de onda YA ajustada sobre esta imagen (si
+    la hay) y la máscara de calidad de TODO el fotograma (mismo motor que
+    'Mapa de calidad 2D'). Ver astrophysics_suite.spectroscopy.qc_report
+    para la clasificación OK/WARNING/ERROR de cada número real."""
+    points = params.get("_picked_points") or []
+    if len(points) != 1:
+        raise ValueError(
+            "se necesita exactamente un clic marcando el centro espacial inicial de la traza -- "
+            "el informe de calidad reutiliza la misma traza real que 'Trazar espectro'"
+        )
+    _x0, y0 = points[0]
+
+    sat_mask, _n_saturated, saturate_adu = _saturation_mask_from_header(data, params)
+    trace = trace_spectrum(data, initial_center_px=y0, fit_degree=int(params["fit_degree"]), mask=sat_mask)
+    uncertainty, _gain_note = _uncertainty_adu(data, params)
+    spectrum = extract_sum(data, uncertainty, trace, aperture_half_width=params["aperture_half_width"], mask=sat_mask)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        snr_array = np.where(spectrum.flux_uncertainty > 0, spectrum.flux / spectrum.flux_uncertainty, np.nan)
+    median_snr = float(np.nanmedian(snr_array)) if np.any(np.isfinite(snr_array)) else float("nan")
+
+    header = params.get("_header")
+    quality_mask = build_pixel_mask(data, saturate_adu=saturate_adu)
+    if bool(params.get("detect_cosmic_rays")):
+        gain = _header_positive_float(header, "GAIN")
+        read_noise = _header_positive_float(header, "RDNOISE") or 0.0
+        cr_result = detect_cosmic_rays(data, gain_e_per_adu=gain or 1.0, read_noise_e=read_noise)
+        quality_mask = quality_mask | (cr_result.mask.astype(np.uint16) * np.uint16(PixelFlag.COSMIC_RAY))
+    n_bad = int(np.count_nonzero(quality_mask))
+
+    wavelength_solution = params.get("_wavelength_solution")
+    wavelength_rms = wavelength_solution.rms_residual if wavelength_solution is not None else None
+
+    report = QCReport(metrics=(
+        trace_quality_metric(trace.rms_residual_px, trace.n_columns_used_for_fit, len(trace.columns)),
+        wavelength_calibration_quality_metric(wavelength_rms),
+        snr_metric(median_snr),
+        pixel_quality_metric(n_bad, quality_mask.size, saturate_available=saturate_adu is not None),
+    ))
+
+    log_lines = tuple(f"[{m.status.value}] {m.name}: {m.value_text} -- {m.guideline}" for m in report.metrics)
+    summary = (
+        f"Informe de calidad -- estado global: {report.overall_status.value}. "
+        + "  ·  ".join(f"{m.name}: {m.status.value}" for m in report.metrics)
+    )
+    table = Table(
+        columns=("metric", "status", "value", "guideline"),
+        units=("", "", "", ""),
+        rows=tuple((m.name, m.status.value, m.value_text, m.guideline) for m in report.metrics),
+    )
+    return ProcessResult(output_data=None, summary=summary, log_lines=log_lines, table=table)
 
 
 def _run_multi_aperture(data: np.ndarray, params: dict) -> ProcessResult:
@@ -1205,6 +1268,24 @@ def build_process_registry(*, profile_store: InstrumentProfileStore | None = Non
                 ),
             ),
             run=_run_spectral_trace,
+            requires_picking=1,
+        ),
+        ProcessDefinition(
+            process_id="spectroscopy.qc_report",
+            name="Informe de control de calidad",
+            category="Espectroscopía",
+            description="Reúne en un solo informe, con un semáforo OK/WARNING/ERROR por métrica, cuatro diagnósticos reales ya calculados por separado en otros procesos de este taller: RMS de la traza espacial (mismo motor que 'Extracción de traza'), RMS de la calibración en longitud de onda YA ajustada sobre esta imagen (si la hay), S/N mediana de la extracción, y fracción de píxeles marcados en todo el fotograma (mismo motor que 'Mapa de calidad de píxeles'). Los umbrales son guías orientativas, no un estándar absoluto -- se explican en el registro de operaciones. Al pulsar Aplicar, marca con un clic el centro espacial inicial de la traza (misma traza real que 'Extracción de traza').",
+            parameters=(
+                ParameterSpec("fit_degree", "Grado del ajuste de traza", "int", 3, minimum=1, maximum=10),
+                ParameterSpec("aperture_half_width", "Semiancho de apertura (px)", "float", 4.0, minimum=1.0, maximum=100.0),
+                ParameterSpec("detect_cosmic_rays", "Incluir rayos cósmicos reales en la calidad de píxeles (L.A.Cosmic)", "bool", False),
+                ParameterSpec(
+                    "instrument_profile", "Perfil de instrumento (respaldo GAIN/RDNOISE)", "choice",
+                    _NO_INSTRUMENT_PROFILE, choices=instrument_profile_choices,
+                    help_text="Solo se usa si la cabecera FITS de esta exposición no trae GAIN real -- la cabecera siempre tiene prioridad.",
+                ),
+            ),
+            run=_run_qc_report,
             requires_picking=1,
         ),
         ProcessDefinition(
