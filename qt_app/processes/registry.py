@@ -54,10 +54,12 @@ from astrophysics_suite.spectroscopy.object_line_identification import identify_
 from astrophysics_suite.spectroscopy.reference_star_calibration import calibrate_from_reference_star
 from astrophysics_suite.spectroscopy.qc_report import (
     QCReport,
+    dispersion_metric,
     pixel_quality_metric,
     snr_metric,
     trace_quality_metric,
     wavelength_calibration_quality_metric,
+    wavelength_range_metric,
 )
 from astrophysics_suite.spectroscopy.extended_extraction import SpatialRegion, extract_multi_region
 from astrophysics_suite.spectroscopy.multiaperture import extract_multi_aperture
@@ -535,13 +537,15 @@ def _run_spectral_trace(data: np.ndarray, params: dict) -> ProcessResult:
 
 
 def _run_qc_report(data: np.ndarray, params: dict) -> ProcessResult:
-    """Informe de control de calidad unificado (§31) -- reutiliza EXACTAMENTE
-    la misma traza/extracción real que 'Trazar espectro' (mismo clic, mismos
-    parámetros) para no calcular una traza distinta solo para este informe,
-    más la calibración en longitud de onda YA ajustada sobre esta imagen (si
-    la hay) y la máscara de calidad de TODO el fotograma (mismo motor que
-    'Mapa de calidad 2D'). Ver astrophysics_suite.spectroscopy.qc_report
-    para la clasificación OK/WARNING/ERROR de cada número real."""
+    """Informe de control de calidad unificado (§31) + panel de estado
+    por objeto (§42) -- reutiliza EXACTAMENTE la misma traza/extracción
+    real que 'Trazar espectro' (mismo clic, mismos parámetros) para no
+    calcular una traza distinta solo para este informe, más la
+    calibración en longitud de onda YA ajustada sobre esta imagen (si la
+    hay, incluido el rango real cubierto y la dispersión real en el
+    centro) y la máscara de calidad de TODO el fotograma (mismo motor
+    que 'Mapa de calidad 2D'). Ver astrophysics_suite.spectroscopy.
+    qc_report para la clasificación OK/WARNING/ERROR de cada número real."""
     points = params.get("_picked_points") or []
     if len(points) != 1:
         raise ValueError(
@@ -569,10 +573,13 @@ def _run_qc_report(data: np.ndarray, params: dict) -> ProcessResult:
 
     wavelength_solution = params.get("_wavelength_solution")
     wavelength_rms = wavelength_solution.rms_residual if wavelength_solution is not None else None
+    pixel_min, pixel_max = 0.0, float(data.shape[1] - 1)
 
     report = QCReport(metrics=(
         trace_quality_metric(trace.rms_residual_px, trace.n_columns_used_for_fit, len(trace.columns)),
         wavelength_calibration_quality_metric(wavelength_rms),
+        wavelength_range_metric(wavelength_solution, pixel_min, pixel_max),
+        dispersion_metric(wavelength_solution, (pixel_min + pixel_max) / 2.0),
         snr_metric(median_snr),
         pixel_quality_metric(n_bad, quality_mask.size, saturate_available=saturate_adu is not None),
     ))
@@ -1355,9 +1362,9 @@ def build_process_registry(*, profile_store: InstrumentProfileStore | None = Non
         ),
         ProcessDefinition(
             process_id="spectroscopy.qc_report",
-            name="Informe de control de calidad",
+            name="Informe de control de calidad / panel de estado",
             category="Espectroscopía",
-            description="Reúne en un solo informe, con un semáforo OK/WARNING/ERROR por métrica, cuatro diagnósticos reales ya calculados por separado en otros procesos de este taller: RMS de la traza espacial (mismo motor que 'Extracción de traza'), RMS de la calibración en longitud de onda YA ajustada sobre esta imagen (si la hay), S/N mediana de la extracción, y fracción de píxeles marcados en todo el fotograma (mismo motor que 'Mapa de calidad de píxeles'). Los umbrales son guías orientativas, no un estándar absoluto -- se explican en el registro de operaciones. Al pulsar Aplicar, marca con un clic el centro espacial inicial de la traza (misma traza real que 'Extracción de traza').",
+            description="Reúne en un solo informe, con un semáforo OK/WARNING/ERROR por métrica, seis diagnósticos reales ya calculados por separado en otros procesos de este taller: RMS de la traza espacial (mismo motor que 'Extracción de traza'), RMS/rango/dispersión de la calibración en longitud de onda YA ajustada sobre esta imagen (si la hay), S/N mediana de la extracción, y fracción de píxeles marcados en todo el fotograma (mismo motor que 'Mapa de calidad de píxeles'). Los umbrales son guías orientativas, no un estándar absoluto -- se explican en el registro de operaciones. Al pulsar Aplicar, marca con un clic el centro espacial inicial de la traza (misma traza real que 'Extracción de traza').",
             parameters=(
                 ParameterSpec("fit_degree", "Grado del ajuste de traza", "int", 3, minimum=1, maximum=10),
                 ParameterSpec("aperture_half_width", "Semiancho de apertura (px)", "float", 4.0, minimum=1.0, maximum=100.0),

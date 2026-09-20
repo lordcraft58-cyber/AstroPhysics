@@ -1,15 +1,25 @@
-"""Informe de control de calidad unificado (§31): agrega en un solo
-lugar diagnósticos que otros motores del proyecto ya calculaban por
-separado (RMS de la traza espacial, RMS de la calibración en longitud
-de onda, S/N mediana de la extracción, fracción de píxeles marcados) con
-un semáforo OK/WARNING/ERROR por métrica.
+"""Informe de control de calidad unificado (§31) + panel de estado por
+objeto (§42): agrega en un solo lugar diagnósticos que otros motores del
+proyecto ya calculaban por separado (RMS de la traza espacial, RMS de la
+calibración en longitud de onda, S/N mediana de la extracción, fracción
+de píxeles marcados, rango de longitud de onda cubierto, dispersión
+real en el centro) con un semáforo OK/WARNING/ERROR por métrica -- la
+misma checklist ✓/✗ que pide §42, con los números reales al lado.
 
 Nunca calcula una magnitud nueva: cada valor de entrada lo produce
 literalmente la misma función que ya lo calcula en cualquier otro
 proceso del taller (`trace.trace_spectrum`, `trace.extract_sum`,
-`wavelength.WavelengthSolution`, `frame2d.build_pixel_mask`,
-`imtools.cosmic_rays.detect_cosmic_rays`) -- este módulo solo clasifica
-esos números ya reales contra un umbral y los agrupa.
+`wavelength.WavelengthSolution`, `wavelength.local_dispersion_at_pixel`,
+`frame2d.build_pixel_mask`, `imtools.cosmic_rays.detect_cosmic_rays`) --
+este módulo solo clasifica esos números ya reales contra un umbral (o,
+para el rango/dispersión, los presenta tal cual -- no hay un umbral
+bueno/malo real para "qué rango cubre" un espectro) y los agrupa.
+
+Deliberadamente NO incluye una "resolución espectral global" (R=λ/FWHM,
+§32): esa métrica exige una línea real medida (`line_profile_fit.py`),
+y este informe no asume ninguna -- inventar un FWHM típico solo para
+rellenar esta casilla sería exactamente el tipo de dato fabricado que
+el encargo pide evitar.
 
 Los umbrales de OK/WARNING/ERROR son guías orientativas de
 espectroscopía de aficionado/telescopio pequeño (documentadas
@@ -22,6 +32,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from enum import Enum
+
+from astrophysics_suite.spectroscopy.wavelength import WavelengthSolution, local_dispersion_at_pixel
 
 
 class QCStatus(Enum):
@@ -148,4 +160,42 @@ def pixel_quality_metric(n_bad: int, n_total: int, *, saturate_available: bool) 
         name="Calidad de píxeles", status=status,
         value_text=f"{n_bad}/{n_total} píxel(es) marcado(s) ({fraction:.3%}){saturation_note}",
         guideline="Guía orientativa (no un estándar absoluto): <0.1% del fotograma bueno, <1% aceptable, por encima revisar el fotograma.",
+    )
+
+
+def wavelength_range_metric(wavelength_solution: WavelengthSolution | None, pixel_min: float, pixel_max: float) -> QCMetric:
+    """Rango real de longitud de onda cubierto por la traza (§42) --
+    desde `wavelength_solution.pixel_to_wavelength` real en los dos
+    extremos de la traza, `N/D` sin calibración real. No hay un umbral
+    bueno/malo real para "qué rango cubre" un espectro, así que siempre
+    es `OK` cuando se puede calcular -- esta fila es informativa, no un
+    diagnóstico de calidad."""
+    if wavelength_solution is None:
+        return QCMetric(
+            name="Rango de longitud de onda", status=QCStatus.NOT_AVAILABLE, value_text="sin calibrar",
+            guideline="Usa \"Calibrar longitud de onda...\" (o \"Calibrar por estrella de referencia...\") para incluir esta fila.",
+        )
+    w_a = float(wavelength_solution.pixel_to_wavelength(pixel_min))
+    w_b = float(wavelength_solution.pixel_to_wavelength(pixel_max))
+    lo, hi = (w_a, w_b) if w_a <= w_b else (w_b, w_a)
+    return QCMetric(
+        name="Rango de longitud de onda", status=QCStatus.OK, value_text=f"{lo:.1f} - {hi:.1f} Å",
+        guideline="Informativo: rango real cubierto por la calibración ya ajustada en los dos extremos de la traza.",
+    )
+
+
+def dispersion_metric(wavelength_solution: WavelengthSolution | None, center_pixel: float) -> QCMetric:
+    """Dispersión real (Å/píxel) en el centro de la traza (§42) --
+    `wavelength.local_dispersion_at_pixel` real, `N/D` sin calibración.
+    Igual que el rango, es informativa: no hay una dispersión
+    "correcta" universal contra la que juzgarla."""
+    if wavelength_solution is None:
+        return QCMetric(
+            name="Dispersión (centro)", status=QCStatus.NOT_AVAILABLE, value_text="sin calibrar",
+            guideline="Usa \"Calibrar longitud de onda...\" (o \"Calibrar por estrella de referencia...\") para incluir esta fila.",
+        )
+    dispersion = local_dispersion_at_pixel(wavelength_solution, center_pixel)
+    return QCMetric(
+        name="Dispersión (centro)", status=QCStatus.OK, value_text=f"{dispersion:.4f} Å/px",
+        guideline="Informativo: dispersión local real (no una media global asumida) en el centro de la traza.",
     )

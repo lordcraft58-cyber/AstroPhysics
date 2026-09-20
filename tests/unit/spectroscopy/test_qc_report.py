@@ -1,16 +1,19 @@
 """`qc_report.py`: clasifica OK/WARNING/ERROR números REALES ya
 calculados por otros motores -- nunca calcula una magnitud nueva
-(§31)."""
+(§31, §42)."""
 from __future__ import annotations
 
 from astrophysics_suite.spectroscopy.qc_report import (
     QCReport,
     QCStatus,
+    dispersion_metric,
     pixel_quality_metric,
     snr_metric,
     trace_quality_metric,
     wavelength_calibration_quality_metric,
+    wavelength_range_metric,
 )
+from astrophysics_suite.spectroscopy.wavelength import fit_wavelength_solution
 
 
 def test_trace_quality_metric_is_ok_for_a_tight_real_fit():
@@ -66,6 +69,39 @@ def test_pixel_quality_metric_thresholds_and_saturation_note():
 
     without_saturate = pixel_quality_metric(1, 1_000_000, saturate_available=False)
     assert "SATURATE" in without_saturate.value_text
+
+
+def test_wavelength_range_metric_is_not_available_without_a_real_solution():
+    metric = wavelength_range_metric(None, 0.0, 149.0)
+    assert metric.status is QCStatus.NOT_AVAILABLE
+
+
+def test_wavelength_range_metric_reports_the_real_range_at_both_trace_ends():
+    solution = fit_wavelength_solution([0.0, 149.0], [4000.0, 4300.0], degree=1)
+    metric = wavelength_range_metric(solution, 0.0, 149.0)
+    assert metric.status is QCStatus.OK
+    assert metric.value_text == "4000.0 - 4300.0 Å"
+
+
+def test_wavelength_range_metric_orders_low_to_high_regardless_of_solution_direction():
+    # una dispersión negativa (longitud de onda decreciente con el píxel) real:
+    # el rango sigue reportándose de menor a mayor, nunca invertido.
+    solution = fit_wavelength_solution([0.0, 149.0], [4300.0, 4000.0], degree=1)
+    metric = wavelength_range_metric(solution, 0.0, 149.0)
+    assert metric.value_text == "4000.0 - 4300.0 Å"
+
+
+def test_dispersion_metric_is_not_available_without_a_real_solution():
+    metric = dispersion_metric(None, 75.0)
+    assert metric.status is QCStatus.NOT_AVAILABLE
+
+
+def test_dispersion_metric_recovers_a_known_linear_dispersion():
+    solution = fit_wavelength_solution([0.0, 149.0], [4000.0, 4300.0], degree=1)
+    metric = dispersion_metric(solution, 75.0)
+    assert metric.status is QCStatus.OK
+    expected = 300.0 / 149.0
+    assert metric.value_text == f"{expected:.4f} Å/px"
 
 
 def test_qc_report_overall_status_is_the_worst_real_status():

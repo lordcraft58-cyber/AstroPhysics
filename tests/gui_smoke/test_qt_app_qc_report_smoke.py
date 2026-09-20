@@ -89,8 +89,9 @@ def test_qc_report_process_runs_end_to_end_via_click_without_opening_a_new_windo
     # informe puro (summary/log/table) -- no abre ninguna ventana nueva
     assert len(main_window.mdi.subWindowList()) == windows_before
     assert main_window._last_result_table is not None
-    assert len(main_window._last_result_table.rows) == 4
+    assert len(main_window._last_result_table.rows) == 6
     metric_names = [row[0] for row in main_window._last_result_table.rows]
     assert metric_names == [
-        "Traza espacial", "Calibración en longitud de onda", "Relación señal/ruido", "Calidad de píxeles",
+        "Traza espacial", "Calibración en longitud de onda", "Rango de longitud de onda", "Dispersión (centro)",
+        "Relación señal/ruido", "Calidad de píxeles",
     ]

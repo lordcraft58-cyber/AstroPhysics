@@ -483,7 +483,7 @@ def test_spectral_trace_process_rejects_wrong_number_of_points():
         raise AssertionError("se esperaba ValueError con más de un punto marcado")
 
 
-def test_qc_report_process_requires_one_point_and_reports_four_real_metrics():
+def test_qc_report_process_requires_one_point_and_reports_six_real_metrics():
     process = _get("spectroscopy.qc_report")
     assert process.requires_picking == 1
 
@@ -501,15 +501,18 @@ def test_qc_report_process_requires_one_point_and_reports_four_real_metrics():
     assert "estado global" in result.summary
     assert result.table is not None
     assert [row[0] for row in result.table.rows] == [
-        "Traza espacial", "Calibración en longitud de onda", "Relación señal/ruido", "Calidad de píxeles",
+        "Traza espacial", "Calibración en longitud de onda", "Rango de longitud de onda", "Dispersión (centro)",
+        "Relación señal/ruido", "Calidad de píxeles",
     ]
-    # sin calibración en longitud de onda: N/D real, nunca inventada
-    wavelength_row = result.table.rows[1]
-    assert wavelength_row[1] == "N/D"
-    assert len(result.log_lines) == 4
+    # sin calibración en longitud de onda: N/D real en las tres filas que dependen de ella, nunca inventado
+    rows_by_name = {row[0]: row for row in result.table.rows}
+    assert rows_by_name["Calibración en longitud de onda"][1] == "N/D"
+    assert rows_by_name["Rango de longitud de onda"][1] == "N/D"
+    assert rows_by_name["Dispersión (centro)"][1] == "N/D"
+    assert len(result.log_lines) == 6
 
 
-def test_qc_report_process_includes_a_real_wavelength_metric_when_a_solution_exists():
+def test_qc_report_process_includes_real_wavelength_metrics_when_a_solution_exists():
     process = _get("spectroscopy.qc_report")
     height, width = 41, 150
     yy, _xx = np.mgrid[0:height, 0:width]
@@ -522,8 +525,15 @@ def test_qc_report_process_includes_a_real_wavelength_metric_when_a_solution_exi
     params["_wavelength_solution"] = fit_wavelength_solution([0.0, float(width - 1)], [4000.0, 4300.0], degree=1)
     result = process.run(data, params)
 
-    wavelength_row = next(r for r in result.table.rows if r[0] == "Calibración en longitud de onda")
-    assert wavelength_row[1] == "OK"  # RMS=0 para un ajuste lineal exacto de 2 puntos
+    rows_by_name = {row[0]: row for row in result.table.rows}
+    assert rows_by_name["Calibración en longitud de onda"][1] == "OK"  # RMS=0 para un ajuste lineal exacto de 2 puntos
+    range_row = rows_by_name["Rango de longitud de onda"]
+    assert range_row[1] == "OK"
+    assert "4000.0" in range_row[2] and "4300.0" in range_row[2]
+    dispersion_row = rows_by_name["Dispersión (centro)"]
+    assert dispersion_row[1] == "OK"
+    expected_dispersion = 300.0 / 149.0  # (4300-4000) Å / (149-0) px, solución lineal exacta
+    assert dispersion_row[2] == f"{expected_dispersion:.4f} Å/px"
 
 
 def test_qc_report_process_rejects_wrong_number_of_points():
