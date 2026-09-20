@@ -351,3 +351,87 @@ def test_reduce_session_dialog_saves_and_applies_instrument_profile(qapp, main_w
     assert fresh_dialog.read_noise_spin.value() == pytest.approx(3.5)
     assert fresh_dialog.overscan_group.isChecked()
     assert fresh_dialog.overscan_row_end.value() == 5
+
+
+def _write_unsigned16_light_frames(tmp_path, n=2, exptime_s=60.0):
+    """LIGHTS escritos como los escribe una cámara real (ZWO ASI533MC Pro
+    y casi cualquier otra): enteros de 16 bits con `BZERO=32768`."""
+    paths = []
+    for i in range(n):
+        raw = np.full(SHAPE, 1540, dtype=np.uint16)
+        raw[DEFECT_PIXEL] = 602
+        path = tmp_path / f"uint16_light_{i}.fits"
+        hdu = fits.PrimaryHDU(raw)  # astropy escribe BITPIX=16 + BZERO=32768
+        hdu.header["EXPTIME"] = exptime_s
+        hdu.header["INSTRUME"] = "ZWO ASI533MC Pro"
+        hdu.header["OBJECT"] = "M 31"
+        hdu.writeto(path)
+        paths.append(str(path))
+    return paths
+
+
+def test_reduce_session_dialog_writes_real_provenance_uncertainty_and_no_stale_scaling(qapp, main_window, tmp_path):
+    """Tres cosas que el archivo calibrado NO hacía y ahora sí:
+
+    1. declarar en su propia cabecera qué calibración recibió (antes se
+       copiaba la cabecera cruda tal cual y el producto era
+       indistinguible de un crudo salvo por los píxeles);
+    2. conservar la incertidumbre que el motor propagó (antes se tiraba);
+    3. no arrastrar `BZERO`/`BSCALE` del archivo de origen -- con una
+       cámara real de 16 bits eso desplazaba cada píxel +32768 ADU al
+       releer, en silencio.
+    """
+    from astrophysics_suite.io.fits_loader import load_image
+    from astrophysics_suite.io.fits_writer import UNCERTAINTY_EXTENSION_NAME
+    from astrophysics_suite.reduction.master_frames import build_master_bias
+    from qt_app.reduction.reduce_session_dialog import ReduceSessionDialog
+
+    bias_paths, _, _ = _write_calibration_frames(tmp_path)
+    bias_frames = [load_image(p, band="", role="calibration").legacy_image.data for p in bias_paths]
+    main_window.master_frame_library.add("Bias-prov", build_master_bias(bias_frames))
+
+    light_paths = _write_unsigned16_light_frames(tmp_path, n=2, exptime_s=60.0)
+    with fits.open(light_paths[0]) as hdul:
+        assert hdul[0].header["BZERO"] == 32768  # el crudo sí lo trae: por eso importa
+
+    output_dir = tmp_path / "reduced_prov"
+    dialog = ReduceSessionDialog(main_window.master_frame_library, main_window)
+    _inject_paths(dialog.file_list, light_paths)
+    dialog.bias_combo.setCurrentText("Bias-prov")
+    dialog.read_noise_spin.setValue(3.2)
+    dialog._output_dir = str(output_dir)
+
+    dialog._on_run()
+    _wait_worker(qapp, dialog)
+    assert dialog.status_label.text() == ""
+
+    out_path = output_dir / "uint16_light_0_calibrada.fits"
+    assert out_path.exists()
+    with fits.open(out_path) as hdul:
+        header = hdul[0].header
+
+        # 1. procedencia real, y solo la verdad: bias sí, dark y flat no
+        assert header["APSRED"] is True
+        assert header["APSBIAS"] is True
+        assert header["APSDARK"] is False
+        assert header["APSFLAT"] is False
+        history = "\n".join(str(line) for line in header["HISTORY"])
+        assert "bias maestro restado" in history
+        assert "sin flat" in history  # el aviso honesto viaja con el archivo
+
+        # 2. la incertidumbre propagada llega a disco con valores reales
+        assert UNCERTAINTY_EXTENSION_NAME in hdul
+        uncertainty = hdul[UNCERTAINTY_EXTENSION_NAME].data
+        assert uncertainty.shape == hdul[0].data.shape
+        assert np.all(np.isfinite(uncertainty))
+        assert float(np.median(uncertainty)) > 0.0
+
+        # 3. sin escalado heredado: el nivel calibrado es ~1040 ADU
+        #    (1540 crudo - 500 de bias), no 33808.
+        assert "BZERO" not in header
+        assert "BSCALE" not in header
+        np.testing.assert_allclose(float(np.median(hdul[0].data)), 1040.0, atol=1.0)
+
+        # y los metadatos reales de la observación siguen ahí
+        assert header["INSTRUME"] == "ZWO ASI533MC Pro"
+        assert header["OBJECT"] == "M 31"

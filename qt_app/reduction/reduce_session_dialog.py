@@ -448,18 +448,38 @@ class ReduceSessionDialog(QDialog):
                 combine_sigma_clip=sigma_clip,
             )
 
+            from astrophysics_suite.reduction.provenance import reduction_header_cards
+
             output_paths = []
             for index, frame in enumerate(result.frames):
                 out_path = str(Path(output_dir) / f"{Path(light_paths[index]).stem}_calibrada.fits")
-                save_fits_image(out_path, frame.calibrated.data, header=headers[index])
+                # la cabecera original MÁS el registro real de lo que se
+                # le hizo: un archivo calibrado ya no es indistinguible
+                # de uno crudo salvo por los píxeles.
+                header = dict(headers[index])
+                if frame.record is not None:
+                    header.update(reduction_header_cards(frame.record, provenance=frame.provenance))
+                save_fits_image(out_path, frame.calibrated.data, header=header, uncertainty=frame.calibrated.uncertainty)
                 output_paths.append(out_path)
 
             combined_path = None
             combined_data = None
             if result.combined is not None:
                 combined_header = {k: v for k, v in headers[0].items() if k != "EXPTIME"}
+                first = result.frames[0]
+                if first.record is not None:
+                    combined_header.update(reduction_header_cards(first.record, provenance=first.provenance))
+                combined_header["APSNCOMB"] = len(result.frames)
+                combined_header["APSCMETH"] = result.combined.method
                 combined_path = str(Path(output_dir) / "combinada.fits")
-                save_fits_image(combined_path, result.combined.data, header=combined_header)
+                # el apilado propaga su propia incertidumbre: se guarda,
+                # igual que la de cada LIGHT calibrado.
+                save_fits_image(
+                    combined_path,
+                    result.combined.data,
+                    header=combined_header,
+                    uncertainty=result.combined.uncertainty,
+                )
                 combined_data = result.combined.data
 
             return SessionReductionOutcome(
