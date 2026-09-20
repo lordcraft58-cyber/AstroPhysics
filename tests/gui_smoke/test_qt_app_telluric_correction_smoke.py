@@ -108,6 +108,16 @@ def test_telluric_correction_dialog_measures_and_applies_a_known_band(qapp, main
     assert "Corrección aplicada" in dialog.status_label.text()
     assert dialog.table.rowCount() == len(dialog._last_result.bands_used)
 
+    from qt_app.spectroscopy.spectrum_view import SpectrumView
+
+    windows_before = len(main_window.mdi.subWindowList())
+    dialog._on_show_comparison()
+    qapp.processEvents()
+    assert len(main_window.mdi.subWindowList()) == windows_before + 1
+    comparison_view = main_window.mdi.subWindowList()[-1].widget()
+    assert isinstance(comparison_view, SpectrumView)
+    assert len(comparison_view._data.series) == 2
+
     out_path = tmp_path / "science_tellcorr.fits"
     from PySide6.QtWidgets import QFileDialog
 

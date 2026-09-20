@@ -87,6 +87,16 @@ def test_flexure_correction_dialog_measures_and_applies_a_known_shift(qapp, main
     assert dialog._last_result.shift_px == pytest.approx(_TRUE_SHIFT_PX, abs=0.5)
     assert "Δpíxel" in dialog.result_label.text()
 
+    from qt_app.spectroscopy.spectrum_view import SpectrumView
+
+    windows_before = len(main_window.mdi.subWindowList())
+    dialog._on_show_comparison()
+    qapp.processEvents()
+    assert len(main_window.mdi.subWindowList()) == windows_before + 1
+    comparison_view = main_window.mdi.subWindowList()[-1].widget()
+    assert isinstance(comparison_view, SpectrumView)
+    assert len(comparison_view._data.series) == 3
+
     out_path = tmp_path / "arc_new_flexure.fits"
     from PySide6.QtWidgets import QFileDialog
 

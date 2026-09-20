@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 from astrophysics_suite.spectroscopy.flexure_correction import FlexureShift, measure_flexure_shift
 from astrophysics_suite.spectroscopy.spectrum1d_io import save_spectrum1d_fits
 from astrophysics_suite.tables.table import Table
+from qt_app.spectroscopy.spectrum_plot_data import SpectrumPlotData, SpectrumSeries, series_color
 
 
 def _central_row_pixels(view) -> np.ndarray:
@@ -80,6 +81,10 @@ class FlexureCorrectionDialog(QDialog):
         self.result_label = QLabel("")
         self.result_label.setWordWrap(True)
         layout.addWidget(self.result_label)
+
+        self.compare_button = QPushButton("Ver comparación antes/después...")
+        self.compare_button.clicked.connect(self._on_show_comparison)
+        layout.addWidget(self.compare_button)
 
         self.save_button = QPushButton("Aplicar y guardar espectro corregido (FITS)...")
         self.save_button.clicked.connect(self._on_save)
@@ -136,6 +141,45 @@ class FlexureCorrectionDialog(QDialog):
             f"{result.reference_wavelength:.1f} Å)  ·  Δv = {result.shift_velocity_km_s:+.2f} km/s -- "
             "solo se recalculó el desplazamiento global, la forma de la calibración no cambia."
         )
+
+    def _on_show_comparison(self) -> None:
+        if self._last_result is None:
+            self.result_label.setText("Mide primero el desplazamiento.")
+            return
+        reference_view = self._views.get(self.reference_combo.currentText())
+        new_view = self._views.get(self.new_combo.currentText())
+        reference_spectrum = _central_row_pixels(reference_view)
+        new_spectrum = _central_row_pixels(new_view)
+
+        pixel = np.arange(new_spectrum.size, dtype=np.float64)
+        reference_wavelength = np.asarray(reference_view.fitted_wavelength_solution.pixel_to_wavelength(pixel), dtype=np.float64)
+        # "sin corregir" == la solución ORIGINAL de la referencia, sin el
+        # desplazamiento real medido -- exactamente lo que se vería si no
+        # se hubiera aplicado esta corrección.
+        after_wavelength = np.asarray(self._last_result.shifted_solution.pixel_to_wavelength(pixel), dtype=np.float64)
+
+        plot_data = SpectrumPlotData(
+            series=(
+                SpectrumSeries(
+                    label=f"Referencia ({reference_view.title})", x=reference_wavelength, y=reference_spectrum,
+                    color=series_color(0),
+                ),
+                SpectrumSeries(
+                    label=f"Nueva SIN corregir ({new_view.title})", x=reference_wavelength, y=new_spectrum,
+                    color=series_color(1), style="dashed",
+                ),
+                SpectrumSeries(
+                    label=f"Nueva corregida ({new_view.title})", x=after_wavelength, y=new_spectrum,
+                    color=series_color(2),
+                ),
+            ),
+            x_label="Longitud de onda (Å)", y_label="Cuentas (ADU)",
+        )
+        main_window = self.parent()
+        if main_window is None or not hasattr(main_window, "add_spectrum_window"):
+            self.result_label.setText("No se pudo abrir la comparación (ventana principal no disponible).")
+            return
+        main_window.add_spectrum_window(plot_data, f"Antes/después -- {new_view.title}")
 
     def _on_save(self) -> None:
         if self._last_result is None:

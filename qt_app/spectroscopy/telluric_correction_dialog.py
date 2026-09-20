@@ -38,6 +38,7 @@ from astrophysics_suite.spectroscopy.telluric_correction import (
     measure_standard_transmission,
 )
 from astrophysics_suite.tables.table import Table
+from qt_app.spectroscopy.spectrum_plot_data import SpectrumPlotData, SpectrumSeries, series_color
 
 
 def _central_row_spectrum(view) -> tuple[np.ndarray, np.ndarray]:
@@ -68,6 +69,7 @@ class TelluricCorrectionDialog(QDialog):
         self._transmission: TelluricStandardTransmission | None = None
         self._last_result: TelluricCorrectionResult | None = None
         self._last_science_wavelength: np.ndarray | None = None
+        self._last_science_flux_raw: np.ndarray | None = None
         self.setWindowTitle("Corrección de absorción telúrica")
         self.resize(640, 560)
 
@@ -121,6 +123,10 @@ class TelluricCorrectionDialog(QDialog):
         self.status_label = QLabel("")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
+
+        self.compare_button = QPushButton("Ver comparación antes/después...")
+        self.compare_button.clicked.connect(self._on_show_comparison)
+        layout.addWidget(self.compare_button)
 
         self.save_button = QPushButton("Guardar espectro corregido (FITS)...")
         self.save_button.clicked.connect(self._on_save)
@@ -181,6 +187,7 @@ class TelluricCorrectionDialog(QDialog):
             self._last_result = None
             return
         self._last_science_wavelength = wavelength
+        self._last_science_flux_raw = flux
 
         result = self._last_result
         self.table.setRowCount(len(result.bands_used))
@@ -196,6 +203,31 @@ class TelluricCorrectionDialog(QDialog):
             f"Corrección aplicada: {len(result.bands_used)} banda(s), {n_corrected} píxel(es) real(es) corregido(s) "
             f"(razón de masas de aire = {result.airmass_ratio:.3f}). Fuera de esas bandas el espectro no cambia."
         )
+
+    def _on_show_comparison(self) -> None:
+        if self._last_result is None or self._last_science_wavelength is None or self._last_science_flux_raw is None:
+            self.status_label.setText("Aplica primero la corrección.")
+            return
+        science_view = self._views.get(self.science_combo.currentText())
+
+        plot_data = SpectrumPlotData(
+            series=(
+                SpectrumSeries(
+                    label=f"Sin corregir ({science_view.title})", x=self._last_science_wavelength,
+                    y=self._last_science_flux_raw, color=series_color(0), style="dashed",
+                ),
+                SpectrumSeries(
+                    label=f"Corregida ({science_view.title})", x=self._last_science_wavelength,
+                    y=self._last_result.corrected_flux, color=series_color(1),
+                ),
+            ),
+            x_label="Longitud de onda (Å)", y_label="Cuentas (ADU)",
+        )
+        main_window = self.parent()
+        if main_window is None or not hasattr(main_window, "add_spectrum_window"):
+            self.status_label.setText("No se pudo abrir la comparación (ventana principal no disponible).")
+            return
+        main_window.add_spectrum_window(plot_data, f"Antes/después telúrico -- {science_view.title}")
 
     def _on_save(self) -> None:
         if self._last_result is None or self._last_science_wavelength is None:
