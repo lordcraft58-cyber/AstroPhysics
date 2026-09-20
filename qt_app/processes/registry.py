@@ -351,9 +351,13 @@ def _run_spectral_trace(data: np.ndarray, params: dict) -> ProcessResult:
     extractor = extract_optimal if params["optimal_extraction"] else extract_sum
     spectrum = extractor(data, uncertainty, trace, aperture_half_width=params["aperture_half_width"])
 
+    # Una columna que no se pudo medir queda flux=NaN (nunca 0.0): se
+    # excluye de la estadística en vez de arrastrar un cero falso a la
+    # mediana de S/N -- ver `spectroscopy/trace.py`.
     with np.errstate(divide="ignore", invalid="ignore"):
-        snr = np.where(spectrum.flux_uncertainty > 0, spectrum.flux / spectrum.flux_uncertainty, 0.0)
-    median_snr = float(np.median(snr))
+        snr = np.where(spectrum.flux_uncertainty > 0, spectrum.flux / spectrum.flux_uncertainty, np.nan)
+    median_snr = float(np.nanmedian(snr)) if np.any(np.isfinite(snr)) else float("nan")
+    n_invalid = spectrum.n_columns_invalid
 
     pixel = np.arange(spectrum.flux.size, dtype=np.float64)
     plot_data = SpectrumPlotData(
@@ -361,7 +365,11 @@ def _run_spectral_trace(data: np.ndarray, params: dict) -> ProcessResult:
         x_label="Píxel (dispersión)", y_label="Flujo extraído (ADU)",
     )
     method = "óptima (Horne 1986)" if params["optimal_extraction"] else "suma simple"
-    summary = f"Traza extraída ({method}) desde y={y0:.1f} en x={x0:.1f}; RMS de traza={trace.rms_residual_px:.2f} px, S/N mediana={median_snr:.1f}."
+    invalid_note = f"; {n_invalid} columna(s) sin medida real (huecos en el gráfico)" if n_invalid else ""
+    summary = (
+        f"Traza extraída ({method}) desde y={y0:.1f} en x={x0:.1f}; RMS de traza={trace.rms_residual_px:.2f} px, "
+        f"S/N mediana={median_snr:.1f}{invalid_note}."
+    )
     return ProcessResult(output_data=None, summary=summary, artifacts={"spectrum": plot_data})
 
 
@@ -377,6 +385,8 @@ def _run_multi_aperture(data: np.ndarray, params: dict) -> ProcessResult:
         optimal_extraction=bool(params["optimal_extraction"]), fit_degree=int(params["fit_degree"]),
         aperture_half_width=params["aperture_half_width"], bg_offset=params["bg_offset"], bg_half_width=params["bg_half_width"],
     )
+    # flux=NaN en columnas sin medida real (nunca 0.0, ver spectroscopy/trace.py):
+    # se excluyen de la mediana en vez de sesgarla hacia abajo.
 
     log_lines = [
         f"Apertura {a.aperture_id}: centro y={a.initial_center_px:.1f} px, RMS de traza={a.trace.rms_residual_px:.2f} px."
@@ -407,7 +417,7 @@ def _run_multi_aperture(data: np.ndarray, params: dict) -> ProcessResult:
     table = Table(
         columns=("aperture_id", "center_px", "trace_rms_px", "median_flux"),
         units=("", "px", "px", "ADU"),
-        rows=tuple((a.aperture_id, a.initial_center_px, a.trace.rms_residual_px, float(np.median(a.spectrum.flux))) for a in result.apertures),
+        rows=tuple((a.aperture_id, a.initial_center_px, a.trace.rms_residual_px, float(np.nanmedian(a.spectrum.flux))) for a in result.apertures),
     )
     return ProcessResult(output_data=None, summary=summary, log_lines=tuple(log_lines), table=table, artifacts={"spectrum": plot_data})
 

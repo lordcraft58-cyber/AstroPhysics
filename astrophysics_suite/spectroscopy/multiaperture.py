@@ -19,7 +19,14 @@ from dataclasses import dataclass
 import numpy as np
 from scipy import signal
 
-from astrophysics_suite.spectroscopy.trace import ExtractedSpectrum, TraceResult, extract_optimal, extract_sum, trace_spectrum
+from astrophysics_suite.spectroscopy.trace import (
+    ExtractedSpectrum,
+    SkyWindow,
+    TraceResult,
+    extract_optimal,
+    extract_sum,
+    trace_spectrum,
+)
 
 _MAD_TO_SIGMA = 1.4826
 
@@ -95,6 +102,7 @@ def extract_multi_aperture(
     aperture_half_width: float = 4.0,
     bg_offset: float = 10.0,
     bg_half_width: float = 4.0,
+    mask: np.ndarray | None = None,
     find_min_snr: float = 5.0,
     find_min_separation_px: float = 10.0,
     find_max_apertures: int = 20,
@@ -115,13 +123,17 @@ def extract_multi_aperture(
     apertures: list[Aperture] = []
     failures: list[ApertureExtractionFailure] = []
     extractor = extract_optimal if optimal_extraction else extract_sum
+    # `bg_offset`/`bg_half_width` (parámetros ya existentes de la GUI) se
+    # traducen a dos `SkyWindow` simétricas -- el mismo caso particular
+    # que ya era el valor por defecto de `trace.estimate_sky_background`.
+    sky_windows = (SkyWindow(offset_px=-bg_offset, half_width_px=bg_half_width), SkyWindow(offset_px=bg_offset, half_width_px=bg_half_width))
 
     for aperture_id, center in enumerate(centers, start=1):
         try:
-            trace = trace_spectrum(data, initial_center_px=center, fit_degree=fit_degree)
+            trace = trace_spectrum(data, initial_center_px=center, fit_degree=fit_degree, mask=mask)
             spectrum = extractor(
-                data, uncertainty, trace,
-                aperture_half_width=aperture_half_width, bg_offset=bg_offset, bg_half_width=bg_half_width,
+                data, uncertainty, trace, mask=mask,
+                aperture_half_width=aperture_half_width, sky_windows=sky_windows,
             )
         except ValueError as exc:
             failures.append(ApertureExtractionFailure(aperture_id=aperture_id, initial_center_px=center, reason=str(exc)))

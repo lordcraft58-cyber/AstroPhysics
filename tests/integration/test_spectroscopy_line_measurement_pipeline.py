@@ -12,7 +12,7 @@ import pytest
 
 from astrophysics_suite.spectroscopy.continuum import fit_continuum
 from astrophysics_suite.spectroscopy.lines import measure_line
-from astrophysics_suite.spectroscopy.trace import extract_sum, trace_spectrum
+from astrophysics_suite.spectroscopy.trace import SkyWindow, extract_sum, trace_spectrum
 from astrophysics_suite.spectroscopy.wavelength import fit_wavelength_solution
 
 _DISPERSION_A_PER_PX = 2.0
@@ -48,7 +48,10 @@ def test_full_chain_recovers_a_real_emission_line_from_a_synthetic_2d_spectrum()
     data, uncertainty = _synthetic_2d_spectrum_with_emission_line()
 
     trace = trace_spectrum(data, initial_center_px=20.0, fit_degree=1)
-    extracted = extract_sum(data, uncertainty, trace, aperture_half_width=10.0, bg_offset=15.0, bg_half_width=4.0)
+    extracted = extract_sum(
+        data, uncertainty, trace, aperture_half_width=10.0,
+        sky_windows=(SkyWindow(offset_px=-15.0, half_width_px=4.0), SkyWindow(offset_px=15.0, half_width_px=4.0)),
+    )
 
     pixels = np.arange(data.shape[1], dtype=np.float64)
     # Puntos de referencia reales (píxel, longitud de onda) de una
