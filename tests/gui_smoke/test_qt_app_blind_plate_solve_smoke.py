@@ -186,6 +186,7 @@ def test_saving_blind_solved_wcs_fits_copy_writes_a_real_solvable_header(qapp, m
     from astropy.io import fits
     from astropy.wcs import WCS as AstropyWCS
 
+    from astrophysics_suite.astrometry.provenance import SOURCE_BLIND_SOLVE, WCSRecord
     from astrophysics_suite.astrometry.wcs_fit import fit_wcs
 
     solution = fit_wcs(
@@ -206,7 +207,9 @@ def test_saving_blind_solved_wcs_fits_copy_writes_a_real_solvable_header(qapp, m
     out_path = tmp_path / "original_blind_wcs.fits"
     monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(out_path), "")))
 
-    main_window._offer_to_save_wcs_fits_copy(view, solution)
+    main_window._offer_to_save_wcs_fits_copy(
+        view, WCSRecord(solution=solution, source=SOURCE_BLIND_SOLVE, catalog="Gaia DR3 (caché local)")
+    )
 
     assert out_path.exists()
     with fits.open(out_path) as hdul:

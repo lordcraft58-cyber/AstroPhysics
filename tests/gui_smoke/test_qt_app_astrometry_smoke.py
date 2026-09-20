@@ -16,7 +16,7 @@ PySide6 = pytest.importorskip("PySide6", reason="PySide6 no instalado en este en
 from astropy.wcs import WCS  # noqa: E402
 from PySide6.QtCore import Qt, QPointF  # noqa: E402
 from PySide6.QtGui import QMouseEvent  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 
 def _display_available() -> bool:
@@ -64,8 +64,16 @@ def _make_wcs(crpix=(30.0, 30.0), crval=(150.0, 2.0), scale_arcsec=1.0) -> WCS:
     return wcs
 
 
-def test_wcs_fit_flow_via_click_and_table_fits_known_solution(qapp, main_window):
+def test_wcs_fit_flow_via_click_and_table_fits_known_solution(qapp, main_window, monkeypatch):
     from qt_app.astrometry.wcs_fit_dialog import WCSFitDialog
+
+    # Ajustar un WCS a mano ofrece ahora guardar la copia FITS,
+    # igual que las dos resoluciones automáticas: aquí interesa el
+    # ajuste, no el guardado (ver `test_qt_app_wcs_fits_copy_smoke.py`).
+    monkeypatch.setattr(
+        "qt_app.main_window.QMessageBox.question",
+        staticmethod(lambda *a, **k: QMessageBox.StandardButton.No),
+    )
 
     shape = (60, 60)
     data = np.full(shape, 100.0)

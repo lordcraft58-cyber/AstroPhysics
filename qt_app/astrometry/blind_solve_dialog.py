@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from astrophysics_suite.astrometry.blind_solve import solve_plate_blind
+from astrophysics_suite.astrometry.provenance import SOURCE_BLIND_SOLVE, WCSRecord
 from astrophysics_suite.catalogs.local_cache import CatalogCache
 from astrophysics_suite.tables.table import Table
 from qt_app.workers import CallableWorker
@@ -30,6 +31,7 @@ class BlindPlateSolveDialog(QDialog):
         self._header = header or {}
         self._worker: CallableWorker | None = None
         self._result_solution = None
+        self._result_record: WCSRecord | None = None
         self._result_table: Table | None = None
 
         self.setWindowTitle("Resolver placa en ciego (sin puntero)")
@@ -99,6 +101,14 @@ class BlindPlateSolveDialog(QDialog):
             f"{' (espejo)' if result.mirrored else ''}."
         )
         self._result_solution = result.solution
+        self._result_record = WCSRecord(
+            solution=result.solution,
+            source=SOURCE_BLIND_SOLVE,
+            engine_version=result.provenance.engine_version if result.provenance is not None else "1.0",
+            catalog="Gaia DR3 (caché local)",
+            n_detected_stars=result.n_detected_stars,
+            n_matched_stars=result.n_matched,
+        )
         self._result_table = Table(
             columns=("residual",), units=("arcsec",), rows=tuple((r,) for r in result.solution.residuals_arcsec)
         )
@@ -115,6 +125,9 @@ class BlindPlateSolveDialog(QDialog):
 
     def result_solution(self):
         return self._result_solution
+
+    def result_record(self) -> WCSRecord | None:
+        return self._result_record
 
     def result_table(self) -> Table | None:
         return self._result_table

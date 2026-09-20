@@ -13,7 +13,7 @@ import pytest
 
 PySide6 = pytest.importorskip("PySide6", reason="PySide6 no instalado en este entorno")
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 from astrophysics_suite.astrometry.optical_wcs import is_optical_wcs, pixel_scale_of  # noqa: E402
 from qt_app.astrometry.optical_wcs_dialog import CUSTOM_CAMERA_OPTION, OpticalWCSDialog  # noqa: E402
@@ -120,7 +120,14 @@ def test_custom_camera_lets_the_user_enter_geometry_by_hand(qapp):
     assert (setup.width_px, setup.height_px) == (800, 1000)  # geometría real de la imagen
 
 
-def test_building_wires_a_real_wcs_into_the_window_and_the_session(qapp, main_window):
+def test_building_wires_a_real_wcs_into_the_window_and_the_session(qapp, main_window, monkeypatch):
+    # construir un WCS ofrece ahora guardar la copia FITS, igual que las
+    # dos resoluciones automáticas; aquí interesa el cableado, no el
+    # guardado (que prueba `test_qt_app_wcs_fits_copy_smoke.py`).
+    monkeypatch.setattr(
+        "qt_app.main_window.QMessageBox.question",
+        staticmethod(lambda *a, **k: QMessageBox.StandardButton.No),
+    )
     data = np.full((3008, 3008), 100.0, dtype=np.float32)
     sub_window = main_window.add_image_window(data, "m31_real.fit", header=_REAL_M31_HEADER, source_path="/tmp/m31_real.fit")
     main_window.mdi.setActiveSubWindow(sub_window)

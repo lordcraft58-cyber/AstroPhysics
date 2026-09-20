@@ -28,6 +28,7 @@ from astrophysics_suite.astrometry.plate_solve import (
     estimate_approx_scale_from_header,
     solve_plate,
 )
+from astrophysics_suite.astrometry.provenance import SOURCE_PLATE_SOLVE, WCSRecord
 from astrophysics_suite.catalogs.simbad import resolve_object_coordinates
 from astrophysics_suite.tables.table import Table
 from qt_app.workers import CallableWorker
@@ -48,6 +49,7 @@ class PlateSolveDialog(QDialog):
         self._worker: CallableWorker | None = None
         self._simbad_worker: CallableWorker | None = None
         self._result_solution = None
+        self._result_record: WCSRecord | None = None
         self._result_table: Table | None = None
 
         self.setWindowTitle("Resolver placa automáticamente")
@@ -200,6 +202,17 @@ class PlateSolveDialog(QDialog):
             f"{' (espejo)' if result.mirrored else ''}."
         )
         self._result_solution = result.solution
+        # el motor ya sabe quién resolvió, contra qué y con cuántas
+        # estrellas: se conserva para que la copia FITS lo escriba, en
+        # vez de que la ventana lo vuelva a suponer.
+        self._result_record = WCSRecord(
+            solution=result.solution,
+            source=SOURCE_PLATE_SOLVE,
+            engine_version=result.provenance.engine_version if result.provenance is not None else "1.0",
+            catalog="Gaia DR3",
+            n_detected_stars=result.n_detected_stars,
+            n_matched_stars=result.n_matched,
+        )
         self._result_table = Table(
             columns=("residual",), units=("arcsec",), rows=tuple((r,) for r in result.solution.residuals_arcsec)
         )
@@ -216,6 +229,11 @@ class PlateSolveDialog(QDialog):
 
     def result_solution(self):
         return self._result_solution
+
+    def result_record(self) -> WCSRecord | None:
+        """La solución MÁS de qué motor salió -- lo que hace falta para
+        escribirla en un FITS sin mentir sobre su origen."""
+        return self._result_record
 
     def result_table(self) -> Table | None:
         return self._result_table

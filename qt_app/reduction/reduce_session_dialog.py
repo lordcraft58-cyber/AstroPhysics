@@ -448,6 +448,7 @@ class ReduceSessionDialog(QDialog):
                 combine_sigma_clip=sigma_clip,
             )
 
+            from astrophysics_suite.astrometry.provenance import strip_wcs_keywords
             from astrophysics_suite.reduction.provenance import reduction_header_cards
 
             output_paths = []
@@ -457,8 +458,19 @@ class ReduceSessionDialog(QDialog):
                 # le hizo: un archivo calibrado ya no es indistinguible
                 # de uno crudo salvo por los píxeles.
                 header = dict(headers[index])
+                trimmed = frame.record is not None and frame.record.trimmed
+                if trimmed:
+                    # El recorte mueve el origen de la imagen: el WCS de
+                    # la cabecera cruda deja de describir estos píxeles.
+                    # Arrastrarlo es peor que no tener ninguno, porque
+                    # parece válido (ver `astrometry.strip_wcs_keywords`).
+                    header = strip_wcs_keywords(header)
                 if frame.record is not None:
                     header.update(reduction_header_cards(frame.record, provenance=frame.provenance))
+                if trimmed:
+                    header["HISTORY"] = list(header.get("HISTORY", [])) + [
+                        "  WCS de origen eliminado: el recorte invalida sus coordenadas"
+                    ]
                 save_fits_image(out_path, frame.calibrated.data, header=header, uncertainty=frame.calibrated.uncertainty)
                 output_paths.append(out_path)
 

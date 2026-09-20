@@ -227,6 +227,7 @@ def test_saving_wcs_fits_copy_writes_a_real_solvable_header(qapp, main_window, m
     from astropy.io import fits
     from astropy.wcs import WCS as AstropyWCS
 
+    from astrophysics_suite.astrometry.provenance import SOURCE_PLATE_SOLVE, WCSRecord
     from astrophysics_suite.astrometry.wcs_fit import fit_wcs
 
     solution = fit_wcs(
@@ -247,7 +248,9 @@ def test_saving_wcs_fits_copy_writes_a_real_solvable_header(qapp, main_window, m
     out_path = tmp_path / "original_wcs.fits"
     monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(out_path), "")))
 
-    main_window._offer_to_save_wcs_fits_copy(view, solution)
+    main_window._offer_to_save_wcs_fits_copy(
+        view, WCSRecord(solution=solution, source=SOURCE_PLATE_SOLVE, catalog="Gaia DR3")
+    )
 
     assert out_path.exists()
     with fits.open(out_path) as hdul:
@@ -265,4 +268,12 @@ def test_saving_wcs_fits_copy_writes_a_real_solvable_header(qapp, main_window, m
         # copia FITS que el usuario se lleva.
         assert hdul[0].header["WCSRMS"] == pytest.approx(solution.rms_residual_arcsec, abs=1e-5)
         assert hdul[0].header["WCSNSTR"] == solution.n_stars
-        assert "wcs_fit" in str(hdul[0].header["HISTORY"])
+        # El motor que DE VERDAD resolvió, no uno fijo: esta prueba
+        # afirmaba antes `wcs_fit` para una placa resuelta
+        # automáticamente, porque eso es lo que el código escribía
+        # pasara lo que pasara.
+        history = str(hdul[0].header["HISTORY"])
+        assert SOURCE_PLATE_SOLVE in history
+        assert "astrometry.wcs_fit" not in history
+        assert hdul[0].header["APSWCSRC"] == SOURCE_PLATE_SOLVE
+        assert hdul[0].header["APSWCSMD"] is True

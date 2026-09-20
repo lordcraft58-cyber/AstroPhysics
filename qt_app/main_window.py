@@ -16,6 +16,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import QDockWidget, QFileDialog, QInputDialog, QLabel, QMainWindow, QMdiArea, QMdiSubWindow, QMessageBox, QProgressBar
 
+from astrophysics_suite.astrometry.provenance import SOURCE_MANUAL_FIT, SOURCE_OPTICS, WCSRecord
 from astrophysics_suite.astrometry.registration import apply_affine_transform, fit_affine_transform
 from astrophysics_suite.detection.point_sources import detect_point_sources_in_array, detect_psf_candidates
 from astrophysics_suite.discovery.pipeline import (
@@ -573,7 +574,7 @@ class MainWindow(QMainWindow):
             view.title, solution.rms_residual_arcsec, solution.n_stars,
         )
         self.statusBar().showMessage(f"WCS resuelto automáticamente para {view.title} (RMS={solution.rms_residual_arcsec:.3f}\").", 6000)
-        self._offer_to_save_wcs_fits_copy(view, solution)
+        self._offer_to_save_wcs_fits_copy(view, dialog.result_record())
 
     def _open_blind_plate_solve_dialog(self) -> None:
         view = self._active_image_view()
@@ -595,12 +596,37 @@ class MainWindow(QMainWindow):
             view.title, solution.rms_residual_arcsec, solution.n_stars,
         )
         self.statusBar().showMessage(f"WCS resuelto en ciego para {view.title} (RMS={solution.rms_residual_arcsec:.3f}\").", 6000)
-        self._offer_to_save_wcs_fits_copy(view, solution)
+        self._offer_to_save_wcs_fits_copy(view, dialog.result_record())
 
-    def _offer_to_save_wcs_fits_copy(self, view: ImageView, solution) -> None:
+    def _offer_to_save_wcs_fits_copy(self, view: ImageView, record) -> None:
+        """Ofrece guardar una copia del FITS con el WCS en la cabecera.
+
+        `record` es un `WCSRecord`: la solución MÁS el motor que la
+        produjo. Antes aquí llegaba solo el `WCSSolution` y esta función
+        escribía a mano `HISTORY = "WCS ajustado ... (astrometry.wcs_fit)"`
+        pasara lo que pasara -- una placa resuelta en ciego acababa
+        declarando en el archivo un motor que no la había resuelto. Las
+        tarjetas las construye ahora `astrometry/provenance.py`, en la
+        capa de ciencia, donde se pueden probar sin Qt.
+        """
+        from astrophysics_suite.astrometry.provenance import (
+            build_wcs_provenance,
+            strip_wcs_keywords,
+            wcs_header_cards,
+        )
+        from astrophysics_suite.io.fits_writer import save_fits_image
+
+        provenance = build_wcs_provenance(record)
+        detail = (
+            f"RMS={record.solution.rms_residual_arcsec:.4f}\" con {record.solution.n_stars} estrella(s)"
+            if record.is_measured
+            else "solución declarada desde la óptica, sin error medido"
+        )
+        question = f"¿Guardar una copia del FITS con el WCS escrito en la cabecera?\n\n{detail}"
+        if provenance.warnings:
+            question += "\n\n" + "\n".join(f"· {w}" for w in provenance.warnings)
         reply = QMessageBox.question(
-            self, "Guardar copia con WCS",
-            "¿Guardar una copia del FITS con el WCS resuelto escrito en la cabecera?",
+            self, "Guardar copia con WCS", question,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes,
         )
@@ -614,26 +640,19 @@ class MainWindow(QMainWindow):
         if not path:
             return
 
-        from astrophysics_suite.astrometry.wcs_fit import wcs_solution_to_astropy
-        from astrophysics_suite.io.fits_writer import save_fits_image
-
-        astropy_wcs = wcs_solution_to_astropy(solution)
-        header = dict(view.header) if view.header else {}
-        header.update(dict(astropy_wcs.to_header()))
-        # Procedencia real del ajuste, no solo la solución en sí -- antes
-        # `PlateSolveResult`/`WCSSolution` solo vivían en el objeto Python
-        # en memoria; la copia FITS que el usuario se lleva no llevaba
-        # ningún rastro de cómo se resolvió ni con qué calidad.
-        header["WCSRMS"] = round(float(solution.rms_residual_arcsec), 6)
-        header["WCSNSTR"] = int(solution.n_stars)
-        header["HISTORY"] = f"WCS ajustado por AstroPhysics Suite (astrometry.wcs_fit): RMS={solution.rms_residual_arcsec:.4f}\" con {solution.n_stars} estrella(s)"
+        # Primero se borra el WCS ANTERIOR entero (ver
+        # `strip_wcs_keywords`): la cabecera cruda de una cámara ya
+        # resuelta trae coeficientes SIP que sobreviven a sobrescribir
+        # CRVAL/CRPIX/CD y falsean la solución nueva en los bordes.
+        header = strip_wcs_keywords(view.header) if view.header else {}
+        header.update(wcs_header_cards(record, provenance=provenance))
         try:
             save_fits_image(path, view.data, header=header)
         except Exception as exc:  # noqa: BLE001 -- error real de escritura, debe ser visible
             logger.error("No se pudo guardar %s: %s", path, exc)
             QMessageBox.critical(self, "Guardar FITS con WCS", f"No se pudo guardar «{Path(path).name}»:\n\n{exc}")
             return
-        logger.info("FITS con WCS guardado en %s", path)
+        logger.info("FITS con WCS (%s) guardado en %s", record.source, path)
         self.statusBar().showMessage(f"FITS con WCS guardado en {path}", 6000)
 
     def _open_wcs_fit_flow(self) -> None:
@@ -689,6 +708,13 @@ class MainWindow(QMainWindow):
             f"WCS desde la óptica para {view.title}: {setup.pixel_scale_arcsec:.4f}\"/px, "
             f"campo {width_deg * 60:.1f}' × {height_deg * 60:.1f}'.", 8000
         )
+        self._offer_to_save_wcs_fits_copy(
+            view,
+            WCSRecord(
+                solution=solution, source=SOURCE_OPTICS,
+                optics_description=f"{setup.camera_name} ({setup.pixel_size_um:g} um) a {setup.focal_length_mm:g} mm",
+            ),
+        )
 
     def _on_wcs_fitted(self, view: ImageView, solution, table: Table) -> None:
         self._remember_wcs_solution(view, solution)
@@ -698,6 +724,9 @@ class MainWindow(QMainWindow):
             view.title, solution.rms_residual_arcsec, solution.n_stars,
         )
         self.statusBar().showMessage(f"WCS ajustado para {view.title} (RMS={solution.rms_residual_arcsec:.3f}\").", 6000)
+        # Un ajuste manual se perdía al cerrar el programa: solo las dos
+        # resoluciones automáticas ofrecían guardar la copia con WCS.
+        self._offer_to_save_wcs_fits_copy(view, WCSRecord(solution=solution, source=SOURCE_MANUAL_FIT))
 
     def _save_session_dialog(self) -> None:
         from astrophysics_suite.io.session_export import save_session
