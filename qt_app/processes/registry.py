@@ -54,6 +54,7 @@ from astrophysics_suite.spectroscopy.multiaperture import extract_multi_aperture
 from astrophysics_suite.spectroscopy.trace import SkyWindow, extract_optimal, extract_sum, trace_spectrum
 from astrophysics_suite.tables.table import Table
 from qt_app.processes.base import ParameterSpec, ProcessDefinition, ProcessResult
+from services.instrument_profiles import InstrumentProfileStore
 from qt_app.spectroscopy.spectrum_plot_data import SpectrumMarker, SpectrumPlotData, SpectrumSeries, series_color
 
 
@@ -394,17 +395,33 @@ def _uncertainty_adu(data: np.ndarray, params: dict) -> tuple[np.ndarray, str | 
     """Incertidumbre real en ADU: usa `GAIN`/`RDNOISE` reales de la
     cabecera cuando existen (`ccd_noise_adu`, ruido de disparo en
     ELECTRONES reales + ruido de lectura, convertido de vuelta a ADU) --
-    nunca inventa una ganancia. Sin `GAIN` real, cae al modelo aproximado
-    `sqrt(ADU)` (equivalente a asumir gain=1 e-/ADU sin ruido de lectura)
-    ya usado en todo el taller, y lo declara como tal (`None`) en vez de
-    aparentar precisión que no tiene."""
+    nunca inventa una ganancia. Sin `GAIN` real en la cabecera de ESTA
+    exposición concreta, cae al perfil de instrumento real guardado por
+    el usuario (`services.instrument_profiles`, Fase 10.2) si eligió uno
+    en `params["instrument_profile"]` -- la cabecera de la exposición
+    concreta siempre tiene prioridad sobre un perfil general guardado.
+    Sin ninguno de los dos, cae al modelo aproximado `sqrt(ADU)`
+    (equivalente a asumir gain=1 e-/ADU sin ruido de lectura) ya usado en
+    todo el taller, y lo declara como tal (`None`) en vez de aparentar
+    precisión que no tiene."""
     header = params.get("_header")
     gain = _header_positive_float(header, "GAIN")
-    if gain is None:
-        return np.sqrt(np.clip(data, 1.0, None)), None
-    read_noise = _header_positive_float(header, "RDNOISE") or 0.0
-    note = f"GAIN={gain:.3g} e-/ADU" + (f", RDNOISE={read_noise:.3g} e-" if read_noise else "")
-    return ccd_noise_adu(data, gain_e_per_adu=gain, read_noise_e=read_noise), note
+    if gain is not None:
+        read_noise = _header_positive_float(header, "RDNOISE") or 0.0
+        note = f"GAIN={gain:.3g} e-/ADU" + (f", RDNOISE={read_noise:.3g} e-" if read_noise else "")
+        return ccd_noise_adu(data, gain_e_per_adu=gain, read_noise_e=read_noise), note
+
+    profile_name = params.get("instrument_profile")
+    if profile_name and profile_name != _NO_INSTRUMENT_PROFILE:
+        profile = params.get("_instrument_profiles", {}).get(profile_name)
+        if profile is not None:
+            note = (
+                f"GAIN={profile.gain_e_per_adu:.3g} e-/ADU, RDNOISE={profile.read_noise_e:.3g} e- "
+                f"(perfil de instrumento «{profile_name}»)"
+            )
+            return ccd_noise_adu(data, gain_e_per_adu=profile.gain_e_per_adu, read_noise_e=profile.read_noise_e), note
+
+    return np.sqrt(np.clip(data, 1.0, None)), None
 
 
 def _run_quality_map(data: np.ndarray, params: dict) -> ProcessResult:
@@ -898,7 +915,18 @@ def _run_image_statistics(data: np.ndarray, params: dict) -> ProcessResult:
     return ProcessResult(output_data=bar_chart, summary=summary, log_lines=log_lines)
 
 
-def build_process_registry() -> list[ProcessDefinition]:
+_NO_INSTRUMENT_PROFILE = "(usar cabecera FITS)"
+
+
+def build_process_registry(*, profile_store: InstrumentProfileStore | None = None) -> list[ProcessDefinition]:
+    """`profile_store` es inyectable para pruebas (mismo patrón que
+    `ReduceSessionDialog`) -- por defecto lee los perfiles de instrumento
+    REALES ya guardados por el usuario (`services.instrument_profiles`,
+    Fase 10.2) para ofrecerlos como respaldo de GAIN/RDNOISE en los
+    procesos de espectroscopía que todavía no tienen esos valores en la
+    cabecera FITS de la exposición concreta."""
+    profile_names = tuple(sorted((profile_store or InstrumentProfileStore()).load_all().keys()))
+    instrument_profile_choices = (_NO_INSTRUMENT_PROFILE, *profile_names)
     return [
         ProcessDefinition(
             process_id="reduction.overscan",
@@ -1086,6 +1114,11 @@ def build_process_registry() -> list[ProcessDefinition]:
                 ParameterSpec("fit_degree", "Grado del ajuste de traza", "int", 3, minimum=1, maximum=10),
                 ParameterSpec("aperture_half_width", "Semiancho de apertura (px)", "float", 4.0, minimum=1.0, maximum=100.0),
                 ParameterSpec("optimal_extraction", "Extracción óptima (Horne)", "bool", True),
+                ParameterSpec(
+                    "instrument_profile", "Perfil de instrumento (respaldo GAIN/RDNOISE)", "choice",
+                    _NO_INSTRUMENT_PROFILE, choices=instrument_profile_choices,
+                    help_text="Solo se usa si la cabecera FITS de esta exposición no trae GAIN real -- la cabecera siempre tiene prioridad.",
+                ),
             ),
             run=_run_spectral_trace,
             requires_picking=1,
@@ -1108,6 +1141,11 @@ def build_process_registry() -> list[ProcessDefinition]:
                 ParameterSpec("bg_offset", "Desplazamiento del fondo (px)", "float", 10.0, minimum=1.0, maximum=200.0),
                 ParameterSpec("bg_half_width", "Semiancho del fondo (px)", "float", 4.0, minimum=1.0, maximum=100.0),
                 ParameterSpec("optimal_extraction", "Extracción óptima (Horne)", "bool", True),
+                ParameterSpec(
+                    "instrument_profile", "Perfil de instrumento (respaldo GAIN/RDNOISE)", "choice",
+                    _NO_INSTRUMENT_PROFILE, choices=instrument_profile_choices,
+                    help_text="Solo se usa si la cabecera FITS de esta exposición no trae GAIN real -- la cabecera siempre tiene prioridad.",
+                ),
             ),
             run=_run_multi_aperture,
             requires_picking=0,
@@ -1120,6 +1158,11 @@ def build_process_registry() -> list[ProcessDefinition]:
             parameters=(
                 ParameterSpec("bg_offset", "Desplazamiento del fondo (px)", "float", 20.0, minimum=1.0, maximum=400.0),
                 ParameterSpec("bg_half_width", "Semiancho del fondo (px)", "float", 4.0, minimum=1.0, maximum=100.0),
+                ParameterSpec(
+                    "instrument_profile", "Perfil de instrumento (respaldo GAIN/RDNOISE)", "choice",
+                    _NO_INSTRUMENT_PROFILE, choices=instrument_profile_choices,
+                    help_text="Solo se usa si la cabecera FITS de esta exposición no trae GAIN real -- la cabecera siempre tiene prioridad.",
+                ),
             ),
             run=_run_extended_extraction,
             requires_picking=0,
@@ -1133,6 +1176,11 @@ def build_process_registry() -> list[ProcessDefinition]:
                 ParameterSpec("window_halfwidth_px", "Semiancho de ventana (px)", "float", 15.0, minimum=1.0, maximum=500.0),
                 ParameterSpec("degree", "Grado del ajuste de continuo", "int", 3, minimum=1, maximum=10),
                 ParameterSpec("sigma_clip", "Umbral σ de rechazo del continuo", "float", 2.5, minimum=0.5, maximum=10.0),
+                ParameterSpec(
+                    "instrument_profile", "Perfil de instrumento (respaldo GAIN/RDNOISE)", "choice",
+                    _NO_INSTRUMENT_PROFILE, choices=instrument_profile_choices,
+                    help_text="Solo se usa si la cabecera FITS de esta exposición no trae GAIN real -- la cabecera siempre tiene prioridad.",
+                ),
             ),
             run=_run_line_measurement_central_row,
             requires_picking=1,
@@ -1148,6 +1196,11 @@ def build_process_registry() -> list[ProcessDefinition]:
                 ParameterSpec("degree", "Grado del ajuste de continuo", "int", 3, minimum=1, maximum=10),
                 ParameterSpec("sigma_clip", "Umbral σ de rechazo del continuo", "float", 2.5, minimum=0.5, maximum=10.0),
                 ParameterSpec("min_significance_sigma", "Umbral de detección (σ)", "float", 3.0, minimum=1.0, maximum=50.0),
+                ParameterSpec(
+                    "instrument_profile", "Perfil de instrumento (respaldo GAIN/RDNOISE)", "choice",
+                    _NO_INSTRUMENT_PROFILE, choices=instrument_profile_choices,
+                    help_text="Solo se usa si la cabecera FITS de esta exposición no trae GAIN real -- la cabecera siempre tiene prioridad.",
+                ),
             ),
             run=_run_line_profile_fit_central_row,
             requires_picking=1,

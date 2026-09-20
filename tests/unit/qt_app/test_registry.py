@@ -737,3 +737,78 @@ def test_quality_map_detects_cosmic_rays_only_when_requested():
     result_on = process.run(data, params)
     assert result_on.output_data[15, 15] != 0.0
     assert any("COSMIC_RAY" in line for line in result_on.log_lines)
+
+
+def test_build_process_registry_offers_saved_instrument_profiles_as_choices(tmp_path):
+    from services.instrument_profiles import InstrumentProfile, InstrumentProfileStore
+
+    store = InstrumentProfileStore(tmp_path / "profiles.json")
+    store.save(InstrumentProfile(name="ZWO ASI294MM", gain_e_per_adu=1.2, read_noise_e=3.0))
+
+    registry = build_process_registry(profile_store=store)
+    trace_process = next(p for p in registry if p.process_id == "spectroscopy.trace")
+    profile_param = next(p for p in trace_process.parameters if p.name == "instrument_profile")
+
+    assert "ZWO ASI294MM" in profile_param.choices
+    assert profile_param.default == "(usar cabecera FITS)"
+
+
+def test_uncertainty_adu_falls_back_to_a_saved_instrument_profile_without_a_real_gain_header():
+    from services.instrument_profiles import InstrumentProfile
+
+    data = np.array([100.0, 400.0])
+    profiles = {"ZWO ASI294MM": InstrumentProfile(name="ZWO ASI294MM", gain_e_per_adu=1.2, read_noise_e=3.0)}
+
+    uncertainty, note = _uncertainty_adu(
+        data, {"_header": {}, "instrument_profile": "ZWO ASI294MM", "_instrument_profiles": profiles}
+    )
+
+    expected = np.sqrt(data * 1.2 + 3.0**2) / 1.2
+    np.testing.assert_allclose(uncertainty, expected)
+    assert "ZWO ASI294MM" in note
+    assert "GAIN=1.2" in note
+
+
+def test_uncertainty_adu_prefers_real_header_gain_over_a_saved_profile():
+    from services.instrument_profiles import InstrumentProfile
+
+    data = np.array([100.0])
+    profiles = {"ZWO ASI294MM": InstrumentProfile(name="ZWO ASI294MM", gain_e_per_adu=1.2, read_noise_e=3.0)}
+
+    uncertainty, note = _uncertainty_adu(
+        data, {"_header": {"GAIN": 2.0}, "instrument_profile": "ZWO ASI294MM", "_instrument_profiles": profiles}
+    )
+
+    expected = np.sqrt(data * 2.0) / 2.0
+    np.testing.assert_allclose(uncertainty, expected)
+    assert "GAIN=2" in note
+    assert "perfil" not in note
+
+
+def test_uncertainty_adu_ignores_the_sentinel_no_profile_choice():
+    data = np.array([100.0])
+
+    uncertainty, note = _uncertainty_adu(data, {"_header": {}, "instrument_profile": "(usar cabecera FITS)", "_instrument_profiles": {}})
+
+    np.testing.assert_allclose(uncertainty, np.sqrt(data))
+    assert note is None
+
+
+def test_spectral_trace_process_reports_a_saved_instrument_profile_in_the_summary():
+    from services.instrument_profiles import InstrumentProfile
+
+    height, width = 41, 150
+    yy, _xx = np.mgrid[0:height, 0:width]
+    profile_shape = np.exp(-(((yy - 20.0) ** 2)) / (2 * 2.0**2))
+    profile_shape /= profile_shape.sum(axis=0, keepdims=True)
+    data = 80.0 + 3000.0 * profile_shape
+
+    process = _get("spectroscopy.trace")
+    params = _default_params(process)
+    params["_picked_points"] = [(0.0, 20.0)]
+    params["_header"] = {}
+    params["instrument_profile"] = "ZWO ASI294MM"
+    params["_instrument_profiles"] = {"ZWO ASI294MM": InstrumentProfile(name="ZWO ASI294MM", gain_e_per_adu=1.2, read_noise_e=3.0)}
+    result = process.run(data, params)
+
+    assert "perfil de instrumento «ZWO ASI294MM»" in result.summary

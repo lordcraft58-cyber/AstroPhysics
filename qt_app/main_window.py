@@ -65,6 +65,7 @@ from qt_app.tutorial.tutorial_overlay import TutorialOverlay
 from qt_app.tutorial.tutorial_steps import build_tutorial_steps
 from qt_app.workers import CallableWorker, ProcessWorker
 from services.app_preferences import AppPreferencesStore
+from services.instrument_profiles import InstrumentProfileStore
 from services.discovery_service import DiscoveryJob, DiscoveryParams
 from services.session_state import SessionState
 
@@ -80,9 +81,10 @@ logger = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, *, preferences: AppPreferencesStore | None = None):
+    def __init__(self, *, preferences: AppPreferencesStore | None = None, instrument_profile_store: InstrumentProfileStore | None = None):
         super().__init__()
         self.preferences = preferences or AppPreferencesStore()
+        self.instrument_profile_store = instrument_profile_store or InstrumentProfileStore()
         self.setWindowTitle(APP_TITLE)
         self.resize(1440, 920)
         self.setStyleSheet(build_stylesheet(DARK))
@@ -96,7 +98,7 @@ class MainWindow(QMainWindow):
         self.mdi.setBackground(QColor(DARK.bg_input))
         self.setCentralWidget(self.mdi)
 
-        self._processes: list[ProcessDefinition] = build_process_registry()
+        self._processes: list[ProcessDefinition] = build_process_registry(profile_store=self.instrument_profile_store)
         self._process_by_id = {p.process_id: p for p in self._processes}
         self._active_worker: ProcessWorker | None = None
 
@@ -1289,6 +1291,7 @@ class MainWindow(QMainWindow):
         params["_wcs"] = view.wcs
         params["_header"] = view.header
         params["_wavelength_solution"] = view.fitted_wavelength_solution
+        params["_instrument_profiles"] = self.instrument_profile_store.load_all()
 
         worker = ProcessWorker(process.run, view.data, params, self)
         worker.finished_ok.connect(lambda result, p=process, v=view: self._on_process_finished(p, v, result))
