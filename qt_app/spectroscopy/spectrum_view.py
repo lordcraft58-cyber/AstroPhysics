@@ -45,8 +45,18 @@ def _format_tick(value: float, span: float) -> str:
 
 class SpectrumView(QWidget):
     value_hovered = Signal(float, float)
-    """`(x, y)` bajo el cursor en unidades de datos reales -- `nan` si el
-    cursor cae fuera del área de la gráfica."""
+    """`(x, y)` bajo el cursor en unidades de datos reales (posición
+    continua, interpolada) -- `nan` si el cursor cae fuera del área de
+    la gráfica."""
+    point_hovered = Signal(float, float, float, str, str)
+    """`(x, y, y_error, x_label, y_label)` del punto REAL más cercano de
+    la primera serie con datos finitos bajo el cursor -- nunca un valor
+    interpolado entre dos puntos reales (§29: el tooltip debe mostrar
+    píxel/λ, flujo, error y S/N reales, no una lectura continua sin
+    sentido físico entre dos medidas). `y_error` es `NaN` si esa serie no
+    lleva incertidumbre real (`SpectrumSeries.y_error is None`). Todos
+    `NaN` si el cursor cae fuera del área de la gráfica o ninguna serie
+    tiene datos finitos."""
 
     def __init__(self, plot_data: SpectrumPlotData, title: str, parent=None):
         super().__init__(parent)
@@ -228,6 +238,25 @@ class SpectrumView(QWidget):
             painter.drawText(QRectF(text_left, top, text_width, row_height), Qt.AlignmentFlag.AlignLeft, series.label)
             top += row_height
 
+    # ---------------------------------------------------------------- lectura en vivo
+    def _nearest_real_point(self, x_query: float) -> tuple[float, float, float] | None:
+        """`(x_real, y_real, y_error_real)` del punto real más cercano a
+        `x_query` en la primera serie con algún dato finito -- `y_error_real`
+        es `NaN` si esa serie no lleva incertidumbre real. `None` si
+        ninguna serie tiene ningún punto finito."""
+        for series in self._data.series:
+            finite = np.isfinite(series.x) & np.isfinite(series.y)
+            if not np.any(finite):
+                continue
+            xs, ys = series.x[finite], series.y[finite]
+            idx = int(np.argmin(np.abs(xs - x_query)))
+            y_error = float("nan")
+            if series.y_error is not None:
+                errors = np.asarray(series.y_error)[finite]
+                y_error = float(errors[idx])
+            return float(xs[idx]), float(ys[idx]), y_error
+        return None
+
     # ---------------------------------------------------------------- interacción
     def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802 -- override de Qt
         factor = _ZOOM_IN_FACTOR if event.angleDelta().y() > 0 else _ZOOM_OUT_FACTOR
@@ -251,6 +280,12 @@ class SpectrumView(QWidget):
         x, y = self._pixel_to_data(pos.x(), pos.y())
         inside = self._plot_rect().contains(pos)
         self.value_hovered.emit(x if inside else float("nan"), y if inside else float("nan"))
+
+        nearest = self._nearest_real_point(x) if inside else None
+        if nearest is not None:
+            self.point_hovered.emit(*nearest, self._data.x_label, self._data.y_label)
+        else:
+            self.point_hovered.emit(float("nan"), float("nan"), float("nan"), self._data.x_label, self._data.y_label)
 
         if self._panning and self._pan_last_pixel is not None:
             rect = self._plot_rect()

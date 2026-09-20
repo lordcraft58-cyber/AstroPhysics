@@ -400,7 +400,7 @@ class MainWindow(QMainWindow):
 
     def add_spectrum_window(self, plot_data: SpectrumPlotData, title: str) -> QMdiSubWindow:
         view = SpectrumView(plot_data, title, self.mdi)
-        view.value_hovered.connect(self._on_spectrum_value_hovered)
+        view.point_hovered.connect(self._on_spectrum_point_hovered)
 
         sub_window = QMdiSubWindow()
         sub_window.setWidget(view)
@@ -413,11 +413,18 @@ class MainWindow(QMainWindow):
         logger.info("Espectro: %s (%d serie(s)) -- rueda para acercar/alejar, arrastrar para desplazar, doble clic para restablecer la vista.", title, len(plot_data.series))
         return sub_window
 
-    def _on_spectrum_value_hovered(self, x: float, y: float) -> None:
+    def _on_spectrum_point_hovered(self, x: float, y: float, y_error: float, x_label: str, y_label: str) -> None:
+        """Lectura en vivo del punto REAL más cercano bajo el cursor
+        (§29): píxel o longitud de onda según lo que el proceso haya
+        calibrado de verdad (`x_label`), flujo, error real si lo hay, y
+        S/N derivada -- nunca fabrica un error o una S/N que el proceso
+        de origen no calculó."""
         if x != x:  # NaN fuera del área de la gráfica
             self.readout_label.setText("X: --  Y: --")
             return
-        self.readout_label.setText(f"X: {x:.2f}  Y: {y:.2f}")
+        error_text = f"{y_error:.3g}" if y_error == y_error else "N/D"
+        snr_text = f"{y / y_error:.1f}" if (y_error == y_error and y_error > 0) else "N/D"
+        self.readout_label.setText(f"{x_label}: {x:.3f}  {y_label}: {y:.2f}  Error: {error_text}  S/N: {snr_text}")
 
     def _active_image_view(self) -> ImageView | None:
         sub_window = self.mdi.activeSubWindow()

@@ -25,6 +25,12 @@ class SpectrumSeries:
     style: str = "line"
     """"line" (trazo continuo), "dashed" (p. ej. un ajuste superpuesto al
     dato real) o "points" (marcadores sin unir)."""
+    y_error: np.ndarray | None = None
+    """Incertidumbre real por punto (misma forma que `y`), cuando el
+    proceso que construyó esta serie ya la calculó (p. ej.
+    `_uncertainty_adu`) -- `None`, nunca un valor inventado, si no hay
+    incertidumbre real disponible. La usa el tooltip del visor (§29) para
+    mostrar error y S/N reales bajo el cursor, además de flujo."""
 
 
 @dataclass(frozen=True)

@@ -496,7 +496,7 @@ def _run_spectral_trace(data: np.ndarray, params: dict) -> ProcessResult:
 
     pixel = np.arange(spectrum.flux.size, dtype=np.float64)
     plot_data = SpectrumPlotData(
-        series=(SpectrumSeries(label="Flujo extraído", x=pixel, y=spectrum.flux),),
+        series=(SpectrumSeries(label="Flujo extraído", x=pixel, y=spectrum.flux, y_error=spectrum.flux_uncertainty),),
         x_label="Píxel (dispersión)", y_label="Flujo extraído (ADU)",
     )
     method = "óptima (Horne 1986)" if params["optimal_extraction"] else "suma simple"
@@ -602,7 +602,7 @@ def _run_multi_aperture(data: np.ndarray, params: dict) -> ProcessResult:
             SpectrumSeries(
                 label=f"Apertura {a.aperture_id} (y={a.initial_center_px:.1f} px)",
                 x=np.arange(a.spectrum.flux.size, dtype=np.float64), y=a.spectrum.flux,
-                color=series_color(i),
+                y_error=a.spectrum.flux_uncertainty, color=series_color(i),
             )
             for i, a in enumerate(result.apertures)
         ),
@@ -681,7 +681,7 @@ def _run_extended_extraction(data: np.ndarray, params: dict) -> ProcessResult:
             SpectrumSeries(
                 label=f"{e.region.label} (filas {e.region.row_start:.1f}-{e.region.row_end:.1f} px)",
                 x=np.arange(e.spectrum.flux.size, dtype=np.float64), y=e.spectrum.flux,
-                color=series_color(i),
+                y_error=e.spectrum.flux_uncertainty, color=series_color(i),
             )
             for i, e in enumerate(result.extractions)
         ),
@@ -720,12 +720,14 @@ def _run_continuum_fit_central_row(data: np.ndarray, params: dict) -> ProcessRes
     row_index = data.shape[0] // 2
     flux = data[row_index, :].astype(np.float64)
     pixel = np.arange(flux.size, dtype=np.float64)
+    uncertainty_full, _gain_note = _uncertainty_adu(data, params)
+    flux_uncertainty = uncertainty_full[row_index, :].astype(np.float64)
 
     fit = fit_continuum(pixel, flux, degree=int(params["degree"]), sigma_clip=params["sigma_clip"])
     summary = f"Continuo ajustado sobre la fila central (grado {int(params['degree'])}); RMS={fit.rms_residual:.2f}, {fit.n_rejected} píxel(es) rechazados."
     plot_data = SpectrumPlotData(
         series=(
-            SpectrumSeries(label="Flujo", x=pixel, y=flux),
+            SpectrumSeries(label="Flujo", x=pixel, y=flux, y_error=flux_uncertainty),
             SpectrumSeries(label="Continuo ajustado", x=pixel, y=fit.continuum, color=series_color(1), style="dashed"),
         ),
         x_label="Píxel (fila central)", y_label="Flujo (ADU)",
@@ -794,7 +796,7 @@ def _run_line_measurement_central_row(data: np.ndarray, params: dict) -> Process
     )
     plot_data = SpectrumPlotData(
         series=(
-            SpectrumSeries(label="Flujo", x=pixel, y=flux),
+            SpectrumSeries(label="Flujo", x=pixel, y=flux, y_error=flux_uncertainty),
             SpectrumSeries(label="Continuo ajustado", x=pixel, y=continuum_fit.continuum, color=series_color(1), style="dashed"),
         ),
         x_label="Píxel (fila central)", y_label="Flujo (ADU)",
@@ -930,7 +932,7 @@ def _run_line_profile_fit_central_row(data: np.ndarray, params: dict) -> Process
 
     plot_data = SpectrumPlotData(
         series=(
-            SpectrumSeries(label="Flujo", x=pixel, y=flux),
+            SpectrumSeries(label="Flujo", x=pixel, y=flux, y_error=flux_uncertainty),
             SpectrumSeries(label="Continuo ajustado", x=pixel, y=continuum_fit.continuum, color=series_color(1), style="dashed"),
         ),
         x_label="Píxel (fila central)", y_label="Flujo (ADU)",
@@ -960,6 +962,8 @@ def _run_identify_object_lines(data: np.ndarray, params: dict) -> ProcessResult:
     flux = data[row_index, :].astype(np.float64)
     pixel = np.arange(flux.size, dtype=np.float64)
     wavelength = np.asarray(solution.pixel_to_wavelength(pixel), dtype=np.float64)
+    uncertainty_full, _gain_note = _uncertainty_adu(data, params)
+    flux_uncertainty = uncertainty_full[row_index, :].astype(np.float64)
 
     continuum_fit = fit_continuum(wavelength, flux, degree=int(params["degree"]), sigma_clip=params["sigma_clip"], reject=params["continuum_reject"])
     catalog = _OBJECT_LINE_CATALOGS[params["catalog"]]
@@ -1009,7 +1013,7 @@ def _run_identify_object_lines(data: np.ndarray, params: dict) -> ProcessResult:
     )
     plot_data = SpectrumPlotData(
         series=(
-            SpectrumSeries(label="Flujo", x=wavelength, y=flux),
+            SpectrumSeries(label="Flujo", x=wavelength, y=flux, y_error=flux_uncertainty),
             SpectrumSeries(label="Continuo ajustado", x=wavelength, y=continuum_fit.continuum, color=series_color(1), style="dashed"),
         ),
         x_label="Longitud de onda (Å)", y_label="Flujo (ADU)", markers=markers,

@@ -179,6 +179,62 @@ def test_mouse_move_outside_plot_area_emits_nan(qapp):
     assert received["x"] != received["x"]  # NaN
 
 
+def test_point_hovered_snaps_to_the_nearest_real_data_point_with_error_and_snr(qapp):
+    # §29: el tooltip debe reportar el punto REAL más cercano (nunca una
+    # lectura interpolada entre dos medidas), con su error real y la S/N
+    # derivada de ese error real.
+    x = np.array([6000.0, 6002.0, 6004.0, 6006.0])
+    y = np.array([100.0, 150.0, 120.0, 90.0])
+    y_error = np.array([5.0, 6.0, 4.0, 3.0])
+    plot_data = SpectrumPlotData(
+        series=(SpectrumSeries(label="Flujo", x=x, y=y, y_error=y_error),),
+        x_label="Longitud de onda (Å)", y_label="Flujo (ADU)",
+    )
+    view = _view(qapp, plot_data)
+    received: dict = {}
+    view.point_hovered.connect(lambda x, y, y_error, x_label, y_label: received.update(
+        x=x, y=y, y_error=y_error, x_label=x_label, y_label=y_label
+    ))
+
+    # cursor cerca del segundo punto real (6002.0), pero no exactamente
+    # encima -- debe reportar el punto REAL más cercano, no una posición
+    # interpolada.
+    pixel = view._data_to_pixel(6002.7, 145.0)
+    move = QMouseEvent(QMouseEvent.Type.MouseMove, pixel, Qt.MouseButton.NoButton, Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
+    view.mouseMoveEvent(move)
+
+    assert received["x"] == pytest.approx(6002.0)
+    assert received["y"] == pytest.approx(150.0)
+    assert received["y_error"] == pytest.approx(6.0)
+    assert received["x_label"] == "Longitud de onda (Å)"
+    assert received["y_label"] == "Flujo (ADU)"
+
+
+def test_point_hovered_reports_nan_error_when_the_series_has_no_real_uncertainty(qapp):
+    view = _view(qapp)  # _linear_plot_data no lleva y_error
+    received: dict = {}
+    view.point_hovered.connect(lambda x, y, y_error, x_label, y_label: received.update(y_error=y_error))
+
+    pixel = view._data_to_pixel(6010.0, 100.0)
+    move = QMouseEvent(QMouseEvent.Type.MouseMove, pixel, Qt.MouseButton.NoButton, Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
+    view.mouseMoveEvent(move)
+
+    assert received["y_error"] != received["y_error"]  # NaN honesto, no un error inventado
+
+
+def test_point_hovered_emits_all_nan_outside_the_plot_area(qapp):
+    view = _view(qapp)
+    received: dict = {}
+    view.point_hovered.connect(lambda x, y, y_error, x_label, y_label: received.update(x=x, y=y, y_error=y_error))
+
+    move = QMouseEvent(QMouseEvent.Type.MouseMove, QPointF(2.0, 2.0), Qt.MouseButton.NoButton, Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
+    view.mouseMoveEvent(move)
+
+    assert received["x"] != received["x"]
+    assert received["y"] != received["y"]
+    assert received["y_error"] != received["y_error"]
+
+
 def test_series_with_nan_gap_builds_a_broken_path_without_crashing(qapp):
     x = np.array([0.0, 1.0, 2.0, 3.0, 4.0])
     y = np.array([1.0, 2.0, np.nan, 4.0, 5.0])
