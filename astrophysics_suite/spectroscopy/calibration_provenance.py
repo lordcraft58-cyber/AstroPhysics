@@ -84,6 +84,13 @@ class WavelengthCalibrationRecord:
     """P. ej. `"Ne"`, `"Ar"`, `"HeNeAr"` -- solo con `LAMP_REAL`."""
     reference_object: str | None = None
     """Solo con `REFERENCE_STAR`: qué estrella se usó."""
+    offset_only_reidentified: bool = False
+    """`True` cuando un perfil `REUSED_INSTRUMENTAL` no se reutilizó tal
+    cual, sino que se le recalculó SOLO el desplazamiento global A0 por
+    correlación cruzada (`services.spectral_calibration_profiles.
+    reidentify_profile_offset`, §12) -- la forma del polinomio sigue
+    siendo la validada originalmente, sin nueva evidencia de líneas.
+    Dispara el aviso de posible deriva mecánica/térmica del encargo."""
 
     @property
     def is_synthetic(self) -> bool:
@@ -107,6 +114,8 @@ class WavelengthCalibrationRecord:
             f"ajuste de grado {self.solution.degree} con {self.n_lines_used} línea(s) "
             f"(rechazadas: {self.n_lines_rejected}), RMS = {self.solution.rms_residual:.4f}"
         )
+        if self.offset_only_reidentified:
+            lines.append("solo se recalculó el desplazamiento global (A0); la forma del polinomio no es nueva evidencia")
         return tuple(lines)
 
 
@@ -120,6 +129,12 @@ def build_wavelength_provenance(record: WavelengthCalibrationRecord, *, pipeline
         warnings.append(
             "calibración inferida de una estrella de referencia, no de una lámpara: "
             "la posición de una línea estelar depende también de velocidad radial y ensanchamiento"
+        )
+    if record.offset_only_reidentified:
+        warnings.append(
+            "solución instrumental reutilizada con solo el desplazamiento global recalculado (§12): "
+            "un cambio mecánico o térmico real del instrumento puede haber desplazado el espectro "
+            "de una forma que una correlación cruzada de un solo desplazamiento no puede detectar"
         )
     min_lines = record.solution.degree * MIN_LINES_PER_DEGREE
     if record.n_lines_used < min_lines and record.solution.degree > 0:

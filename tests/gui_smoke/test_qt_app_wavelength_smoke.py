@@ -253,6 +253,68 @@ def test_save_calibrated_spectrum_writes_a_real_fits_with_the_true_wcs(qapp, mai
     np.testing.assert_allclose(wavelength, expected, atol=1e-3)
 
 
+def test_save_use_and_reidentify_a_spectral_calibration_profile(qapp, main_window, tmp_path):
+    """§12 de extremo a extremo: ajustar con líneas reales, guardar como
+    perfil, y reutilizarlo -- tal cual y con solo el offset recalculado
+    -- desde una segunda ventana, sin repetir la identificación de
+    líneas."""
+    from services.spectral_calibration_profiles import SpectralCalibrationProfileStore
+    from qt_app.spectroscopy.wavelength_fit_dialog import WavelengthFitDialog
+
+    profile_store = SpectralCalibrationProfileStore(tmp_path / "profiles.json")
+
+    data = _synthetic_arc_row()
+    sub_window = main_window.add_image_window(data, "arc_profile_source.fits")
+    main_window.mdi.setActiveSubWindow(sub_window)
+    qapp.processEvents()
+    row_index = data.shape[0] // 2
+    spectrum = data[row_index, :].astype(float)
+
+    from astrophysics_suite.spectroscopy.wavelength import find_arc_lines
+
+    lines = find_arc_lines(spectrum)
+    dialog = WavelengthFitDialog(lines, main_window, spectrum=spectrum, profile_store=profile_store)
+    for row in range(dialog.table.rowCount()):
+        dialog.table.item(row, 2).setText(str(_TRUE_WAVELENGTHS[row]))
+    dialog._on_fit()
+    assert dialog._last_record is not None
+
+    from PySide6.QtWidgets import QInputDialog
+
+    original_get_text = QInputDialog.getText
+    QInputDialog.getText = staticmethod(lambda *a, **k: ("Cámara de prueba -- red 1200", True))
+    try:
+        dialog._on_save_profile()
+    finally:
+        QInputDialog.getText = original_get_text
+
+    saved = profile_store.load_all()
+    assert "Cámara de prueba -- red 1200" in saved
+    assert saved["Cámara de prueba -- red 1200"].reference_spectrum is not None
+
+    # segunda ventana/diálogo, SIN ajustar líneas: reutiliza el perfil tal cual
+    reuse_dialog = WavelengthFitDialog([], main_window, spectrum=spectrum, profile_store=profile_store)
+    reuse_dialog.profile_combo.setCurrentText("Cámara de prueba -- red 1200")
+    captured_reuse = {}
+    reuse_dialog.fitted.connect(lambda solution, table, record: captured_reuse.update(solution=solution, record=record))
+    reuse_dialog._on_use_profile()
+
+    assert captured_reuse["record"].source.value == "reused_instrumental"
+    assert not captured_reuse["record"].offset_only_reidentified
+    predicted = captured_reuse["solution"].pixel_to_wavelength(110.0)
+    assert predicted == pytest.approx(4358.3, abs=1.0)
+
+    # tercera ventana: recalcula SOLO el offset contra el mismo espectro (desplazamiento real = 0)
+    offset_dialog = WavelengthFitDialog([], main_window, spectrum=spectrum, profile_store=profile_store)
+    offset_dialog.profile_combo.setCurrentText("Cámara de prueba -- red 1200")
+    captured_offset = {}
+    offset_dialog.fitted.connect(lambda solution, table, record: captured_offset.update(solution=solution, record=record))
+    offset_dialog._on_reidentify_offset()
+
+    assert captured_offset["record"].offset_only_reidentified
+    assert captured_offset["solution"].reference_pixel_shift == pytest.approx(0.0, abs=0.5)
+
+
 def test_save_calibrated_spectrum_without_a_calibration_warns_instead_of_crashing(qapp, main_window):
     data = np.full((21, 300), 100.0)
     sub_window = main_window.add_image_window(data, "no_calibration_yet.fits")

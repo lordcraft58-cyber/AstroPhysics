@@ -16,9 +16,20 @@ propone una longitud de onda por línea detectada -- **propone, no
 aplica**: el usuario sigue viendo y pudiendo corregir cada celda antes
 de pulsar "Ajustar solución", la etapa de confirmación que pide el
 encargo explícitamente.
+
+Perfiles de instrumento (§12): además de ajustar una calibración nueva
+desde cero, el usuario puede reutilizar una solución ya validada para
+esta configuración de instrumento -- tal cual ("Usar perfil tal cual",
+`CalibrationSource.REUSED_INSTRUMENTAL`), o recalculando SOLO el
+desplazamiento global A0 por correlación cruzada contra el espectro de
+lámpara guardado en el perfil ("Recalcular solo el offset A0"), nunca
+un reajuste completo sin nueva evidencia de líneas. `services.
+spectral_calibration_profiles` avisa explícitamente del riesgo de
+deriva mecánica/térmica en ese segundo caso.
 """
 from __future__ import annotations
 
+import numpy as np
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
@@ -28,6 +39,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QPushButton,
     QSpinBox,
@@ -40,8 +52,19 @@ from astrophysics_suite.spectroscopy.calibration_provenance import CalibrationSo
 from astrophysics_suite.spectroscopy.line_catalog import arc_catalog, match_lines_to_catalog
 from astrophysics_suite.spectroscopy.wavelength import ArcLine, fit_wavelength_solution
 from astrophysics_suite.tables.table import Table
+from services.spectral_calibration_profiles import (
+    SpectralCalibrationProfileStore,
+    profile_from_record,
+    reidentify_profile_offset,
+)
 
 _LAMP_OPTIONS = ("(sin especificar)", "Ne", "Ar", "He", "HeNeAr")
+_NO_PROFILE = "(ningún perfil)"
+_EMPTY_LINE_TABLE = Table(columns=("line", "pixel", "wavelength", "residual"), units=("", "px", "", ""), rows=())
+"""Tabla vacía para cuando la solución viene de un perfil reutilizado
+(§12): el perfil guarda los coeficientes ya ajustados, no las líneas
+individuales que los produjeron -- una tabla "por línea" inventada aquí
+sería un dato falso."""
 
 
 class WavelengthFitDialog(QDialog):
@@ -52,11 +75,25 @@ class WavelengthFitDialog(QDialog):
     parte de líneas que el usuario ha confirmado a mano, nunca de una
     suposición aceptada en silencio."""
 
-    def __init__(self, lines: list[ArcLine], parent=None):
+    def __init__(
+        self,
+        lines: list[ArcLine],
+        parent=None,
+        *,
+        spectrum: np.ndarray | None = None,
+        profile_store: SpectralCalibrationProfileStore | None = None,
+    ):
         super().__init__(parent)
         self._lines = lines
+        self._spectrum = spectrum
+        """El espectro 1D real (ADU) sobre el que se detectaron `lines`
+        -- se guarda junto con cualquier perfil que el usuario decida
+        persistir (§12), y es contra lo que se correlaciona un
+        perfil ya guardado al recalcular solo su desplazamiento."""
+        self.profile_store = profile_store or SpectralCalibrationProfileStore()
+        self._last_record: WavelengthCalibrationRecord | None = None
         self.setWindowTitle("Calibrar longitud de onda")
-        self.resize(520, 460)
+        self.resize(520, 500)
 
         layout = QVBoxLayout(self)
         hint = QLabel(
@@ -103,6 +140,29 @@ class WavelengthFitDialog(QDialog):
         suggest_grid.addWidget(self.suggest_button, 0, 2, 3, 1)
         layout.addLayout(suggest_grid)
 
+        profile_row = QHBoxLayout()
+        profile_row.addWidget(QLabel("Perfil de instrumento"))
+        self.profile_combo = QComboBox()
+        self.profile_combo.addItem(_NO_PROFILE)
+        self.profile_combo.addItems(sorted(self.profile_store.load_all().keys()))
+        profile_row.addWidget(self.profile_combo, 1)
+        self.use_profile_button = QPushButton("Usar tal cual")
+        self.use_profile_button.setToolTip(
+            "Reutiliza la solución guardada sin recalcular nada (§12) -- se marca como "
+            "REUSED_INSTRUMENTAL, nunca como una calibración recién medida en esta imagen."
+        )
+        self.use_profile_button.clicked.connect(self._on_use_profile)
+        profile_row.addWidget(self.use_profile_button)
+        self.reidentify_button = QPushButton("Recalcular solo offset (A0)")
+        self.reidentify_button.setToolTip(
+            "Recalcula SOLO el desplazamiento global por correlación cruzada contra el espectro de "
+            "lámpara guardado en el perfil -- nunca la forma completa del polinomio sin nueva evidencia. "
+            "Avisa de un posible desplazamiento mecánico/térmico del instrumento."
+        )
+        self.reidentify_button.clicked.connect(self._on_reidentify_offset)
+        profile_row.addWidget(self.reidentify_button)
+        layout.addLayout(profile_row)
+
         self.table = QTableWidget(len(lines), 4, self)
         self.table.setHorizontalHeaderLabels(["Píxel", "Amplitud", "Longitud de onda", "Confianza"])
         for row, line in enumerate(lines):
@@ -124,6 +184,14 @@ class WavelengthFitDialog(QDialog):
         layout.addWidget(self.status_label)
 
         self.button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        self.save_profile_button = self.button_box.addButton(
+            "Guardar como perfil...", QDialogButtonBox.ButtonRole.ActionRole
+        )
+        self.save_profile_button.setToolTip(
+            "Guarda la última solución ajustada por líneas (no una reutilizada) como perfil de "
+            "instrumento reutilizable en próximas sesiones (§12)."
+        )
+        self.save_profile_button.clicked.connect(self._on_save_profile)
         self.fit_button = self.button_box.addButton("Ajustar solución", QDialogButtonBox.ButtonRole.AcceptRole)
         self.fit_button.clicked.connect(self._on_fit)
         self.button_box.rejected.connect(self.reject)
@@ -191,5 +259,69 @@ class WavelengthFitDialog(QDialog):
             solution=solution, source=CalibrationSource.LAMP_REAL, n_lines_used=len(pixels),
             lamp_name=None if lamp_name == "(sin especificar)" else lamp_name,
         )
+        self._last_record = record
         self.fitted.emit(solution, table, record)
+        self.accept()
+
+    def _on_save_profile(self) -> None:
+        if self._last_record is None:
+            self.status_label.setText(
+                "Ajusta primero una solución por líneas (\"Ajustar solución\") -- solo esa se puede "
+                "guardar como perfil, no una ya reutilizada de otro perfil."
+            )
+            return
+        name, ok = QInputDialog.getText(self, "Guardar perfil de calibración espectral", "Nombre de la configuración de instrumento:")
+        name = name.strip()
+        if not ok or not name:
+            return
+        profile = profile_from_record(name, self._last_record, reference_spectrum=self._spectrum)
+        self.profile_store.save(profile)
+        if self.profile_combo.findText(name) < 0:
+            self.profile_combo.addItem(name)
+        self.profile_combo.setCurrentText(name)
+        self.status_label.setText(f"Perfil «{name}» guardado.")
+
+    def _selected_profile(self):
+        name = self.profile_combo.currentText()
+        if name == _NO_PROFILE:
+            self.status_label.setText("Elige un perfil de instrumento guardado antes de reutilizarlo.")
+            return None
+        profile = self.profile_store.load_all().get(name)
+        if profile is None:
+            self.status_label.setText(f"El perfil «{name}» ya no existe -- vuelve a guardarlo si hace falta.")
+            return None
+        return profile
+
+    def _on_use_profile(self) -> None:
+        profile = self._selected_profile()
+        if profile is None:
+            return
+        record = profile.to_record()
+        self.status_label.setText(
+            f"Perfil «{profile.name}» reutilizado tal cual: RMS original={record.solution.rms_residual:.4f} "
+            f"con {record.n_lines_used} línea(s) (sin recalcular nada en esta imagen)."
+        )
+        self._last_record = None  # una solución reutilizada no se puede volver a "guardar como perfil" sin más evidencia
+        self.fitted.emit(record.solution, _EMPTY_LINE_TABLE, record)
+        self.accept()
+
+    def _on_reidentify_offset(self) -> None:
+        profile = self._selected_profile()
+        if profile is None:
+            return
+        if self._spectrum is None:
+            self.status_label.setText("No hay espectro de esta imagen con el que correlacionar el perfil.")
+            return
+        try:
+            record = reidentify_profile_offset(profile, self._spectrum)
+        except ValueError as exc:
+            self.status_label.setText(f"No se pudo recalcular el offset: {exc}")
+            return
+        self.status_label.setText(
+            f"Perfil «{profile.name}»: desplazamiento global recalculado a "
+            f"{record.solution.reference_pixel_shift:.2f} px. AVISO: un cambio mecánico/térmico real del "
+            "instrumento puede haber desplazado el espectro de una forma que esta correlación no detecta."
+        )
+        self._last_record = None
+        self.fitted.emit(record.solution, _EMPTY_LINE_TABLE, record)
         self.accept()

@@ -873,7 +873,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Solo se detectaron {len(lines)} línea(s) de arco en la fila central -- se necesitan más para un ajuste.", 6000)
             return
 
-        dialog = WavelengthFitDialog(lines, self)
+        dialog = WavelengthFitDialog(lines, self, spectrum=spectrum)
         dialog.fitted.connect(
             lambda solution, table, record, v=view, s=spectrum: self._on_wavelength_fitted(v, solution, table, record, s)
         )
