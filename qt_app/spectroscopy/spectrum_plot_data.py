@@ -49,6 +49,51 @@ class SpectrumPlotData:
     x_label: str
     y_label: str
     markers: tuple[SpectrumMarker, ...] = ()
+    x_unit: str = ""
+    """Unidad real del eje X cuando es una longitud de onda -- `"Å"` si
+    el proceso de origen ya calibró de verdad, `""` en cualquier otro
+    caso (píxel sin calibrar, o cualquier eje que no sea una longitud de
+    onda) -- nunca se ofrece un selector de unidades donde no hay una
+    unidad física real que convertir (§15)."""
+
+
+WAVELENGTH_UNITS: tuple[str, ...] = ("Å", "nm", "μm")
+"""Unidades reales soportadas por el selector del visor (§15), en el
+orden en que se muestran."""
+
+_WAVELENGTH_UNIT_FACTORS: dict[str, float] = {"Å": 1.0, "nm": 0.1, "μm": 1.0e-4}
+"""Factor multiplicativo real desde Å -- conversión de unidades pura
+(1 Å = 0.1 nm = 1e-4 μm), no una física distinta."""
+
+_WAVELENGTH_UNIT_LABELS: dict[str, str] = {"Å": "Longitud de onda (Å)", "nm": "Longitud de onda (nm)", "μm": "Longitud de onda (μm)"}
+
+
+def convert_wavelength_plot_data(plot_data: SpectrumPlotData, to_unit: str) -> SpectrumPlotData:
+    """Nuevo `SpectrumPlotData` con el eje X real convertido de la unidad
+    ya declarada en `plot_data.x_unit` a `to_unit` (§15: selector Å/nm/μm) --
+    solo válido cuando `plot_data.x_unit` es una de las unidades de
+    longitud de onda reales conocidas; nunca se llama sobre un eje de
+    píxel (no hay ninguna unidad física que convertir ahí)."""
+    if not plot_data.x_unit:
+        raise ValueError("plot_data.x_unit está vacío -- este eje no es una longitud de onda real, no hay unidad que convertir")
+    if plot_data.x_unit not in _WAVELENGTH_UNIT_FACTORS or to_unit not in _WAVELENGTH_UNIT_FACTORS:
+        raise ValueError(f"unidad desconocida: {plot_data.x_unit!r} -> {to_unit!r} (válidas: {sorted(_WAVELENGTH_UNIT_FACTORS)})")
+    if plot_data.x_unit == to_unit:
+        return plot_data
+    # Å como unidad intermedia: dato_en_angstrom = x / factor(unidad_actual); x_nuevo = dato_en_angstrom * factor(unidad_nueva)
+    scale = _WAVELENGTH_UNIT_FACTORS[to_unit] / _WAVELENGTH_UNIT_FACTORS[plot_data.x_unit]
+    new_series = tuple(
+        SpectrumSeries(label=s.label, x=s.x * scale, y=s.y, color=s.color, style=s.style, y_error=s.y_error)
+        for s in plot_data.series
+    )
+    new_markers = tuple(
+        SpectrumMarker(x_start=m.x_start * scale, x_end=m.x_end * scale, label=m.label, color=m.color)
+        for m in plot_data.markers
+    )
+    return SpectrumPlotData(
+        series=new_series, x_label=_WAVELENGTH_UNIT_LABELS[to_unit], y_label=plot_data.y_label,
+        markers=new_markers, x_unit=to_unit,
+    )
 
 
 _SERIES_PALETTE: tuple[str, ...] = (DARK.accent, DARK.cyan, DARK.amber, DARK.coral, DARK.indigo)

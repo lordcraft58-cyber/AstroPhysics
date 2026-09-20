@@ -16,14 +16,24 @@ from __future__ import annotations
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPainterPath, QPen, QWheelEvent
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QComboBox, QWidget
 
-from qt_app.spectroscopy.spectrum_plot_data import SpectrumMarker, SpectrumPlotData, SpectrumSeries
+from qt_app.spectroscopy.spectrum_plot_data import (
+    WAVELENGTH_UNITS,
+    SpectrumMarker,
+    SpectrumPlotData,
+    SpectrumSeries,
+    convert_wavelength_plot_data,
+)
 from qt_app.theme import DARK
 
 _MARGIN_LEFT = 68.0
 _MARGIN_BOTTOM = 42.0
 _MARGIN_TOP = 18.0
+_MARGIN_TOP_WITH_UNIT_SELECTOR = 44.0
+"""Margen superior mayor cuando hay selector de unidades real (§15) --
+deja sitio real al combo sin que se solape con la leyenda, que también
+se dibuja pegada a la esquina superior del área de la gráfica."""
 _MARGIN_RIGHT = 18.0
 _MIN_RANGE = 1e-9
 _N_TICKS = 5
@@ -68,6 +78,31 @@ class SpectrumView(QWidget):
         self._panning = False
         self._pan_last_pixel: QPointF | None = None
 
+        self.unit_combo: QComboBox | None = None
+        """Selector de unidades real (Å/nm/μm, §15) -- solo existe cuando
+        `plot_data.x_unit` declara una longitud de onda real ya
+        calibrada; para un eje de píxel sin calibrar no hay ninguna
+        unidad física que ofrecer, así que el combo ni se construye."""
+        if plot_data.x_unit:
+            self.unit_combo = QComboBox(self)
+            self.unit_combo.addItems(WAVELENGTH_UNITS)
+            self.unit_combo.setCurrentText(plot_data.x_unit)
+            self.unit_combo.currentTextChanged.connect(self._on_unit_changed)
+            self._position_unit_combo()
+
+    def _on_unit_changed(self, unit: str) -> None:
+        self.set_plot_data(convert_wavelength_plot_data(self._data, unit))
+
+    def _position_unit_combo(self) -> None:
+        if self.unit_combo is None:
+            return
+        self.unit_combo.adjustSize()
+        self.unit_combo.move(int(_MARGIN_LEFT), 4)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 -- override de Qt
+        self._position_unit_combo()
+        super().resizeEvent(event)
+
     # ---------------------------------------------------------------- rango de datos
     def _full_data_range(self) -> tuple[tuple[float, float], tuple[float, float]]:
         if self._data.series:
@@ -91,12 +126,21 @@ class SpectrumView(QWidget):
         self._x_range, self._y_range = self._full_data_range()
         self.update()
 
+    def set_plot_data(self, plot_data: SpectrumPlotData) -> None:
+        """Sustituye los datos graficados (p. ej. tras convertir de
+        unidad, §15) y restablece la vista al rango completo de los
+        datos nuevos -- el zoom/paneo previo ya no tiene sentido en la
+        unidad nueva."""
+        self._data = plot_data
+        self.reset_view()
+
     # ---------------------------------------------------------------- mapeo dato <-> píxel
     def _plot_rect(self) -> QRectF:
+        top_margin = _MARGIN_TOP_WITH_UNIT_SELECTOR if self.unit_combo is not None else _MARGIN_TOP
         return QRectF(
-            _MARGIN_LEFT, _MARGIN_TOP,
+            _MARGIN_LEFT, top_margin,
             max(1.0, self.width() - _MARGIN_LEFT - _MARGIN_RIGHT),
-            max(1.0, self.height() - _MARGIN_TOP - _MARGIN_BOTTOM),
+            max(1.0, self.height() - top_margin - _MARGIN_BOTTOM),
         )
 
     def _data_to_pixel(self, x: float, y: float) -> QPointF:

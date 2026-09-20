@@ -1016,7 +1016,7 @@ def _run_identify_object_lines(data: np.ndarray, params: dict) -> ProcessResult:
             SpectrumSeries(label="Flujo", x=wavelength, y=flux, y_error=flux_uncertainty),
             SpectrumSeries(label="Continuo ajustado", x=wavelength, y=continuum_fit.continuum, color=series_color(1), style="dashed"),
         ),
-        x_label="Longitud de onda (Å)", y_label="Flujo (ADU)", markers=markers,
+        x_label="Longitud de onda (Å)", y_label="Flujo (ADU)", markers=markers, x_unit="Å",
     )
     return ProcessResult(output_data=None, summary=summary, log_lines=log_lines, table=table, artifacts={"spectrum": plot_data})
 

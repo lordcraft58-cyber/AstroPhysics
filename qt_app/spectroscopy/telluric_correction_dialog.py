@@ -221,7 +221,7 @@ class TelluricCorrectionDialog(QDialog):
                     y=self._last_result.corrected_flux, color=series_color(1),
                 ),
             ),
-            x_label="Longitud de onda (Å)", y_label="Cuentas (ADU)",
+            x_label="Longitud de onda (Å)", y_label="Cuentas (ADU)", x_unit="Å",
         )
         main_window = self.parent()
         if main_window is None or not hasattr(main_window, "add_spectrum_window"):

@@ -235,6 +235,28 @@ def test_point_hovered_emits_all_nan_outside_the_plot_area(qapp):
     assert received["y_error"] != received["y_error"]
 
 
+def test_unit_selector_is_absent_for_a_pixel_axis(qapp):
+    view = _view(qapp)  # _linear_plot_data no lleva x_unit real
+    assert view.unit_combo is None
+
+
+def test_unit_selector_appears_and_converts_the_real_x_axis(qapp):
+    plot_data = SpectrumPlotData(
+        series=(SpectrumSeries(label="Flujo", x=np.array([6000.0, 6500.0]), y=np.array([100.0, 120.0])),),
+        x_label="Longitud de onda (Å)", y_label="Flujo (ADU)", x_unit="Å",
+    )
+    view = _view(qapp, plot_data)
+    assert view.unit_combo is not None
+    assert view.unit_combo.currentText() == "Å"
+    assert view._data.series[0].x[0] == pytest.approx(6000.0)
+
+    view.unit_combo.setCurrentText("nm")
+
+    assert view._data.x_unit == "nm"
+    assert view._data.series[0].x[0] == pytest.approx(600.0)
+    assert view._data.x_label == "Longitud de onda (nm)"
+
+
 def test_series_with_nan_gap_builds_a_broken_path_without_crashing(qapp):
     x = np.array([0.0, 1.0, 2.0, 3.0, 4.0])
     y = np.array([1.0, 2.0, np.nan, 4.0, 5.0])
