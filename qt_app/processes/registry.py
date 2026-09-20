@@ -47,8 +47,9 @@ from astrophysics_suite.spectroscopy.line_catalog import (
 from astrophysics_suite.spectroscopy.line_profile_fit import fit_gaussian_line, fit_voigt_line
 from astrophysics_suite.spectroscopy.lines import measure_line
 from astrophysics_suite.spectroscopy.object_line_identification import identify_object_lines_in_spectrum
+from astrophysics_suite.spectroscopy.extended_extraction import SpatialRegion, extract_multi_region
 from astrophysics_suite.spectroscopy.multiaperture import extract_multi_aperture
-from astrophysics_suite.spectroscopy.trace import extract_optimal, extract_sum, trace_spectrum
+from astrophysics_suite.spectroscopy.trace import SkyWindow, extract_optimal, extract_sum, trace_spectrum
 from astrophysics_suite.tables.table import Table
 from qt_app.processes.base import ParameterSpec, ProcessDefinition, ProcessResult
 from qt_app.spectroscopy.spectrum_plot_data import SpectrumMarker, SpectrumPlotData, SpectrumSeries, series_color
@@ -427,6 +428,69 @@ def _run_multi_aperture(data: np.ndarray, params: dict) -> ProcessResult:
         columns=("aperture_id", "center_px", "trace_rms_px", "median_flux"),
         units=("", "px", "px", "ADU"),
         rows=tuple((a.aperture_id, a.initial_center_px, a.trace.rms_residual_px, float(np.nanmedian(a.spectrum.flux))) for a in result.apertures),
+    )
+    return ProcessResult(output_data=None, summary=summary, log_lines=tuple(log_lines), table=table, artifacts={"spectrum": plot_data})
+
+
+def _run_extended_extraction(data: np.ndarray, params: dict) -> ProcessResult:
+    points = params.get("_picked_points") or []
+    if len(points) < 2:
+        raise ValueError(
+            "marca dos clics por cada región (fila inicial y fila final del objeto extendido) -- clic derecho para terminar"
+        )
+    if len(points) % 2 != 0:
+        raise ValueError(
+            f"se marcaron {len(points)} clic(s) -- cada región necesita EXACTAMENTE dos (fila inicial y fila final); "
+            "el último clic quedó sin pareja"
+        )
+
+    regions = []
+    for i in range(0, len(points), 2):
+        _x1, y1 = points[i]
+        _x2, y2 = points[i + 1]
+        row_start, row_end = sorted((float(y1), float(y2)))
+        regions.append(SpatialRegion(row_start=row_start, row_end=row_end, label=f"región {i // 2 + 1}"))
+
+    uncertainty = np.sqrt(np.clip(data, 1.0, None))
+    sky_windows = (
+        SkyWindow(offset_px=-params["bg_offset"], half_width_px=params["bg_half_width"]),
+        SkyWindow(offset_px=params["bg_offset"], half_width_px=params["bg_half_width"]),
+    )
+    result = extract_multi_region(data, uncertainty, regions, sky_windows=sky_windows)
+
+    log_lines = [
+        f"{e.region.label}: filas {e.region.row_start:.1f}-{e.region.row_end:.1f} px."
+        for e in result.extractions
+    ]
+    log_lines.extend(
+        f"{f.region.label} (filas {f.region.row_start:.1f}-{f.region.row_end:.1f} px): no se pudo extraer -- {f.reason}"
+        for f in result.failures
+    )
+    if not result.extractions:
+        raise ValueError("ninguna de las regiones marcadas se pudo extraer: " + "; ".join(f.reason for f in result.failures))
+
+    plot_data = SpectrumPlotData(
+        series=tuple(
+            SpectrumSeries(
+                label=f"{e.region.label} (filas {e.region.row_start:.1f}-{e.region.row_end:.1f} px)",
+                x=np.arange(e.spectrum.flux.size, dtype=np.float64), y=e.spectrum.flux,
+                color=series_color(i),
+            )
+            for i, e in enumerate(result.extractions)
+        ),
+        x_label="Píxel (dispersión)", y_label="Flujo extraído (ADU)",
+    )
+
+    failed_note = f", {len(result.failures)} fallida(s)" if result.failures else ""
+    summary = f"{len(result.extractions)} región(es) extendida(s) extraída(s) por suma simple{failed_note}."
+
+    table = Table(
+        columns=("region", "row_start_px", "row_end_px", "median_flux"),
+        units=("", "px", "px", "ADU"),
+        rows=tuple(
+            (e.region.label, e.region.row_start, e.region.row_end, float(np.nanmedian(e.spectrum.flux)))
+            for e in result.extractions
+        ),
     )
     return ProcessResult(output_data=None, summary=summary, log_lines=tuple(log_lines), table=table, artifacts={"spectrum": plot_data})
 
@@ -928,6 +992,18 @@ def build_process_registry() -> list[ProcessDefinition]:
                 ParameterSpec("optimal_extraction", "Extracción óptima (Horne)", "bool", True),
             ),
             run=_run_multi_aperture,
+            requires_picking=0,
+        ),
+        ProcessDefinition(
+            process_id="spectroscopy.extended_extraction",
+            name="Extracción de objeto extendido (nebulosa/galaxia)",
+            category="Espectroscopía",
+            description="Extracción por suma simple sobre una o más regiones espaciales FIJAS que tú defines directamente -- NUNCA por extracción óptima (Horne 1986), que asume un único perfil de fuente puntual y describiría mal una emisión difusa/plana o multi-pico real (§27). Por cada región, marca DOS clics: fila inicial y fila final del objeto (en cualquier orden) -- clic derecho para terminar. Puedes marcar varias regiones seguidas (p. ej. núcleo y borde de una misma nebulosa) para resolverla espacialmente.",
+            parameters=(
+                ParameterSpec("bg_offset", "Desplazamiento del fondo (px)", "float", 20.0, minimum=1.0, maximum=400.0),
+                ParameterSpec("bg_half_width", "Semiancho del fondo (px)", "float", 4.0, minimum=1.0, maximum=100.0),
+            ),
+            run=_run_extended_extraction,
             requires_picking=0,
         ),
         ProcessDefinition(

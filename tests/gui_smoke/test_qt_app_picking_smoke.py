@@ -7,6 +7,7 @@ Requiere PySide6 y un display X -- se salta si no están disponibles.
 """
 from __future__ import annotations
 
+import logging
 import math
 import time
 
@@ -416,3 +417,77 @@ def test_picking_process_cancelled_does_not_run_worker(qapp, main_window):
 
     assert main_window._active_worker is None
     assert main_window.properties.apply_button.isEnabled()
+
+
+def _flat_nebula_field(height=80, width=150, *, object_rows=(20, 60), object_level=80.0, sky_level=5.0, seed=1):
+    """Emisión extendida real: nivel espacialmente PLANO entre
+    `object_rows` (convención de slice de Python), sin ningún pico de
+    fuente puntual -- el caso que motiva §27."""
+    rng = np.random.default_rng(seed)
+    data = np.full((height, width), sky_level) + rng.normal(0, 0.3, (height, width))
+    lo, hi = object_rows
+    data[lo:hi, :] += object_level
+    return data
+
+
+def test_extended_extraction_process_runs_via_two_manual_clicks_defining_one_region(qapp, main_window):
+    data = _flat_nebula_field(object_rows=(20, 60), object_level=80.0, sky_level=5.0)
+    sub_window = main_window.add_image_window(data, "nebula_single_region.fits")
+    main_window.mdi.setActiveSubWindow(sub_window)
+    qapp.processEvents()
+    view = sub_window.widget()
+
+    process = main_window._process_by_id["spectroscopy.extended_extraction"]
+    params = {p.name: p.default for p in process.parameters}
+    params["bg_offset"] = 40.0
+    main_window._run_process("spectroscopy.extended_extraction", params)
+    qapp.processEvents()
+    assert view._picking is True
+
+    _click(view, 0.0, 20.0, Qt.MouseButton.LeftButton)
+    _click(view, 0.0, 39.0, Qt.MouseButton.LeftButton)
+    _click(view, 0.0, 0.0, Qt.MouseButton.RightButton)  # termina la marca manual (requires_picking=0)
+    qapp.processEvents()
+
+    deadline = time.monotonic() + 10.0
+    while main_window._active_worker is not None and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.02)
+    qapp.processEvents()
+
+    assert main_window._last_result_table is not None
+    assert len(main_window._last_result_table.rows) == 1
+    median_flux = main_window._last_result_table.rows[0][3]
+    assert median_flux == pytest.approx(80.0 * 20, rel=0.05)
+
+    spectrum_view = main_window.mdi.subWindowList()[-1].widget()
+    assert isinstance(spectrum_view, SpectrumView)
+    assert len(spectrum_view._data.series) == 1
+
+
+def test_extended_extraction_process_rejects_an_unpaired_click(qapp, main_window, caplog):
+    caplog.set_level(logging.INFO)
+    data = _flat_nebula_field()
+    sub_window = main_window.add_image_window(data, "nebula_unpaired.fits")
+    main_window.mdi.setActiveSubWindow(sub_window)
+    qapp.processEvents()
+    view = sub_window.widget()
+
+    process = main_window._process_by_id["spectroscopy.extended_extraction"]
+    params = {p.name: p.default for p in process.parameters}
+    main_window._run_process("spectroscopy.extended_extraction", params)
+    qapp.processEvents()
+
+    _click(view, 0.0, 20.0, Qt.MouseButton.LeftButton)
+    _click(view, 0.0, 40.0, Qt.MouseButton.LeftButton)
+    _click(view, 0.0, 50.0, Qt.MouseButton.LeftButton)  # tercer clic sin pareja
+    _click(view, 0.0, 0.0, Qt.MouseButton.RightButton)
+    qapp.processEvents()
+
+    deadline = time.monotonic() + 10.0
+    while main_window._active_worker is not None and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.02)
+    qapp.processEvents()
+
+    assert any("sin pareja" in record.message.lower() for record in caplog.records)
