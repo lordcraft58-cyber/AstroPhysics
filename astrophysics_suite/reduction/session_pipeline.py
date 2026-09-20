@@ -21,6 +21,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from astrophysics_suite.core.provenance import Provenance
 from astrophysics_suite.imtools.arithmetic import UncertainImage
 from astrophysics_suite.reduction.calibration import CalibrationSteps, calibrate_frame
 from astrophysics_suite.reduction.combine import CombineResult, combine_images
@@ -28,6 +29,7 @@ from astrophysics_suite.reduction.fringe import remove_fringe
 from astrophysics_suite.reduction.illumination import IlluminationMap, apply_illumination_correction
 from astrophysics_suite.reduction.master_frames import MasterFrame
 from astrophysics_suite.reduction.overscan import subtract_overscan
+from astrophysics_suite.reduction.provenance import ReductionRecord, build_reduction_provenance
 from astrophysics_suite.reduction.sky import SkyBackgroundFit, fit_sky_background, subtract_sky_background
 
 
@@ -40,6 +42,13 @@ class LightFrameReduction:
     overscan_level: np.ndarray | None = None
     fringe_scale_factor: float | None = None
     sky_background: SkyBackgroundFit | None = None
+    record: ReductionRecord | None = None
+    """Qué se le hizo de verdad a este LIGHT, reunido en un solo sitio --
+    lo que se escribe después en la cabecera del archivo calibrado."""
+    provenance: Provenance | None = None
+    """Procedencia real (Fase 4). `CalibrationSteps` existía desde su
+    primera versión declarando que servía para esto; hasta ahora nadie
+    llegaba a construirla."""
 
 
 @dataclass(frozen=True)
@@ -74,6 +83,7 @@ def reduce_light_frames(
     combine_method: str = "median",
     combine_sigma_clip: float | None = 3.0,
     combine_max_iters: int = 5,
+    pipeline_version: str = "",
 ) -> ReductionSessionResult:
     """Reduce cada LIGHT de `light_frames` con la cadena física fija:
     overscan/recorte (si se pide) -> bias -> dark escalado por exposición
@@ -162,6 +172,18 @@ def reduce_light_frames(
                 data=sky_subtracted_data, uncertainty=calibrated.uncertainty, unit=calibrated.unit, mask=calibrated.mask
             )
 
+        record = ReductionRecord(
+            steps=steps,
+            overscan_corrected=overscan_region is not None,
+            trimmed=trim_region is not None,
+            illumination_corrected=illumination_map is not None,
+            fringe_removed=master_fringe is not None,
+            fringe_scale_factor=fringe_scale,
+            sky_subtracted=subtract_sky,
+            sky_degree=sky_degree if subtract_sky else None,
+            gain_e_per_adu=gain_e_per_adu,
+            read_noise_e=read_noise_e,
+        )
         results.append(
             LightFrameReduction(
                 source_path=path,
@@ -170,6 +192,8 @@ def reduce_light_frames(
                 overscan_level=overscan_level,
                 fringe_scale_factor=fringe_scale,
                 sky_background=sky_fit,
+                record=record,
+                provenance=build_reduction_provenance(record, pipeline_version=pipeline_version),
             )
         )
 
