@@ -52,6 +52,7 @@ from qt_app.reduction.build_master_frame_dialog import BuildMasterFrameDialog
 from qt_app.reduction.master_frame_library import MasterFrameLibrary
 from qt_app.reduction.reduce_session_dialog import ReduceSessionDialog, SessionReductionOutcome
 from qt_app.spectroscopy.combine_spectra_dialog import CombineSpectraDialog
+from qt_app.spectroscopy.flexure_correction_dialog import FlexureCorrectionDialog
 from qt_app.spectroscopy.flux_calibration_dialog import FluxCalibrationDialog
 from qt_app.spectroscopy.radial_velocity_dialog import RadialVelocityDialog
 from qt_app.spectroscopy.spectrum_plot_data import SpectrumPlotData, SpectrumSeries
@@ -253,6 +254,9 @@ class MainWindow(QMainWindow):
         flux_calibration_action = QAction("Calibración de &flujo absoluta (estrella estándar)...", self)
         flux_calibration_action.triggered.connect(self._open_flux_calibration_dialog)
         self.spectroscopy_menu.addAction(flux_calibration_action)
+        flexure_correction_action = QAction("Corrección de fle&xión entre exposiciones...", self)
+        flexure_correction_action.triggered.connect(self._open_flexure_correction_dialog)
+        self.spectroscopy_menu.addAction(flexure_correction_action)
 
         self.view_menu = self.menuBar().addMenu("&Vista")
         self.stf_action = QAction("Alternar STF en la imagen activa", self)
@@ -977,6 +981,19 @@ class MainWindow(QMainWindow):
             )
             return
         dialog = FluxCalibrationDialog(views, self)
+        dialog.exec()
+        table = dialog.result_table()
+        if table is not None:
+            self._last_result_table = table
+
+    def _open_flexure_correction_dialog(self) -> None:
+        views = self._image_views_by_title()
+        if len(views) < 2:
+            self.statusBar().showMessage(
+                "Abre al menos dos ventanas (referencia + nueva exposición) antes de corregir la flexión.", 5000
+            )
+            return
+        dialog = FlexureCorrectionDialog(views, self)
         dialog.exec()
         table = dialog.result_table()
         if table is not None:
