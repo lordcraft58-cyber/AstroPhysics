@@ -55,6 +55,7 @@ from qt_app.spectroscopy.combine_spectra_dialog import CombineSpectraDialog
 from qt_app.spectroscopy.radial_velocity_dialog import RadialVelocityDialog
 from qt_app.spectroscopy.spectrum_plot_data import SpectrumPlotData, SpectrumSeries
 from qt_app.spectroscopy.spectrum_view import SpectrumView
+from qt_app.spectroscopy.synthetic_photometry_dialog import SyntheticPhotometryDialog
 from qt_app.spectroscopy.wavelength_fit_dialog import WavelengthFitDialog
 from qt_app.theme import DARK, build_stylesheet
 from qt_app.tutorial.tutorial_overlay import TutorialOverlay
@@ -245,6 +246,9 @@ class MainWindow(QMainWindow):
         radial_velocity_action = QAction("Medir &velocidad radial...", self)
         radial_velocity_action.triggered.connect(self._open_radial_velocity_dialog)
         self.spectroscopy_menu.addAction(radial_velocity_action)
+        synthetic_photometry_action = QAction("Magnitud fotométrica &sintética...", self)
+        synthetic_photometry_action.triggered.connect(self._open_synthetic_photometry_dialog)
+        self.spectroscopy_menu.addAction(synthetic_photometry_action)
 
         self.view_menu = self.menuBar().addMenu("&Vista")
         self.stf_action = QAction("Alternar STF en la imagen activa", self)
@@ -939,6 +943,23 @@ class MainWindow(QMainWindow):
             )
             return
         dialog = RadialVelocityDialog(view, self)
+        dialog.exec()
+        table = dialog.result_table()
+        if table is not None:
+            self._last_result_table = table
+
+    def _open_synthetic_photometry_dialog(self) -> None:
+        view = self._active_image_view()
+        if view is None:
+            self.statusBar().showMessage("Abre o selecciona una imagen antes de calcular una magnitud fotométrica.", 5000)
+            return
+        if view.fitted_wavelength_solution is None:
+            self.statusBar().showMessage(
+                f"{view.title} no tiene una calibración en longitud de onda ajustada todavía -- "
+                "usa antes \"Calibrar longitud de onda...\".", 7000,
+            )
+            return
+        dialog = SyntheticPhotometryDialog(view, self)
         dialog.exec()
         table = dialog.result_table()
         if table is not None:
