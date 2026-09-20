@@ -46,7 +46,8 @@ from astrophysics_suite.spectroscopy.line_catalog import (
     SODIUM_LINES,
     STELLAR_NEBULAR_LINES,
 )
-from astrophysics_suite.spectroscopy.line_profile_fit import fit_gaussian_line, fit_voigt_line
+from astrophysics_suite.spectroscopy.line_profile_fit import fit_gaussian_line, fit_voigt_line, spectral_resolution
+from astrophysics_suite.spectroscopy.wavelength import local_dispersion_at_pixel
 from astrophysics_suite.spectroscopy.lines import measure_line
 from astrophysics_suite.spectroscopy.object_line_identification import identify_object_lines_in_spectrum
 from astrophysics_suite.spectroscopy.extended_extraction import SpatialRegion, extract_multi_region
@@ -814,6 +815,53 @@ def _run_line_profile_fit_central_row(data: np.ndarray, params: dict) -> Process
                 result.significance,
             ),),
         )
+
+    # Resolución espectral real (§32): R = λ/FWHM, SIEMPRE en unidades
+    # físicas reales -- nunca en píxeles, y nunca confundida con la
+    # dispersión (Å/píxel). Solo se calcula cuando hay una calibración en
+    # longitud de onda REAL ya ajustada sobre esta imagen (`_wavelength_
+    # solution`, poblada por `main_window` cuando existe); sin ella se
+    # informa honestamente que no está disponible, en vez de asumir una
+    # dispersión inventada.
+    wavelength_solution = params.get("_wavelength_solution")
+    center_wavelength_angstrom: float | None = None
+    fwhm_angstrom: float | None = None
+    resolution: float | None = None
+    if wavelength_solution is not None:
+        center_px = result.center_wavelength  # nombre genérico del dataclass -- aquí siempre en píxel
+        fwhm_px = result.fwhm if profile == "gaussian" else result.fwhm_voigt
+        dispersion_angstrom_per_px = local_dispersion_at_pixel(wavelength_solution, center_px)
+        center_wavelength_angstrom = float(wavelength_solution.pixel_to_wavelength(center_px))
+        fwhm_angstrom = abs(fwhm_px * dispersion_angstrom_per_px)
+        if fwhm_angstrom > 0:
+            resolution = spectral_resolution(center_wavelength_angstrom, fwhm_angstrom)
+
+    if center_wavelength_angstrom is not None:
+        resolution_text = f"R≈{resolution:.0f}" if resolution is not None else "R=N/D"
+        summary += f"  ·  λ={center_wavelength_angstrom:.2f} Å  ·  FWHM={fwhm_angstrom:.3f} Å  ·  {resolution_text}"
+        log_lines = log_lines + (
+            f"Resolución espectral real (§32): dispersión local real de {dispersion_angstrom_per_px:.4f} Å/píxel "
+            f"en el centro ajustado -- R = λ/FWHM en Å (nunca la dispersión Å/píxel) = "
+            f"{center_wavelength_angstrom:.2f}/{fwhm_angstrom:.3f} ≈ {resolution_text}.",
+        )
+    else:
+        log_lines = log_lines + (
+            "Resolución espectral real (§32) no disponible: esta imagen no tiene una calibración en longitud de "
+            "onda ajustada todavía -- usa antes \"Calibrar longitud de onda...\" (menú Espectroscopía) para obtenerla.",
+        )
+
+    table = Table(
+        columns=table.columns + ("center_wavelength_angstrom", "fwhm_angstrom", "resolution"),
+        units=table.units + ("Å", "Å", ""),
+        rows=tuple(
+            row + (
+                center_wavelength_angstrom if center_wavelength_angstrom is not None else float("nan"),
+                fwhm_angstrom if fwhm_angstrom is not None else float("nan"),
+                resolution if resolution is not None else float("nan"),
+            )
+            for row in table.rows
+        ),
+    )
 
     plot_data = SpectrumPlotData(
         series=(

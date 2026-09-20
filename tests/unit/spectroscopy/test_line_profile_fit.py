@@ -12,6 +12,7 @@ from astrophysics_suite.spectroscopy.line_profile_fit import (
     fit_gaussian_line,
     fit_multi_gaussian_lines,
     fit_voigt_line,
+    spectral_resolution,
 )
 
 
@@ -232,3 +233,21 @@ def test_multi_gaussian_works_with_a_single_line_too():
     assert result is not None
     assert len(result.components) == 1
     assert result.components[0].amplitude == pytest.approx(-12.0, rel=0.05)
+
+
+def test_spectral_resolution_is_wavelength_over_fwhm():
+    # R = λ/FWHM (§32) -- caso de referencia: Hα a R~1000 típico de un
+    # espectrógrafo de bajo-medio poder resolutivo (FWHM ~6.56 Å).
+    assert spectral_resolution(6562.8, 6.5628) == pytest.approx(1000.0)
+
+
+def test_spectral_resolution_rejects_non_positive_fwhm():
+    with pytest.raises(ValueError):
+        spectral_resolution(6562.8, 0.0)
+    with pytest.raises(ValueError):
+        spectral_resolution(6562.8, -1.0)
+
+
+def test_spectral_resolution_rejects_non_positive_wavelength():
+    with pytest.raises(ValueError):
+        spectral_resolution(0.0, 1.0)

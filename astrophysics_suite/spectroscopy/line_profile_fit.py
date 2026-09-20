@@ -61,6 +61,21 @@ _DEFAULT_MIN_SIGNIFICANCE = 3.0
 capricho de este proyecto."""
 
 
+def spectral_resolution(center_wavelength_angstrom: float, fwhm_angstrom: float) -> float:
+    """Poder resolutivo real `R = λ / FWHM` (§32) -- FWHM en longitud de
+    onda real (Å), NUNCA en píxeles: confundir dispersión (Å/píxel) con
+    resolución (adimensional, λ/FWHM_λ) es exactamente el error que este
+    encargo pide evitar. El llamador es responsable de convertir un FWHM
+    en píxeles a Å (p. ej. con `wavelength.local_dispersion_at_pixel`)
+    antes de llamar a esta función -- aquí no se asume ninguna dispersión.
+    """
+    if fwhm_angstrom <= 0:
+        raise ValueError("fwhm_angstrom debe ser positivo para calcular una resolución real")
+    if center_wavelength_angstrom <= 0:
+        raise ValueError("center_wavelength_angstrom debe ser positivo")
+    return center_wavelength_angstrom / fwhm_angstrom
+
+
 def _success(fitter) -> bool:
     return fitter.fit_info.get("ierr") in (1, 2, 3, 4)
 

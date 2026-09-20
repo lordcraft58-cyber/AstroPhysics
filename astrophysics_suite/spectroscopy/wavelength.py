@@ -67,6 +67,25 @@ class WavelengthSolution:
         return np.polyval(self.coefficients, np.asarray(pixel) - self.reference_pixel_shift)
 
 
+def local_dispersion_at_pixel(solution: WavelengthSolution, pixel: float, *, delta: float = 0.5) -> float:
+    """Dispersión real (dλ/dpíxel) de `solution` en `pixel` -- diferencia
+    finita centrada evaluando la propia solución (nunca una dispersión
+    media global asumida: `CDELT1` solo describe bien un ajuste de grado
+    <=1; para un polinomio de grado superior la dispersión real varía a
+    lo largo del eje).
+
+    Función pública compartida -- antes duplicada como
+    `flexure_correction._local_dispersion_angstrom_per_px` (que sigue
+    existiendo pero ahora delega aquí tras invertir longitud de onda ->
+    píxel) y usada también para la resolución espectral real (§32,
+    `line_profile_fit.spectral_resolution`), que necesita Å/píxel en el
+    píxel real de cada línea ajustada.
+    """
+    return float(
+        (solution.pixel_to_wavelength(pixel + delta) - solution.pixel_to_wavelength(pixel - delta)) / (2 * delta)
+    )
+
+
 def fit_wavelength_solution(
     pixel_centers: list[float], known_wavelengths: list[float], *, degree: int = 3
 ) -> WavelengthSolution:

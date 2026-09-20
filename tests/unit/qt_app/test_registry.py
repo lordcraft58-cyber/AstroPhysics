@@ -8,6 +8,7 @@ import math
 import numpy as np
 import pytest
 
+from astrophysics_suite.spectroscopy.wavelength import fit_wavelength_solution
 from qt_app.processes.registry import _saturation_mask_from_header, _uncertainty_adu, build_process_registry
 
 
@@ -522,6 +523,61 @@ def test_line_measurement_process_produces_a_spectrum_with_a_measurement_window_
     assert len(plot_data.markers) == 1
     marker = plot_data.markers[0]
     assert marker.x_start < line_pixel < marker.x_end
+
+
+def _synthetic_gaussian_row(*, width=200, line_pixel=100.0, continuum_level=500.0, amplitude=4000.0, sigma=3.0):
+    columns = np.arange(width, dtype=np.float64)
+    row = continuum_level + amplitude * np.exp(-((columns - line_pixel) ** 2) / (2 * sigma**2))
+    return np.tile(row, (21, 1))
+
+
+def test_line_profile_fit_process_reports_only_pixel_units_without_wavelength_calibration():
+    # sin calibración en longitud de onda ajustada (`_wavelength_solution`
+    # ausente, tal como llega cuando `view.fitted_wavelength_solution` es
+    # `None`), la resolución real (§32) no puede calcularse -- debe
+    # informarse honestamente como no disponible, nunca asumiendo una
+    # dispersión Å/píxel inventada.
+    data = _synthetic_gaussian_row()
+    process = _get("spectroscopy.line_profile_fit")
+    params = _default_params(process)
+    params["_picked_points"] = [(100.0, 10.0)]
+
+    result = process.run(data, params)
+
+    assert "λ=" not in result.summary
+    assert any("no disponible" in line for line in result.log_lines)
+    assert result.table.columns[-3:] == ("center_wavelength_angstrom", "fwhm_angstrom", "resolution")
+    assert all(math.isnan(value) for value in result.table.rows[0][-3:])
+
+
+def test_line_profile_fit_process_reports_real_resolution_with_a_wavelength_solution():
+    # dispersión lineal real conocida: 2.0 Å/píxel, 6000.0 Å en el píxel 0.
+    dispersion_angstrom_per_px = 2.0
+    wave_at_pixel_0 = 6000.0
+    pixel_centers = [0.0, 50.0, 100.0, 150.0, 199.0]
+    known_wavelengths = [wave_at_pixel_0 + dispersion_angstrom_per_px * p for p in pixel_centers]
+    solution = fit_wavelength_solution(pixel_centers, known_wavelengths, degree=1)
+
+    line_pixel, sigma = 100.0, 3.0
+    data = _synthetic_gaussian_row(line_pixel=line_pixel, sigma=sigma)
+    process = _get("spectroscopy.line_profile_fit")
+    params = _default_params(process)
+    params["_picked_points"] = [(line_pixel, 10.0)]
+    params["_wavelength_solution"] = solution
+
+    result = process.run(data, params)
+
+    expected_center_angstrom = wave_at_pixel_0 + dispersion_angstrom_per_px * line_pixel
+    expected_fwhm_angstrom = 2.3548 * sigma * dispersion_angstrom_per_px
+    expected_resolution = expected_center_angstrom / expected_fwhm_angstrom
+
+    assert "λ=" in result.summary and "R≈" in result.summary
+    assert any("Resolución espectral real" in line for line in result.log_lines)
+
+    center_angstrom, fwhm_angstrom, resolution = result.table.rows[0][-3:]
+    assert center_angstrom == pytest.approx(expected_center_angstrom, abs=1.0)
+    assert fwhm_angstrom == pytest.approx(expected_fwhm_angstrom, rel=0.05)
+    assert resolution == pytest.approx(expected_resolution, rel=0.1)
 
 
 def test_multi_aperture_process_produces_one_spectrum_series_per_aperture():

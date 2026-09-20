@@ -6,6 +6,7 @@ import pytest
 from astrophysics_suite.spectroscopy.wavelength import (
     fit_wavelength_solution,
     find_arc_lines,
+    local_dispersion_at_pixel,
     reidentify_wavelength_solution,
 )
 
@@ -80,3 +81,28 @@ def test_reidentify_rejects_shape_mismatch():
     reference_solution = fit_wavelength_solution([1.0, 2.0, 3.0], [4000.0, 4010.0, 4020.0], degree=1)
     with pytest.raises(ValueError):
         reidentify_wavelength_solution(reference_solution, np.zeros(10), np.zeros(20))
+
+
+def test_local_dispersion_at_pixel_recovers_known_linear_dispersion():
+    pixel_centers = [100.0, 300.0, 550.0, 800.0]
+    true_dispersion = 2.5  # Å/px
+    known_wavelengths = [4000.0 + true_dispersion * p for p in pixel_centers]
+    solution = fit_wavelength_solution(pixel_centers, known_wavelengths, degree=1)
+
+    for pixel in (0.0, 400.0, 999.0):
+        assert local_dispersion_at_pixel(solution, pixel) == pytest.approx(true_dispersion, abs=1e-6)
+
+
+def test_local_dispersion_at_pixel_varies_along_a_nonlinear_solution():
+    # una solución cuadrática real tiene dispersión LOCAL distinta en
+    # cada extremo -- justo lo que una dispersión media global (CDELT1)
+    # no puede capturar, y la razón de tener una función por-píxel real.
+    pixel_centers = [0.0, 250.0, 500.0, 750.0, 999.0]
+    known_wavelengths = [4000.0 + 2.0 * p + 0.001 * p**2 for p in pixel_centers]
+    solution = fit_wavelength_solution(pixel_centers, known_wavelengths, degree=2)
+
+    dispersion_low = local_dispersion_at_pixel(solution, 10.0)
+    dispersion_high = local_dispersion_at_pixel(solution, 990.0)
+    assert dispersion_high > dispersion_low  # dλ/dpx = 2 + 0.002*p, creciente en p
+    assert dispersion_low == pytest.approx(2.0 + 0.002 * 10.0, abs=0.05)
+    assert dispersion_high == pytest.approx(2.0 + 0.002 * 990.0, abs=0.05)

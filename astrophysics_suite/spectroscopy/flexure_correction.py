@@ -21,7 +21,11 @@ from dataclasses import dataclass
 import numpy as np
 
 from astrophysics_suite.spectroscopy.radial_velocity import velocity_from_wavelength_shift
-from astrophysics_suite.spectroscopy.wavelength import WavelengthSolution, reidentify_wavelength_solution
+from astrophysics_suite.spectroscopy.wavelength import (
+    WavelengthSolution,
+    local_dispersion_at_pixel,
+    reidentify_wavelength_solution,
+)
 
 
 @dataclass(frozen=True)
@@ -46,10 +50,12 @@ class FlexureShift:
 
 def _local_dispersion_angstrom_per_px(solution: WavelengthSolution, n_pixels: int, reference_wavelength: float) -> float:
     """Dispersión real (dλ/dpíxel) de `solution` en `reference_wavelength`
-    -- por diferencia finita centrada alrededor del píxel real que
-    corresponde a esa longitud de onda bajo la solución ORIGINAL (no
-    asumida: se invierte por interpolación sobre la propia solución
-    evaluada en toda la traza)."""
+    -- se invierte por interpolación sobre la propia solución evaluada en
+    toda la traza (no asumida) para hallar el píxel real que corresponde
+    a esa longitud de onda bajo la solución ORIGINAL, y se delega en
+    `wavelength.local_dispersion_at_pixel` para la diferencia finita
+    centrada (misma matemática, ahora compartida con la resolución
+    espectral real de `line_profile_fit.spectral_resolution`, §32)."""
     pixels = np.arange(n_pixels, dtype=np.float64)
     wavelengths = np.asarray(solution.pixel_to_wavelength(pixels), dtype=np.float64)
     if not (np.all(np.diff(wavelengths) > 0) or np.all(np.diff(wavelengths) < 0)):
@@ -59,11 +65,7 @@ def _local_dispersion_angstrom_per_px(solution: WavelengthSolution, n_pixels: in
         )
     reference_pixel = float(np.interp(reference_wavelength, wavelengths, pixels) if wavelengths[0] < wavelengths[-1]
                              else np.interp(reference_wavelength, wavelengths[::-1], pixels[::-1]))
-    delta = 0.5
-    return float(
-        (solution.pixel_to_wavelength(reference_pixel + delta) - solution.pixel_to_wavelength(reference_pixel - delta))
-        / (2 * delta)
-    )
+    return local_dispersion_at_pixel(solution, reference_pixel)
 
 
 def measure_flexure_shift(
