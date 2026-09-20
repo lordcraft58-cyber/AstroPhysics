@@ -238,6 +238,9 @@ class MainWindow(QMainWindow):
         combine_spectra_action = QAction("Co&mbinar espectros...", self)
         combine_spectra_action.triggered.connect(self._open_combine_spectra_dialog)
         self.spectroscopy_menu.addAction(combine_spectra_action)
+        save_spectrum_action = QAction("&Guardar espectro calibrado (FITS)...", self)
+        save_spectrum_action.triggered.connect(self._save_calibrated_spectrum_fits)
+        self.spectroscopy_menu.addAction(save_spectrum_action)
 
         self.view_menu = self.menuBar().addMenu("&Vista")
         self.stf_action = QAction("Alternar STF en la imagen activa", self)
@@ -871,17 +874,54 @@ class MainWindow(QMainWindow):
             return
 
         dialog = WavelengthFitDialog(lines, self)
-        dialog.fitted.connect(lambda solution, table, v=view: self._on_wavelength_fitted(v, solution, table))
+        dialog.fitted.connect(
+            lambda solution, table, record, v=view, s=spectrum: self._on_wavelength_fitted(v, solution, table, record, s)
+        )
         dialog.exec()
 
-    def _on_wavelength_fitted(self, view: ImageView, solution, table: Table) -> None:
+    def _on_wavelength_fitted(self, view: ImageView, solution, table: Table, record=None, spectrum=None) -> None:
         view.fitted_wavelength_solution = solution
+        view.wavelength_calibration_record = record
+        view.wavelength_calibration_spectrum = spectrum
         self._last_result_table = table
         logger.info(
             "Longitud de onda calibrada para %s: RMS=%.4f (grado %d, %d línea(s)). Tabla disponible -- Herramientas -> Exportar última tabla a CSV...",
             view.title, solution.rms_residual, solution.degree, len(table.rows),
         )
         self.statusBar().showMessage(f"Longitud de onda calibrada para {view.title} (RMS={solution.rms_residual:.4f}).", 6000)
+
+    def _save_calibrated_spectrum_fits(self) -> None:
+        view = self._active_image_view()
+        if view is None:
+            self.statusBar().showMessage("Abre o selecciona una imagen antes de guardar un espectro calibrado.", 5000)
+            return
+        if view.wavelength_calibration_record is None or view.wavelength_calibration_spectrum is None:
+            self.statusBar().showMessage(
+                f"{view.title} no tiene una calibración en longitud de onda ajustada todavía -- "
+                "usa antes \"Calibrar longitud de onda...\".", 7000,
+            )
+            return
+
+        from astrophysics_suite.spectroscopy.spectrum1d_io import save_spectrum1d_fits
+
+        default_path = ""
+        if view.source_path:
+            source = Path(view.source_path)
+            default_path = str(source.with_name(f"{source.stem}_1D_calibrado.fits"))
+        path, _ = QFileDialog.getSaveFileName(self, "Guardar espectro calibrado", default_path, "FITS (*.fits *.fit *.fts)")
+        if not path:
+            return
+        try:
+            save_spectrum1d_fits(
+                path, view.wavelength_calibration_spectrum, view.wavelength_calibration_record,
+                header=dict(view.header) if view.header else None,
+            )
+        except Exception as exc:  # noqa: BLE001 -- error real de escritura, debe ser visible
+            logger.error("No se pudo guardar el espectro calibrado de %s en %s: %s", view.title, path, exc)
+            QMessageBox.critical(self, "Guardar espectro calibrado", f"No se pudo guardar «{Path(path).name}»:\n\n{exc}")
+            return
+        logger.info("Espectro calibrado de %s guardado en %s (%s)", view.title, path, view.wavelength_calibration_record.source.value)
+        self.statusBar().showMessage(f"Espectro calibrado guardado en {path}", 6000)
 
     def _open_combine_spectra_dialog(self) -> None:
         views = self._image_views_by_title()

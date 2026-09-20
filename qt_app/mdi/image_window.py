@@ -63,6 +63,18 @@ class ImageView(QGraphicsView):
         """`astrophysics_suite.spectroscopy.wavelength.WavelengthSolution`
         ajustada sobre esta ventana (ver "Calibrar longitud de onda...")
         -- `None` hasta que el usuario ajuste una."""
+        self.wavelength_calibration_record = None
+        """`astrophysics_suite.spectroscopy.calibration_provenance.
+        WavelengthCalibrationRecord` -- la misma solución que
+        `fitted_wavelength_solution` MÁS de dónde salió (lámpara real,
+        etc.), para poder guardar el espectro calibrado con procedencia
+        real (`CALTYPE`) en vez de solo la solución matemática. `None`
+        hasta que se ajuste una calibración."""
+        self.wavelength_calibration_spectrum = None
+        """El espectro 1D real (ADU) sobre el que se detectaron las
+        líneas de arco para `fitted_wavelength_solution` -- el mismo
+        array que "Guardar espectro calibrado..." escribe a FITS, para
+        no volver a suponer qué fila es el espectro."""
         self.stf_params: STFParams = compute_stf_params(data)
         self.stf_enabled = True
 
