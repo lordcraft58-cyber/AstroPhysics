@@ -8,14 +8,19 @@ from __future__ import annotations
 
 import numpy as np
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QImage, QMouseEvent, QPen, QPixmap, QWheelEvent
-from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsPixmapItem, QGraphicsScene, QGraphicsView
+from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QImage, QMouseEvent, QPainterPath, QPen, QPixmap, QWheelEvent
+from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsItem, QGraphicsPixmapItem, QGraphicsScene, QGraphicsView
 
 from qt_app.mdi.stf import STFParams, compute_stf_params, stf_to_uint8
 
 _PROCESS_MIME_TYPE = "application/x-astrophysics-process-id"
 _MARKER_COLOR = QColor("#f0b429")
 _MARKER_RADIUS = 5.0
+_TRACE_OVERLAY_PALETTE = ("#4a9edb", "#4fc9b0", "#d9a441", "#d9707a", "#8f8fe0")
+"""Mismos colores que `qt_app.theme.DARK` -- sin importar `theme.py`
+directamente aquí, para no acoplar el visor genérico de imagen (usable
+también fuera de espectroscopía) a esa decisión de paleta."""
+_SKY_OVERLAY_COLOR = "#58a6ff"
 
 
 class ImageView(QGraphicsView):
@@ -96,6 +101,11 @@ class ImageView(QGraphicsView):
         self._picked_markers: list[QGraphicsEllipseItem] = []
         self._drag_mode_before_picking = self.dragMode()
 
+        self._trace_overlay_items: list[QGraphicsItem] = []
+        """Traza/apertura/cielo dibujados sobre la imagen real por
+        `set_trace_overlay` -- vacío mientras no se haya trazado/extraído
+        nada todavía en esta ventana (§2/§3/§5/§28 del encargo)."""
+
     def refresh_display(self) -> None:
         if self.stf_enabled:
             buffer_8bit = stf_to_uint8(self.data, self.stf_params)
@@ -156,6 +166,55 @@ class ImageView(QGraphicsView):
         for marker in self._picked_markers:
             self._scene.removeItem(marker)
         self._picked_markers.clear()
+
+    # ---------------------------------------------------------------- overlay de traza/apertura/cielo
+    def set_trace_overlay(self, overlays) -> None:
+        """Dibuja la traza real, los límites reales de apertura (línea
+        continua/discontinua) y las regiones reales de cielo (línea
+        discontinua azul) sobre la imagen -- `overlays` es un
+        `qt_app.spectroscopy.trace_overlay_data.TraceOverlay` o una
+        secuencia de ellos (una traza/apertura/cielo real por objeto,
+        p. ej. `spectroscopy.multiaperture`). Reemplaza cualquier overlay
+        anterior; persiste a través de cambios de stretch/STF (son items
+        de escena en coordenadas de datos, independientes del píxmap)."""
+        self.clear_trace_overlay()
+        items = overlays if isinstance(overlays, (list, tuple)) else (overlays,)
+        for i, overlay in enumerate(items):
+            color = QColor(_TRACE_OVERLAY_PALETTE[i % len(_TRACE_OVERLAY_PALETTE)])
+            self._add_overlay_polyline(overlay.trace_columns, overlay.trace_center_px, color, width=2.0)
+            self._add_overlay_polyline(
+                overlay.trace_columns, overlay.trace_center_px - overlay.aperture_half_width, color, width=1.0, dashed=True,
+            )
+            self._add_overlay_polyline(
+                overlay.trace_columns, overlay.trace_center_px + overlay.aperture_half_width, color, width=1.0, dashed=True,
+            )
+            sky_color = QColor(_SKY_OVERLAY_COLOR)
+            for window in overlay.sky_windows:
+                lo = overlay.trace_center_px + window.offset_px - window.half_width_px
+                hi = overlay.trace_center_px + window.offset_px + window.half_width_px
+                self._add_overlay_polyline(overlay.trace_columns, lo, sky_color, width=1.0, dashed=True)
+                self._add_overlay_polyline(overlay.trace_columns, hi, sky_color, width=1.0, dashed=True)
+
+    def clear_trace_overlay(self) -> None:
+        for item in self._trace_overlay_items:
+            self._scene.removeItem(item)
+        self._trace_overlay_items.clear()
+
+    def _add_overlay_polyline(
+        self, x_values: np.ndarray, y_values: np.ndarray, color: QColor, *, width: float, dashed: bool = False,
+    ) -> None:
+        if x_values.size == 0:
+            return
+        path = QPainterPath()
+        path.moveTo(float(x_values[0]), float(y_values[0]))
+        for x, y in zip(x_values[1:], y_values[1:]):
+            path.lineTo(float(x), float(y))
+        pen = QPen(color, width)
+        if dashed:
+            pen.setStyle(Qt.PenStyle.DashLine)
+        item = self._scene.addPath(path, pen)
+        item.setZValue(10)
+        self._trace_overlay_items.append(item)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if self._picking and event.button() == Qt.MouseButton.LeftButton:
