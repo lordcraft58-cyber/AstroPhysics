@@ -54,6 +54,7 @@ from qt_app.reduction.master_frame_library import MasterFrameLibrary
 from qt_app.reduction.reduce_session_dialog import ReduceSessionDialog, SessionReductionOutcome
 from qt_app.spectroscopy.combine_spectra_dialog import CombineSpectraDialog
 from qt_app.spectroscopy.template_comparison_dialog import TemplateComparisonDialog
+from qt_app.spectroscopy.trace_overlay_data import recalculate_extraction
 from qt_app.spectroscopy.flexure_correction_dialog import FlexureCorrectionDialog
 from qt_app.spectroscopy.telluric_correction_dialog import TelluricCorrectionDialog
 from qt_app.spectroscopy.flux_calibration_dialog import FluxCalibrationDialog
@@ -275,6 +276,9 @@ class MainWindow(QMainWindow):
         self.stf_action.setShortcut("Ctrl+T")
         self.stf_action.triggered.connect(self._toggle_active_stf)
         self.view_menu.addAction(self.stf_action)
+        self.trace_overlay_lock_action = QAction("Bloquear/desbloquear edición de apertura en la imagen activa (§2)", self)
+        self.trace_overlay_lock_action.triggered.connect(self._toggle_active_trace_overlay_lock)
+        self.view_menu.addAction(self.trace_overlay_lock_action)
 
         self.discovery_menu = self.menuBar().addMenu("&Descubrimiento")
         self.new_observation_action = QAction("&Nueva observación...", self)
@@ -387,6 +391,7 @@ class MainWindow(QMainWindow):
         view = ImageView(data, title, self, wcs=wcs, header=header, source_path=source_path)
         view.process_dropped.connect(lambda process_id, v=view: self._on_process_dropped(process_id, v))
         view.pixel_hovered.connect(self._on_pixel_hovered)
+        view.aperture_edited.connect(lambda new_half_width, v=view: self._on_aperture_edited(v, new_half_width))
 
         sub_window = QMdiSubWindow()
         sub_window.setWidget(view)
@@ -1358,6 +1363,11 @@ class MainWindow(QMainWindow):
         trace_overlay = result.artifacts.get("trace_overlay")
         if trace_overlay is not None:
             view.set_trace_overlay(trace_overlay)
+        # §2: solo editable cuando hay UNA traza real (no multi-apertura/
+        # objeto extendido, que producen varias a la vez) -- una traza
+        # nueva reemplaza cualquier contexto de edición anterior, nunca
+        # lo deja apuntando a una apertura que ya no está dibujada.
+        view.trace_edit_context = result.artifacts.get("trace_edit_context")
         if result.table is not None:
             self._last_result_table = result.table
             logger.info("    Tabla disponible (%d fila(s)) -- Herramientas -> Exportar última tabla a CSV...", len(result.table.rows))
@@ -1374,6 +1384,49 @@ class MainWindow(QMainWindow):
         self.properties.apply_button.setEnabled(True)
         self.statusBar().showMessage("Error al ejecutar el proceso", 5000)
         logger.error("%s", message)
+
+    def _on_aperture_edited(self, view: ImageView, new_aperture_half_width: float) -> None:
+        """§2: tras arrastrar el borde de la apertura sobre el overlay
+        real, recalcula la extracción con la MISMA traza ya conocida
+        (`view.trace_edit_context`) -- nunca retraza ni pide un nuevo
+        clic. Abre el resultado como una ventana de espectro nueva, igual
+        que ya hace cualquier extracción, y lo deja en el historial de
+        procesamiento real de la vista (§36)."""
+        context = view.trace_edit_context
+        if context is None:
+            return
+        try:
+            spectrum = recalculate_extraction(context, new_aperture_half_width)
+        except ValueError as exc:
+            self.statusBar().showMessage(f"No se pudo recalcular la extracción: {exc}", 6000)
+            return
+
+        pixel = np.arange(spectrum.flux.size, dtype=np.float64)
+        plot_data = SpectrumPlotData(
+            series=(SpectrumSeries(label="Flujo extraído (recalculado)", x=pixel, y=spectrum.flux, y_error=spectrum.flux_uncertainty),),
+            x_label="Píxel (dispersión)", y_label="Flujo extraído (ADU)",
+        )
+        title = f"{view.title} -> Extracción recalculada (apertura={new_aperture_half_width:.1f} px)"
+        self.add_spectrum_window(plot_data, title)
+
+        summary = f"Apertura recalculada a {new_aperture_half_width:.2f} px por arrastre real del overlay ({context.extraction_method_label})."
+        view.processing_history.append(
+            ProcessingHistoryEntry(
+                timestamp_utc=datetime.now(timezone.utc).isoformat(),
+                process_name="Recalcular extracción (edición de apertura, §2)", summary=summary,
+            )
+        )
+        logger.info("[Recalcular extracción] %s", summary)
+        self.statusBar().showMessage(summary, 6000)
+
+    def _toggle_active_trace_overlay_lock(self) -> None:
+        view = self._active_image_view()
+        if view is None:
+            self.statusBar().showMessage("No hay ninguna imagen activa.", 4000)
+            return
+        view.trace_overlay_locked = not view.trace_overlay_locked
+        state = "bloqueada" if view.trace_overlay_locked else "desbloqueada"
+        self.statusBar().showMessage(f"Edición de apertura {state} en {view.title}.", 4000)
 
     # ---------------------------------------------------------------- descubrimiento
     def _open_new_observation_dialog(self) -> None:

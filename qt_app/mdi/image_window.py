@@ -6,12 +6,15 @@ selección de posiciones a clic para los procesos que lo necesitan
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QImage, QMouseEvent, QPainterPath, QPen, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsItem, QGraphicsPixmapItem, QGraphicsScene, QGraphicsView
 
 from qt_app.mdi.stf import STFParams, compute_stf_params, stf_to_uint8
+from qt_app.spectroscopy.trace_overlay_data import TraceOverlay
 
 _PROCESS_MIME_TYPE = "application/x-astrophysics-process-id"
 _MARKER_COLOR = QColor("#f0b429")
@@ -21,6 +24,14 @@ _TRACE_OVERLAY_PALETTE = ("#4a9edb", "#4fc9b0", "#d9a441", "#d9707a", "#8f8fe0")
 directamente aquí, para no acoplar el visor genérico de imagen (usable
 también fuera de espectroscopía) a esa decisión de paleta."""
 _SKY_OVERLAY_COLOR = "#58a6ff"
+_APERTURE_EDGE_HIT_TOLERANCE_PX = 3.0
+"""Distancia real, en píxeles de DATOS (no de pantalla -- igual que el
+propio overlay, independiente del zoom), dentro de la cual un clic
+sobre el borde de la apertura cuenta como "agarrarlo" para arrastrar
+(§2)."""
+_MIN_APERTURE_HALF_WIDTH_PX = 0.5
+"""Nunca se deja arrastrar la apertura a un semiancho que colapse la
+ventana de extracción a (casi) cero píxeles reales."""
 
 
 class ImageView(QGraphicsView):
@@ -39,6 +50,12 @@ class ImageView(QGraphicsView):
     estilo PixInsight, mostrado en la barra de estado por
     `main_window.py`. `valor_adu` es `nan` si el cursor cae fuera de la
     imagen."""
+
+    aperture_edited = Signal(float)
+    """Se emite al soltar el ratón tras arrastrar el borde de la
+    apertura sobre el overlay de traza (§2), con el nuevo semiancho real
+    en píxeles -- `main_window.py` lo usa para recalcular la extracción
+    real con `trace_edit_context` sin retrazar ni pedir un nuevo clic."""
 
     def __init__(self, data: np.ndarray, title: str, parent=None, *, wcs=None, header: dict | None = None, source_path: str | None = None):
         super().__init__(parent)
@@ -112,6 +129,23 @@ class ImageView(QGraphicsView):
         """Traza/apertura/cielo dibujados sobre la imagen real por
         `set_trace_overlay` -- vacío mientras no se haya trazado/extraído
         nada todavía en esta ventana (§2/§3/§5/§28 del encargo)."""
+        self.trace_edit_context = None
+        """`qt_app.spectroscopy.trace_overlay_data.TraceEditContext` real
+        de la última traza/extracción de UNA sola apertura en esta
+        ventana (no multi-apertura/objeto extendido, que trazan varios
+        objetos a la vez) -- permite recalcular la extracción real tras
+        arrastrar el borde de la apertura (§2). `None` mientras no haya
+        ninguna traza editable todavía."""
+        self.trace_overlay_locked = False
+        """Si es `True`, arrastrar el borde de la apertura queda
+        desactivado -- protección real contra un arrastre accidental
+        (§2), activable/desactivable desde el menú Vista."""
+        self._trace_overlay_single: TraceOverlay | None = None
+        """El único `TraceOverlay` dibujado actualmente -- `None` sin
+        overlay, o con varios overlays simultáneos (multi-apertura),
+        que no son editables por arrastre en este slice."""
+        self._dragging_aperture = False
+        self._live_aperture_half_width: float | None = None
 
     def refresh_display(self) -> None:
         if self.stf_enabled:
@@ -186,26 +220,56 @@ class ImageView(QGraphicsView):
         de escena en coordenadas de datos, independientes del píxmap)."""
         self.clear_trace_overlay()
         items = overlays if isinstance(overlays, (list, tuple)) else (overlays,)
+        self._trace_overlay_single = items[0] if len(items) == 1 else None
         for i, overlay in enumerate(items):
             color = QColor(_TRACE_OVERLAY_PALETTE[i % len(_TRACE_OVERLAY_PALETTE)])
-            self._add_overlay_polyline(overlay.trace_columns, overlay.trace_center_px, color, width=2.0)
-            self._add_overlay_polyline(
-                overlay.trace_columns, overlay.trace_center_px - overlay.aperture_half_width, color, width=1.0, dashed=True,
-            )
-            self._add_overlay_polyline(
-                overlay.trace_columns, overlay.trace_center_px + overlay.aperture_half_width, color, width=1.0, dashed=True,
-            )
-            sky_color = QColor(_SKY_OVERLAY_COLOR)
-            for window in overlay.sky_windows:
-                lo = overlay.trace_center_px + window.offset_px - window.half_width_px
-                hi = overlay.trace_center_px + window.offset_px + window.half_width_px
-                self._add_overlay_polyline(overlay.trace_columns, lo, sky_color, width=1.0, dashed=True)
-                self._add_overlay_polyline(overlay.trace_columns, hi, sky_color, width=1.0, dashed=True)
+            self._draw_trace_overlay_item(overlay, color)
 
     def clear_trace_overlay(self) -> None:
         for item in self._trace_overlay_items:
             self._scene.removeItem(item)
         self._trace_overlay_items.clear()
+
+    def _draw_trace_overlay_item(self, overlay: TraceOverlay, color: QColor) -> None:
+        self._add_overlay_polyline(overlay.trace_columns, overlay.trace_center_px, color, width=2.0)
+        self._add_overlay_polyline(
+            overlay.trace_columns, overlay.trace_center_px - overlay.aperture_half_width, color, width=1.0, dashed=True,
+        )
+        self._add_overlay_polyline(
+            overlay.trace_columns, overlay.trace_center_px + overlay.aperture_half_width, color, width=1.0, dashed=True,
+        )
+        sky_color = QColor(_SKY_OVERLAY_COLOR)
+        for window in overlay.sky_windows:
+            lo = overlay.trace_center_px + window.offset_px - window.half_width_px
+            hi = overlay.trace_center_px + window.offset_px + window.half_width_px
+            self._add_overlay_polyline(overlay.trace_columns, lo, sky_color, width=1.0, dashed=True)
+            self._add_overlay_polyline(overlay.trace_columns, hi, sky_color, width=1.0, dashed=True)
+
+    # ---------------------------------------------------------------- edición interactiva de la apertura (§2)
+    def _nearest_trace_column_index(self, scene_x: float) -> int | None:
+        overlay = self._trace_overlay_single
+        if overlay is None or overlay.trace_columns.size == 0:
+            return None
+        index = int(round(scene_x)) - int(overlay.trace_columns[0])
+        if not (0 <= index < overlay.trace_columns.size):
+            return None
+        return index
+
+    def _hit_test_aperture_edge(self, scene_x: float, scene_y: float) -> bool:
+        column_index = self._nearest_trace_column_index(scene_x)
+        if column_index is None:
+            return False
+        overlay = self._trace_overlay_single
+        center = float(overlay.trace_center_px[column_index])
+        top, bottom = center - overlay.aperture_half_width, center + overlay.aperture_half_width
+        return min(abs(scene_y - top), abs(scene_y - bottom)) <= _APERTURE_EDGE_HIT_TOLERANCE_PX
+
+    def _aperture_half_width_for_cursor(self, scene_x: float, scene_y: float) -> float | None:
+        column_index = self._nearest_trace_column_index(scene_x)
+        if column_index is None:
+            return None
+        center = float(self._trace_overlay_single.trace_center_px[column_index])
+        return max(_MIN_APERTURE_HALF_WIDTH_PX, abs(scene_y - center))
 
     def _add_overlay_polyline(
         self, x_values: np.ndarray, y_values: np.ndarray, color: QColor, *, width: float, dashed: bool = False,
@@ -224,6 +288,16 @@ class ImageView(QGraphicsView):
         self._trace_overlay_items.append(item)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
+        if (
+            not self._picking and not self.trace_overlay_locked and self._trace_overlay_single is not None
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            scene_pos = self.mapToScene(event.position().toPoint())
+            if self._hit_test_aperture_edge(float(scene_pos.x()), float(scene_pos.y())):
+                self._dragging_aperture = True
+                self._live_aperture_half_width = self._trace_overlay_single.aperture_half_width
+                self.setCursor(Qt.CursorShape.SizeVerCursor)
+                return
         if self._picking and event.button() == Qt.MouseButton.LeftButton:
             scene_pos = self.mapToScene(event.position().toPoint())
             x, y = float(scene_pos.x()), float(scene_pos.y())
@@ -248,7 +322,28 @@ class ImageView(QGraphicsView):
         ix, iy = int(x), int(y)
         value = float(self.data[iy, ix]) if 0 <= ix < width and 0 <= iy < height else float("nan")
         self.pixel_hovered.emit(x, y, value)
+
+        if self._dragging_aperture and self._trace_overlay_single is not None:
+            new_half_width = self._aperture_half_width_for_cursor(x, y)
+            if new_half_width is not None:
+                self._live_aperture_half_width = new_half_width
+                self.clear_trace_overlay()
+                self._draw_trace_overlay_item(
+                    replace(self._trace_overlay_single, aperture_half_width=new_half_width), QColor(_TRACE_OVERLAY_PALETTE[0]),
+                )
+            return
         super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802 -- override de Qt
+        if self._dragging_aperture:
+            self._dragging_aperture = False
+            self.unsetCursor()
+            new_half_width = self._live_aperture_half_width
+            if new_half_width is not None and self._trace_overlay_single is not None:
+                self._trace_overlay_single = replace(self._trace_overlay_single, aperture_half_width=new_half_width)
+                self.aperture_edited.emit(new_half_width)
+            return
+        super().mouseReleaseEvent(event)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasFormat(_PROCESS_MIME_TYPE):

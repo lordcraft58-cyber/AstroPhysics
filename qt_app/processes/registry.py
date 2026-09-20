@@ -76,7 +76,7 @@ from astrophysics_suite.tables.table import Table
 from qt_app.processes.base import ParameterSpec, ProcessDefinition, ProcessResult
 from services.instrument_profiles import InstrumentProfileStore
 from qt_app.spectroscopy.spectrum_plot_data import SpectrumMarker, SpectrumPlotData, SpectrumSeries, series_color
-from qt_app.spectroscopy.trace_overlay_data import TraceOverlay
+from qt_app.spectroscopy.trace_overlay_data import TraceEditContext, TraceOverlay
 
 
 def _run_debayer(data: np.ndarray, params: dict) -> ProcessResult:
@@ -534,7 +534,14 @@ def _run_spectral_trace(data: np.ndarray, params: dict) -> ProcessResult:
         trace_columns=trace.columns.astype(np.float64), trace_center_px=trace.center_px,
         aperture_half_width=float(params["aperture_half_width"]), sky_windows=DEFAULT_SKY_WINDOWS, label="Traza",
     )
-    return ProcessResult(output_data=None, summary=summary, artifacts={"spectrum": plot_data, "trace_overlay": overlay})
+    edit_context = TraceEditContext(
+        trace=trace, data=data, uncertainty=uncertainty, mask=mask, extractor=extractor,
+        extraction_method_label=extraction_method, sky_windows=DEFAULT_SKY_WINDOWS, sky_smooth_degree=sky_smooth_degree,
+    )
+    return ProcessResult(
+        output_data=None, summary=summary,
+        artifacts={"spectrum": plot_data, "trace_overlay": overlay, "trace_edit_context": edit_context},
+    )
 
 
 def _qc_report_table(report: QCReport) -> Table:
@@ -1181,6 +1188,10 @@ def _run_autoprocess_spectrum(data: np.ndarray, params: dict) -> ProcessResult:
         aperture_half_width=float(params["aperture_half_width"]), sky_windows=DEFAULT_SKY_WINDOWS,
         label="Traza (autoproceso)",
     )
+    edit_context = TraceEditContext(
+        trace=result.trace, data=data, uncertainty=uncertainty, mask=sat_mask, extractor=extractor,
+        extraction_method_label=extraction_method, sky_windows=DEFAULT_SKY_WINDOWS, sky_smooth_degree=sky_smooth_degree,
+    )
 
     noise_note = f"; ruido real ({gain_note})" if gain_note else "; ruido Poisson aproximado (sin GAIN real)"
     summary = (
@@ -1190,7 +1201,7 @@ def _run_autoprocess_spectrum(data: np.ndarray, params: dict) -> ProcessResult:
     )
     log_lines = tuple(f"[{s.status}] {s.name}: {s.detail}" for s in result.steps)
 
-    artifacts: dict = {"spectrum": plot_data, "trace_overlay": overlay}
+    artifacts: dict = {"spectrum": plot_data, "trace_overlay": overlay, "trace_edit_context": edit_context}
     if result.calibration_record is not None:
         artifacts["wavelength_calibration_record"] = result.calibration_record
         artifacts["wavelength_calibration_spectrum"] = result.spectrum.flux

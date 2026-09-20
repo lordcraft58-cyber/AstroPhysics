@@ -426,6 +426,29 @@ def test_spectral_trace_process_requires_one_point_and_produces_a_real_spectrum(
     assert plot_data.series[0].y.size == width
 
 
+def test_spectral_trace_process_reports_a_real_trace_edit_context_for_recalculation():
+    # §2: el contexto real que permite "Recalcular" tras arrastrar el
+    # borde de la apertura en el overlay, sin retrazar ni pedir un nuevo clic.
+    from qt_app.spectroscopy.trace_overlay_data import TraceEditContext, recalculate_extraction
+
+    height, width = 41, 150
+    yy, _xx = np.mgrid[0:height, 0:width]
+    profile = np.exp(-(((yy - 20.0) ** 2)) / (2 * 2.0**2))
+    profile /= profile.sum(axis=0, keepdims=True)
+    data = 80.0 + 3000.0 * profile
+
+    process = _get("spectroscopy.trace")
+    params = _default_params(process)
+    params["_picked_points"] = [(0.0, 20.0)]
+    result = process.run(data, params)
+
+    context = result.artifacts["trace_edit_context"]
+    assert isinstance(context, TraceEditContext)
+    recalculated = recalculate_extraction(context, params["aperture_half_width"] * 2.0)
+    original_flux = result.artifacts["spectrum"].series[0].y
+    assert np.nanmedian(recalculated.flux) > np.nanmedian(original_flux)
+
+
 def test_spectral_trace_process_supports_mean_extraction():
     # §3: modo "media" -- flujo por píxel de apertura, no el total.
     height, width = 41, 150
@@ -845,6 +868,13 @@ def test_autoprocess_spectrum_process_runs_the_full_chain_and_wires_wavelength_c
     plot_data = result.artifacts["spectrum"]
     assert plot_data.x_unit == "Å"
     assert len(plot_data.markers) >= 2  # líneas identificadas
+
+    # §2: autoprocesar también deja el contexto real de edición de apertura
+    from qt_app.spectroscopy.trace_overlay_data import recalculate_extraction
+
+    context = result.artifacts["trace_edit_context"]
+    recalculated = recalculate_extraction(context, params["aperture_half_width"] * 2.0)
+    assert np.nanmedian(recalculated.flux) > np.nanmedian(plot_data.series[0].y)
 
 
 def test_autoprocess_spectrum_process_skips_calibration_when_disabled():
