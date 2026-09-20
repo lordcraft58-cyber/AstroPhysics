@@ -37,6 +37,7 @@ from astrophysics_suite.photometry.psf import (
     fit_group_psf_photometry_with_position_refinement,
 )
 from astrophysics_suite.reduction.overscan import subtract_overscan
+from astrophysics_suite.spectroscopy.autoprocess import run_autoprocess_spectrum
 from astrophysics_suite.spectroscopy.continuum import fit_continuum
 from astrophysics_suite.spectroscopy.frame2d import PixelFlag, build_pixel_mask
 from astrophysics_suite.spectroscopy.line_catalog import (
@@ -536,6 +537,14 @@ def _run_spectral_trace(data: np.ndarray, params: dict) -> ProcessResult:
     return ProcessResult(output_data=None, summary=summary, artifacts={"spectrum": plot_data, "trace_overlay": overlay})
 
 
+def _qc_report_table(report: QCReport) -> Table:
+    return Table(
+        columns=("metric", "status", "value", "guideline"),
+        units=("", "", "", ""),
+        rows=tuple((m.name, m.status.value, m.value_text, m.guideline) for m in report.metrics),
+    )
+
+
 def _run_qc_report(data: np.ndarray, params: dict) -> ProcessResult:
     """Informe de control de calidad unificado (§31) + panel de estado
     por objeto (§42) -- reutiliza EXACTAMENTE la misma traza/extracción
@@ -589,12 +598,7 @@ def _run_qc_report(data: np.ndarray, params: dict) -> ProcessResult:
         f"Informe de calidad -- estado global: {report.overall_status.value}. "
         + "  ·  ".join(f"{m.name}: {m.status.value}" for m in report.metrics)
     )
-    table = Table(
-        columns=("metric", "status", "value", "guideline"),
-        units=("", "", "", ""),
-        rows=tuple((m.name, m.status.value, m.value_text, m.guideline) for m in report.metrics),
-    )
-    return ProcessResult(output_data=None, summary=summary, log_lines=log_lines, table=table)
+    return ProcessResult(output_data=None, summary=summary, log_lines=log_lines, table=_qc_report_table(report))
 
 
 def _run_multi_aperture(data: np.ndarray, params: dict) -> ProcessResult:
@@ -1096,6 +1100,105 @@ def _run_reference_star_calibration(data: np.ndarray, params: dict) -> ProcessRe
     )
 
 
+def _run_autoprocess_spectrum(data: np.ndarray, params: dict) -> ProcessResult:
+    """Autoprocesar espectro (§34): un único clic encadena TODA la cadena
+    real de este taller para un espectro estelar ya reducido -- trazado
+    -> extracción -> calibración en longitud de onda por estrella de
+    referencia (§13, PROVISIONAL) -> identificación de líneas
+    (SUGERENCIAS) -> informe de calidad (§31/§42) -- reutilizando
+    exactamente los mismos motores que ya usan por separado 'Extracción
+    de traza', 'Calibrar por estrella de referencia' e 'Identificar
+    líneas automáticamente' (ver astrophysics_suite.spectroscopy.
+    autoprocess.run_autoprocess_spectrum, que hace la orquestación real).
+    Cada etapa reporta su propio estado real («ok»/«omitido»/«error»)
+    en el registro de operaciones -- un fallo en una etapa opcional
+    (calibración, identificación) nunca oculta lo que sí se completó
+    antes.
+
+    FUERA de alcance (mismos límites que documenta el módulo de
+    orquestación): bias/dark/flat (aplícalos antes, desde el menú
+    "Reducción", sobre CUALQUIER imagen) y calibración de flujo
+    (sensfunc, necesita un espectro de estrella ESTÁNDAR aparte)."""
+    points = params.get("_picked_points") or []
+    if len(points) != 1:
+        raise ValueError("se necesita exactamente un clic marcando el centro espacial inicial de la traza")
+    _x0, y0 = points[0]
+
+    header = params.get("_header")
+    sat_mask, _n_saturated, saturate_adu = _saturation_mask_from_header(data, params)
+    uncertainty, gain_note = _uncertainty_adu(data, params)
+    extraction_method = params["extraction_method"]
+    extractor = _EXTRACTION_METHODS[extraction_method]
+    sky_smooth_degree = int(params["sky_smooth_degree"]) or None
+
+    quality_mask = build_pixel_mask(data, saturate_adu=saturate_adu)
+    if bool(params.get("detect_cosmic_rays")):
+        gain = _header_positive_float(header, "GAIN")
+        read_noise = _header_positive_float(header, "RDNOISE") or 0.0
+        cr_result = detect_cosmic_rays(data, gain_e_per_adu=gain or 1.0, read_noise_e=read_noise)
+        quality_mask = quality_mask | (cr_result.mask.astype(np.uint16) * np.uint16(PixelFlag.COSMIC_RAY))
+
+    object_name = (header or {}).get("OBJECT")
+    reference_object = str(object_name).strip() if object_name else "(objeto sin nombre en la cabecera FITS)"
+
+    result = run_autoprocess_spectrum(
+        data, uncertainty, y0,
+        mask=sat_mask, quality_mask=quality_mask, saturate_available=saturate_adu is not None,
+        fit_degree=int(params["fit_degree"]), aperture_half_width=params["aperture_half_width"],
+        extractor=extractor, extraction_method_label=extraction_method, sky_smooth_degree=sky_smooth_degree,
+        calibrate_wavelength=bool(params["calibrate_wavelength"]),
+        calibration_catalog=_OBJECT_LINE_CATALOGS[params["calibration_catalog"]], reference_object=reference_object,
+        approx_dispersion_angstrom_per_px=params["approx_dispersion_angstrom_per_px"],
+        approx_wavelength_at_pixel0=params["approx_wavelength_at_pixel0"],
+        calibration_tolerance_angstrom=params["calibration_tolerance_angstrom"],
+        identify_lines=bool(params["identify_lines"]),
+        identify_catalog=_OBJECT_LINE_CATALOGS[params["identify_catalog"]],
+        identify_tolerance_angstrom=params["identify_tolerance_angstrom"],
+    )
+
+    pixel = np.arange(result.spectrum.flux.size, dtype=np.float64)
+    if result.wavelength_solution is not None:
+        x = np.asarray(result.wavelength_solution.pixel_to_wavelength(pixel), dtype=np.float64)
+        x_label, x_unit = "Longitud de onda (Å)", "Å"
+    else:
+        x, x_label, x_unit = pixel, "Píxel (dispersión)", ""
+
+    markers = tuple(
+        SpectrumMarker(
+            x_start=m.detected_wavelength - params["identify_tolerance_angstrom"],
+            x_end=m.detected_wavelength + params["identify_tolerance_angstrom"],
+            label=m.catalog_line.label + (" ¿telúrica?" if m.telluric_overlap else ""),
+            color="#e05252" if not m.line_type_agrees else ("#e0a852" if m.telluric_overlap else "#f0b429"),
+        )
+        for m in result.line_matches
+    )
+    plot_data = SpectrumPlotData(
+        series=(SpectrumSeries(label="Flujo extraído", x=x, y=result.spectrum.flux, y_error=result.spectrum.flux_uncertainty),),
+        x_label=x_label, y_label="Flujo extraído (ADU)", markers=markers, x_unit=x_unit,
+    )
+    overlay = TraceOverlay(
+        trace_columns=result.trace.columns.astype(np.float64), trace_center_px=result.trace.center_px,
+        aperture_half_width=float(params["aperture_half_width"]), sky_windows=DEFAULT_SKY_WINDOWS,
+        label="Traza (autoproceso)",
+    )
+
+    noise_note = f"; ruido real ({gain_note})" if gain_note else "; ruido Poisson aproximado (sin GAIN real)"
+    summary = (
+        f"Autoproceso desde y={y0:.1f} ({extraction_method}){noise_note} -- "
+        f"estado global: {result.qc_report.overall_status.value}. "
+        + "  ·  ".join(f"{s.name}: {s.status}" for s in result.steps)
+    )
+    log_lines = tuple(f"[{s.status}] {s.name}: {s.detail}" for s in result.steps)
+
+    artifacts: dict = {"spectrum": plot_data, "trace_overlay": overlay}
+    if result.calibration_record is not None:
+        artifacts["wavelength_calibration_record"] = result.calibration_record
+        artifacts["wavelength_calibration_spectrum"] = result.spectrum.flux
+    return ProcessResult(
+        output_data=None, summary=summary, log_lines=log_lines, table=_qc_report_table(result.qc_report), artifacts=artifacts,
+    )
+
+
 def _run_crop(data: np.ndarray, params: dict) -> ProcessResult:
     points = params.get("_picked_points") or []
     if len(points) != 2:
@@ -1493,6 +1596,59 @@ def build_process_registry(*, profile_store: InstrumentProfileStore | None = Non
                 ParameterSpec("min_snr", "S/N mínima de detección", "float", 5.0, minimum=1.0, maximum=50.0),
             ),
             run=_run_reference_star_calibration,
+        ),
+        ProcessDefinition(
+            process_id="spectroscopy.autoprocess",
+            name="Autoprocesar espectro (§34)",
+            category="Espectroscopía",
+            description=(
+                "Encadena en un único clic TODA la cadena real de este taller para un espectro estelar YA REDUCIDO: "
+                "trazado -> extracción -> calibración en longitud de onda por estrella de referencia (§13, "
+                "PROVISIONAL) -> identificación de líneas (SUGERENCIAS) -> informe de calidad (§31/§42) -- los "
+                "mismos motores que ya usan por separado 'Extracción de traza', 'Calibrar por estrella de "
+                "referencia' e 'Identificar líneas automáticamente', aquí en un solo paso. Cada etapa reporta su "
+                "propio estado real (ok/omitido/error) en el registro de operaciones -- un fallo en una etapa "
+                "OPCIONAL (p. ej. la calibración, si no hay líneas reales que emparejar) nunca oculta lo que sí se "
+                "completó antes (traza y extracción siguen disponibles). NO incluye bias/dark/flat (aplícalos "
+                "antes, desde el menú 'Reducción', sobre cualquier imagen) ni calibración de flujo (sensfunc, "
+                "necesita un espectro de estrella ESTÁNDAR aparte). Al pulsar Aplicar, marca con un clic el centro "
+                "espacial inicial de la traza (misma traza real que 'Extracción de traza')."
+            ),
+            parameters=(
+                ParameterSpec("fit_degree", "Grado del ajuste de traza", "int", 3, minimum=1, maximum=10),
+                ParameterSpec("aperture_half_width", "Semiancho de apertura (px)", "float", 4.0, minimum=1.0, maximum=100.0),
+                ParameterSpec(
+                    "extraction_method", "Método de extracción", "choice", "óptima (Horne 1986)",
+                    choices=tuple(_EXTRACTION_METHODS),
+                    help_text="suma simple / óptima (Horne 1986) / media (§3).",
+                ),
+                ParameterSpec(
+                    "sky_smooth_degree", "Suavizado polinómico del cielo (grado, 0 = sin suavizar)", "int", 0,
+                    minimum=0, maximum=6,
+                ),
+                ParameterSpec("calibrate_wavelength", "Calibrar en longitud de onda (§13, por estrella de referencia)", "bool", True),
+                ParameterSpec(
+                    "calibration_catalog", "Catálogo para la calibración", "choice", "Balmer (H, estelar)",
+                    choices=tuple(_OBJECT_LINE_CATALOGS),
+                ),
+                ParameterSpec("approx_dispersion_angstrom_per_px", "Dispersión aprox. (Å/px)", "float", 1.4, minimum=0.01, maximum=100.0),
+                ParameterSpec("approx_wavelength_at_pixel0", "λ en píxel 0 aprox. (Å)", "float", 3800.0, minimum=0.0, maximum=20000.0),
+                ParameterSpec("calibration_tolerance_angstrom", "Tolerancia de emparejamiento de calibración (Å)", "float", 15.0, minimum=0.1, maximum=500.0),
+                ParameterSpec("identify_lines", "Identificar líneas de objeto (sugerencias)", "bool", True),
+                ParameterSpec(
+                    "identify_catalog", "Catálogo para identificación", "choice", "Todas (estelar + nebular)",
+                    choices=tuple(_OBJECT_LINE_CATALOGS),
+                ),
+                ParameterSpec("identify_tolerance_angstrom", "Tolerancia de emparejamiento de identificación (Å)", "float", 3.0, minimum=0.1, maximum=200.0),
+                ParameterSpec("detect_cosmic_rays", "Incluir rayos cósmicos reales en la calidad de píxeles (L.A.Cosmic)", "bool", False),
+                ParameterSpec(
+                    "instrument_profile", "Perfil de instrumento (respaldo GAIN/RDNOISE)", "choice",
+                    _NO_INSTRUMENT_PROFILE, choices=instrument_profile_choices,
+                    help_text="Solo se usa si la cabecera FITS de esta exposición no trae GAIN real -- la cabecera siempre tiene prioridad.",
+                ),
+            ),
+            run=_run_autoprocess_spectrum,
+            requires_picking=1,
         ),
         # La calibración en longitud de onda necesita que el usuario
         # empareje cada línea de arco detectada con una longitud de onda

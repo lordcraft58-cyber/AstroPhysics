@@ -784,6 +784,107 @@ def test_reference_star_calibration_process_raises_honestly_when_nothing_matches
         process.run(data, params)
 
 
+def _synthetic_2d_star_frame_for_autoprocess(
+    shape=(41, 2000), *, center=20.0, sigma=2.0, wave0=4000.0, dispersion=2.0,
+    continuum=6000.0, depth=1200.0, line_sigma_px=2.5, background=50.0, seed=17,
+):
+    from astrophysics_suite.spectroscopy.line_catalog import BALMER_LINES
+
+    rng = np.random.default_rng(seed)
+    height, width = shape
+    pixel = np.arange(width, dtype=np.float64)
+    flux_per_col = np.full(width, continuum)
+    for line in BALMER_LINES:
+        true_pixel = (line.wavelength_air_angstrom - wave0) / dispersion
+        if 0 <= true_pixel < width:
+            flux_per_col -= depth * np.exp(-((pixel - true_pixel) ** 2) / (2 * line_sigma_px**2))
+    rows = np.arange(height)[:, np.newaxis]
+    profile = np.exp(-((rows - center) ** 2) / (2 * sigma**2))
+    profile /= profile.sum(axis=0, keepdims=True)
+    data = background + flux_per_col[np.newaxis, :] * profile
+    data = data + rng.normal(0, 3.0, shape)
+    return data
+
+
+def test_autoprocess_spectrum_process_requires_one_point():
+    process = _get("spectroscopy.autoprocess")
+    assert process.requires_picking == 1
+    data = np.full((41, 200), 100.0)
+    params = _default_params(process)
+    params["_picked_points"] = []
+    with pytest.raises(ValueError):
+        process.run(data, params)
+
+
+def test_autoprocess_spectrum_process_runs_the_full_chain_and_wires_wavelength_calibration_artifacts():
+    wave0, dispersion = 4000.0, 2.0
+    data = _synthetic_2d_star_frame_for_autoprocess(wave0=wave0, dispersion=dispersion)
+
+    process = _get("spectroscopy.autoprocess")
+    params = _default_params(process)
+    params["_picked_points"] = [(0.0, 20.0)]
+    params["_header"] = {"OBJECT": "Vega (sintética)"}
+    params["approx_dispersion_angstrom_per_px"] = dispersion * 1.01
+    params["approx_wavelength_at_pixel0"] = wave0 + 10.0
+    params["calibration_tolerance_angstrom"] = 40.0
+    params["identify_tolerance_angstrom"] = 40.0
+
+    result = process.run(data, params)
+
+    assert "estado global" in result.summary
+    assert len(result.log_lines) == 5  # traza, extracción, calibración, identificación, calidad
+    assert all(line.startswith("[ok]") for line in result.log_lines)
+    assert result.table is not None and len(result.table.rows) == 6
+
+    record = result.artifacts["wavelength_calibration_record"]
+    assert record.reference_object == "Vega (sintética)"
+    assert record.solution.pixel_to_wavelength(0.0) == pytest.approx(wave0, abs=5.0)
+    assert result.artifacts["wavelength_calibration_spectrum"] is not None
+    assert result.artifacts["trace_overlay"] is not None
+
+    plot_data = result.artifacts["spectrum"]
+    assert plot_data.x_unit == "Å"
+    assert len(plot_data.markers) >= 2  # líneas identificadas
+
+
+def test_autoprocess_spectrum_process_skips_calibration_when_disabled():
+    data = _synthetic_2d_star_frame_for_autoprocess()
+    process = _get("spectroscopy.autoprocess")
+    params = _default_params(process)
+    params["_picked_points"] = [(0.0, 20.0)]
+    params["calibrate_wavelength"] = False
+
+    result = process.run(data, params)
+
+    assert "wavelength_calibration_record" not in result.artifacts
+    calibration_line = next(line for line in result.log_lines if "Calibración en longitud de onda" in line)
+    assert calibration_line.startswith("[omitido]")
+    identification_line = next(line for line in result.log_lines if "Identificación de líneas" in line)
+    assert identification_line.startswith("[omitido]")
+    plot_data = result.artifacts["spectrum"]
+    assert plot_data.x_unit == ""  # sin calibrar: eje en píxel, no en Å
+
+
+def test_autoprocess_spectrum_process_continues_reporting_after_a_real_calibration_failure():
+    height, width = 41, 300
+    rows = np.arange(height)[:, np.newaxis]
+    profile = np.exp(-((rows - 20.0) ** 2) / (2 * 2.0**2))
+    profile /= profile.sum(axis=0, keepdims=True)
+    column = 50.0 + 4000.0 * profile  # continuo puro, sin ninguna línea real
+    data = np.tile(column, (1, width))
+
+    process = _get("spectroscopy.autoprocess")
+    params = _default_params(process)
+    params["_picked_points"] = [(0.0, 20.0)]
+
+    result = process.run(data, params)
+
+    assert "wavelength_calibration_record" not in result.artifacts
+    assert result.artifacts["spectrum"] is not None  # la extracción real se conserva pese al fallo
+    calibration_line = next(line for line in result.log_lines if "Calibración en longitud de onda" in line)
+    assert calibration_line.startswith("[error]")
+
+
 def test_multi_aperture_process_produces_one_spectrum_series_per_aperture():
     height, width = 60, 150
     rows = np.arange(height)[:, np.newaxis]
