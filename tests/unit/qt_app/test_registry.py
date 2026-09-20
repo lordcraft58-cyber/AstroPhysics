@@ -426,6 +426,50 @@ def test_spectral_trace_process_requires_one_point_and_produces_a_real_spectrum(
     assert plot_data.series[0].y.size == width
 
 
+def test_spectral_trace_process_supports_mean_extraction():
+    # §3: modo "media" -- flujo por píxel de apertura, no el total.
+    height, width = 41, 150
+    yy, _xx = np.mgrid[0:height, 0:width]
+    flux_per_col = 3000.0
+    profile = np.exp(-(((yy - 20.0) ** 2)) / (2 * 2.0**2))
+    profile /= profile.sum(axis=0, keepdims=True)
+    data = 80.0 + flux_per_col * profile
+
+    process = _get("spectroscopy.trace")
+    params_sum = _default_params(process)
+    params_sum["extraction_method"] = "suma simple"
+    params_sum["_picked_points"] = [(0.0, 20.0)]
+    result_sum = process.run(data, params_sum)
+
+    params_mean = _default_params(process)
+    params_mean["extraction_method"] = "media (§3)"
+    params_mean["_picked_points"] = [(0.0, 20.0)]
+    result_mean = process.run(data, params_mean)
+
+    aperture_half_width = params_mean["aperture_half_width"]
+    nominal_pixels = 2 * aperture_half_width + 1
+    flux_sum = result_sum.artifacts["spectrum"].series[0].y
+    flux_mean = result_mean.artifacts["spectrum"].series[0].y
+    np.testing.assert_allclose(flux_mean, flux_sum / nominal_pixels, equal_nan=True)
+
+
+def test_spectral_trace_process_applies_real_sky_smoothing_when_requested():
+    height, width = 41, 150
+    yy, _xx = np.mgrid[0:height, 0:width]
+    flux_per_col = 3000.0
+    profile = np.exp(-(((yy - 20.0) ** 2)) / (2 * 2.0**2))
+    profile /= profile.sum(axis=0, keepdims=True)
+    data = 80.0 + flux_per_col * profile
+
+    process = _get("spectroscopy.trace")
+    params = _default_params(process)
+    params["sky_smooth_degree"] = 2
+    params["_picked_points"] = [(0.0, 20.0)]
+    result = process.run(data, params)
+
+    assert "polinomio real de grado 2" in result.summary
+
+
 def test_spectral_trace_process_rejects_wrong_number_of_points():
     process = _get("spectroscopy.trace")
     data = np.full((30, 30), 100.0)
@@ -797,7 +841,7 @@ def test_spectral_trace_process_excludes_saturated_pixels_and_reports_them():
 
     process = _get("spectroscopy.trace")
     params = _default_params(process)
-    params["optimal_extraction"] = False
+    params["extraction_method"] = "suma simple"
     params["_picked_points"] = [(0.0, 20.0)]
     params["_header"] = {"SATURATE": saturate_adu}
     result = process.run(data, params)

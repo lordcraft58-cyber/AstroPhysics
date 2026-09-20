@@ -10,6 +10,7 @@ from astrophysics_suite.spectroscopy.trace import (
     SkyWindow,
     TraceResult,
     estimate_sky_background,
+    extract_mean,
     extract_optimal,
     extract_sum,
     trace_spectrum,
@@ -192,3 +193,67 @@ def test_estimate_sky_background_sigma_clip_rejects_a_contaminating_outlier():
     sky_median = estimate_sky_background(data, trace, windows=windows, reducer="median")
     assert sky_clipped.level[15] == pytest.approx(100.0, abs=5.0)
     assert sky_median.level[15] == pytest.approx(100.0, abs=5.0)  # la mediana también resiste un solo outlier
+
+
+def test_extract_mean_is_extract_sum_divided_by_the_nominal_aperture_width():
+    # §3: modo de extracción "media" -- exactamente extract_sum reescalado,
+    # nunca una extracción recalculada por separado.
+    data, uncertainty, _ = _synthetic_2d_spectrum(curve=0.0)
+    trace = trace_spectrum(data, initial_center_px=20.0, fit_degree=1)
+    aperture_half_width = 6.0
+    nominal_pixels = 2 * aperture_half_width + 1
+
+    summed = extract_sum(data, uncertainty, trace, aperture_half_width=aperture_half_width)
+    averaged = extract_mean(data, uncertainty, trace, aperture_half_width=aperture_half_width)
+
+    assert averaged.method == "mean"
+    np.testing.assert_allclose(averaged.flux, summed.flux / nominal_pixels, equal_nan=True)
+    np.testing.assert_allclose(averaged.flux_uncertainty, summed.flux_uncertainty / nominal_pixels, equal_nan=True)
+    np.testing.assert_array_equal(averaged.valid, summed.valid)
+
+
+def test_estimate_sky_background_smoothing_recovers_a_known_linear_sky_gradient():
+    # §5: ajuste polinómico suave explícito del cielo ya estimado por columna.
+    rng = np.random.default_rng(23)
+    n_columns = 60
+    true_sky = 100.0 + 0.5 * np.arange(n_columns)  # gradiente lineal real conocido
+    data = np.tile(true_sky, (41, 1)) + rng.normal(0, 1.5, (41, n_columns))
+    trace = TraceResult(columns=np.arange(n_columns), center_px=np.full(n_columns, 20.0), fit_degree=0, rms_residual_px=0.0)
+    windows = (SkyWindow(offset_px=-10.0, half_width_px=3.0), SkyWindow(offset_px=10.0, half_width_px=3.0))
+
+    raw = estimate_sky_background(data, trace, windows=windows)
+    smoothed = estimate_sky_background(data, trace, windows=windows, smooth_degree=1)
+
+    assert "poly" in smoothed.reducer
+    assert np.all(smoothed.valid)  # el ajuste polinómico cubre toda la traza
+    np.testing.assert_allclose(smoothed.level, true_sky, atol=1.0)
+    # el suavizado reduce el ruido columna a columna frente a la estimación directa
+    assert np.std(smoothed.level - true_sky) < np.std(raw.level - true_sky)
+
+
+def test_estimate_sky_background_smoothing_can_fill_columns_without_direct_evidence():
+    data, _, _ = _synthetic_2d_spectrum(shape=(41, 50), center=20.0, curve=0.0)
+    trace = trace_spectrum(data, initial_center_px=20.0, fit_degree=1)
+    far_windows = (SkyWindow(offset_px=-100.0, half_width_px=4.0), SkyWindow(offset_px=100.0, half_width_px=4.0))
+
+    with pytest.raises(ValueError):
+        estimate_sky_background(data, trace, windows=far_windows, smooth_degree=1)
+
+
+def test_extract_sum_propagates_sky_smoothing_to_the_extracted_flux():
+    rng = np.random.default_rng(29)
+    n_columns = 60
+    true_sky = 100.0 + 0.5 * np.arange(n_columns)
+    center = 20.0
+    profile = np.exp(-((np.arange(41)[:, np.newaxis] - center) ** 2) / (2 * 2.0**2))
+    profile /= profile.sum(axis=0, keepdims=True)
+    data = true_sky[np.newaxis, :] + 2000.0 * profile + rng.normal(0, 1.5, (41, n_columns))
+    uncertainty = np.sqrt(np.clip(data, 1.0, None))
+    trace = TraceResult(columns=np.arange(n_columns), center_px=np.full(n_columns, center), fit_degree=0, rms_residual_px=0.0)
+
+    without_smoothing = extract_sum(data, uncertainty, trace, aperture_half_width=6.0)
+    with_smoothing = extract_sum(data, uncertainty, trace, aperture_half_width=6.0, sky_smooth_degree=1)
+
+    assert without_smoothing.sky is not None and "poly" not in without_smoothing.sky.reducer
+    assert with_smoothing.sky is not None and "poly" in with_smoothing.sky.reducer
+    assert np.all(with_smoothing.valid)  # el cielo suavizado cubre toda la traza

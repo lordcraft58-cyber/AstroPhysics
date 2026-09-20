@@ -166,6 +166,42 @@ class SkyEstimate:
     reducer: str
 
 
+def _smooth_sky_estimate(
+    level: np.ndarray, valid: np.ndarray, n_used: np.ndarray, reducer: str, *, degree: int, sigma_clip: float,
+    max_iters: int = 5,
+) -> SkyEstimate:
+    """Ajuste polinómico suave del cielo YA estimado por columna (§5:
+    "ajuste polinómico suave explícito") -- mismo patrón de rechazo
+    iterativo sigma-clip ya usado para la traza en `trace_spectrum`,
+    reutilizado aquí en vez de reimplementado. Un ajuste real puede
+    interpolar sobre columnas donde la estimación directa no tenía
+    evidencia (`valid[col] == False`), así que el resultado queda válido
+    en toda la traza -- `n_pixels_used` sigue contando solo la evidencia
+    real por columna, nunca se rellena."""
+    n_columns = level.size
+    columns_all = np.arange(n_columns)
+    columns, values = columns_all[valid], level[valid]
+    if columns.size < degree + 1:
+        raise ValueError(
+            f"solo {columns.size} columna(s) con cielo real medible -- se necesitan al menos {degree + 1} "
+            f"para un ajuste polinómico suave de grado {degree}"
+        )
+    for _ in range(max_iters):
+        coeffs = np.polyfit(columns, values, deg=degree)
+        residuals = values - np.polyval(coeffs, columns)
+        mad = float(np.median(np.abs(residuals)))
+        sigma = max(mad * _MAD_TO_SIGMA, 1e-9)
+        keep = np.abs(residuals) <= sigma_clip * sigma
+        if np.all(keep) or np.count_nonzero(keep) < degree + 1:
+            break
+        columns, values = columns[keep], values[keep]
+    coeffs = np.polyfit(columns, values, deg=degree)
+    smoothed = np.polyval(coeffs, columns_all)
+    return SkyEstimate(
+        level=smoothed, valid=np.ones(n_columns, dtype=bool), n_pixels_used=n_used, reducer=f"{reducer}+poly(deg={degree})",
+    )
+
+
 def estimate_sky_background(
     data: np.ndarray,
     trace: TraceResult,
@@ -174,6 +210,8 @@ def estimate_sky_background(
     windows: tuple[SkyWindow, ...] = DEFAULT_SKY_WINDOWS,
     reducer: str = "median",
     sigma_clip: float = 3.0,
+    smooth_degree: int | None = None,
+    smooth_sigma_clip: float = 3.0,
 ) -> SkyEstimate:
     """Estima el cielo `sky(x)` a partir de regiones EXPLÍCITAS a ambos
     lados de la traza (§5) -- no una única mediana de "lo que quede" en
@@ -188,6 +226,12 @@ def estimate_sky_background(
     (todas fuera de la imagen, o todas marcadas como malas), esa columna
     queda `valid[col] = False` y `level[col] = NaN` -- restar un cielo
     de `0.0` inventado sería peor que no restar nada.
+
+    `smooth_degree`: si se da (no `None`), el nivel de cielo por columna
+    ya estimado se suaviza con un ajuste polinómico real de ese grado
+    (§5) -- reduce el ruido columna a columna y puede rellenar columnas
+    sin evidencia directa con un valor real interpolado, en vez de dejar
+    el cielo tal cual salió de cada columna independiente.
     """
     if reducer not in _SKY_REDUCERS:
         raise ValueError(f"reducer debe ser uno de {_SKY_REDUCERS}, recibido {reducer!r}")
@@ -230,6 +274,8 @@ def estimate_sky_background(
         valid[col] = True
         n_used[col] = int(pool.size)
 
+    if smooth_degree is not None:
+        return _smooth_sky_estimate(level, valid, n_used, reducer, degree=smooth_degree, sigma_clip=smooth_sigma_clip)
     return SkyEstimate(level=level, valid=valid, n_pixels_used=n_used, reducer=reducer)
 
 
@@ -264,6 +310,8 @@ def extract_sum(
     sky_windows: tuple[SkyWindow, ...] = DEFAULT_SKY_WINDOWS,
     sky_reducer: str = "median",
     min_valid_fraction: float = 0.3,
+    sky_smooth_degree: int | None = None,
+    sky_smooth_sigma_clip: float = 3.0,
 ) -> ExtractedSpectrum:
     """Extracción por suma simple en una ventana espacial que SIGUE la
     traza (`trace.center_px`, no una fila fija), con fondo local estimado
@@ -276,12 +324,18 @@ def extract_sum(
     apertura nominal, en cuyo caso la columna se marca inválida en vez de
     reportar un flujo sesgado por una apertura efectiva mucho más
     pequeña que la nominal sin decirlo.
+
+    `sky_smooth_degree`: ver `estimate_sky_background` (§5) -- se pasa
+    tal cual, sin ninguna lógica adicional aquí.
     """
     if data.shape != uncertainty.shape:
         raise ValueError("data y uncertainty deben tener la misma forma")
     height, n_columns = data.shape
     bad = _combined_bad(data, mask)
-    sky = estimate_sky_background(data, trace, mask=mask, windows=sky_windows, reducer=sky_reducer)
+    sky = estimate_sky_background(
+        data, trace, mask=mask, windows=sky_windows, reducer=sky_reducer,
+        smooth_degree=sky_smooth_degree, smooth_sigma_clip=sky_smooth_sigma_clip,
+    )
 
     flux = np.full(n_columns, np.nan)
     flux_unc = np.full(n_columns, np.nan)
@@ -318,6 +372,39 @@ def extract_sum(
     )
 
 
+def extract_mean(
+    data: np.ndarray,
+    uncertainty: np.ndarray,
+    trace: TraceResult,
+    *,
+    mask: np.ndarray | None = None,
+    aperture_half_width: float = 4.0,
+    sky_windows: tuple[SkyWindow, ...] = DEFAULT_SKY_WINDOWS,
+    sky_reducer: str = "median",
+    min_valid_fraction: float = 0.3,
+    sky_smooth_degree: int | None = None,
+    sky_smooth_sigma_clip: float = 3.0,
+) -> ExtractedSpectrum:
+    """Extracción por promedio (§3: modo `average` de `apall`) --
+    reutiliza `extract_sum` al 100% y solo reescala su flujo/incertidumbre
+    ya calculados por el ancho nominal de la apertura (flujo TOTAL ->
+    flujo MEDIO por píxel de apertura), nunca recalcula la extracción
+    desde cero: es exactamente la misma suma ya renormalizada por
+    apertura parcial, dividida por el ancho nominal completo."""
+    summed = extract_sum(
+        data, uncertainty, trace, mask=mask, aperture_half_width=aperture_half_width,
+        sky_windows=sky_windows, sky_reducer=sky_reducer, min_valid_fraction=min_valid_fraction,
+        sky_smooth_degree=sky_smooth_degree, sky_smooth_sigma_clip=sky_smooth_sigma_clip,
+    )
+    nominal_pixels = 2 * aperture_half_width + 1
+    return ExtractedSpectrum(
+        flux=summed.flux / nominal_pixels, flux_uncertainty=summed.flux_uncertainty / nominal_pixels,
+        background_per_pixel=summed.background_per_pixel, method="mean",
+        valid=summed.valid, n_pixels_used=summed.n_pixels_used, n_pixels_rejected=summed.n_pixels_rejected,
+        sky=summed.sky,
+    )
+
+
 def extract_optimal(
     data: np.ndarray,
     uncertainty: np.ndarray,
@@ -328,6 +415,8 @@ def extract_optimal(
     sky_windows: tuple[SkyWindow, ...] = DEFAULT_SKY_WINDOWS,
     sky_reducer: str = "median",
     min_valid_fraction: float = 0.3,
+    sky_smooth_degree: int | None = None,
+    sky_smooth_sigma_clip: float = 3.0,
 ) -> ExtractedSpectrum:
     """Extracción óptima (Horne 1986): construye un perfil espacial
     normalizado compartido -- la mediana, columna a columna, del perfil
@@ -339,13 +428,17 @@ def extract_optimal(
 
     Igual que `extract_sum`: los píxeles marcados se excluyen del perfil
     y de la suma ponderada, y una columna sin evidencia suficiente queda
-    `valid=False` con `flux=NaN`, nunca `0.0`.
+    `valid=False` con `flux=NaN`, nunca `0.0`. `sky_smooth_degree`: ver
+    `estimate_sky_background` (§5).
     """
     if data.shape != uncertainty.shape:
         raise ValueError("data y uncertainty deben tener la misma forma")
     height, n_columns = data.shape
     bad = _combined_bad(data, mask)
-    sky = estimate_sky_background(data, trace, mask=mask, windows=sky_windows, reducer=sky_reducer)
+    sky = estimate_sky_background(
+        data, trace, mask=mask, windows=sky_windows, reducer=sky_reducer,
+        smooth_degree=sky_smooth_degree, smooth_sigma_clip=sky_smooth_sigma_clip,
+    )
 
     half = int(round(aperture_half_width))
     window_size = 2 * half + 1

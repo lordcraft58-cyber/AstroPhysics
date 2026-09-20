@@ -61,7 +61,14 @@ from astrophysics_suite.spectroscopy.qc_report import (
 )
 from astrophysics_suite.spectroscopy.extended_extraction import SpatialRegion, extract_multi_region
 from astrophysics_suite.spectroscopy.multiaperture import extract_multi_aperture
-from astrophysics_suite.spectroscopy.trace import DEFAULT_SKY_WINDOWS, SkyWindow, extract_optimal, extract_sum, trace_spectrum
+from astrophysics_suite.spectroscopy.trace import (
+    DEFAULT_SKY_WINDOWS,
+    SkyWindow,
+    extract_mean,
+    extract_optimal,
+    extract_sum,
+    trace_spectrum,
+)
 from astrophysics_suite.tables.table import Table
 from qt_app.processes.base import ParameterSpec, ProcessDefinition, ProcessResult
 from services.instrument_profiles import InstrumentProfileStore
@@ -474,6 +481,13 @@ def _run_quality_map(data: np.ndarray, params: dict) -> ProcessResult:
     return ProcessResult(output_data=mask.astype(np.float64), summary=summary, log_lines=tuple(log_lines))
 
 
+_EXTRACTION_METHODS = {
+    "suma simple": extract_sum,
+    "óptima (Horne 1986)": extract_optimal,
+    "media (§3)": extract_mean,
+}
+
+
 def _run_spectral_trace(data: np.ndarray, params: dict) -> ProcessResult:
     points = params.get("_picked_points") or []
     if len(points) != 1:
@@ -483,8 +497,13 @@ def _run_spectral_trace(data: np.ndarray, params: dict) -> ProcessResult:
     mask, n_saturated, saturate_adu = _saturation_mask_from_header(data, params)
     trace = trace_spectrum(data, initial_center_px=y0, fit_degree=int(params["fit_degree"]), mask=mask)
     uncertainty, gain_note = _uncertainty_adu(data, params)
-    extractor = extract_optimal if params["optimal_extraction"] else extract_sum
-    spectrum = extractor(data, uncertainty, trace, aperture_half_width=params["aperture_half_width"], mask=mask)
+    extraction_method = params["extraction_method"]
+    extractor = _EXTRACTION_METHODS[extraction_method]
+    sky_smooth_degree = int(params["sky_smooth_degree"]) or None
+    spectrum = extractor(
+        data, uncertainty, trace, aperture_half_width=params["aperture_half_width"], mask=mask,
+        sky_smooth_degree=sky_smooth_degree,
+    )
 
     # Una columna que no se pudo medir queda flux=NaN (nunca 0.0): se
     # excluye de la estadística en vez de arrastrar un cero falso a la
@@ -499,13 +518,14 @@ def _run_spectral_trace(data: np.ndarray, params: dict) -> ProcessResult:
         series=(SpectrumSeries(label="Flujo extraído", x=pixel, y=spectrum.flux, y_error=spectrum.flux_uncertainty),),
         x_label="Píxel (dispersión)", y_label="Flujo extraído (ADU)",
     )
-    method = "óptima (Horne 1986)" if params["optimal_extraction"] else "suma simple"
+    method = extraction_method
+    sky_note = f"; cielo suavizado con un polinomio real de grado {sky_smooth_degree}" if sky_smooth_degree else ""
     invalid_note = f"; {n_invalid} columna(s) sin medida real (huecos en el gráfico)" if n_invalid else ""
     saturation_note = f"; {n_saturated} píxel(es) saturado(s) (SATURATE={saturate_adu:.0f} ADU) excluido(s)" if n_saturated else ""
     noise_note = f"; ruido real ({gain_note})" if gain_note else "; ruido Poisson aproximado (sin GAIN real)"
     summary = (
         f"Traza extraída ({method}) desde y={y0:.1f} en x={x0:.1f}; RMS de traza={trace.rms_residual_px:.2f} px, "
-        f"S/N mediana={median_snr:.1f}{invalid_note}{saturation_note}{noise_note}."
+        f"S/N mediana={median_snr:.1f}{invalid_note}{saturation_note}{noise_note}{sky_note}."
     )
     overlay = TraceOverlay(
         trace_columns=trace.columns.astype(np.float64), trace_center_px=trace.center_px,
@@ -1310,11 +1330,20 @@ def build_process_registry(*, profile_store: InstrumentProfileStore | None = Non
             process_id="spectroscopy.trace",
             name="Extracción de traza (apall)",
             category="Espectroscopía",
-            description="Traza espacial + extracción por suma u óptima (Horne 1986) -- eje 0 espacial, eje 1 dispersión. Al pulsar Aplicar, marca con un clic el centro espacial inicial de la traza. El resultado se muestra como una tira 1D repetida (el taller todavía no tiene un visor de espectros dedicado).",
+            description="Traza espacial + extracción por suma, media u óptima (Horne 1986) -- eje 0 espacial, eje 1 dispersión. Al pulsar Aplicar, marca con un clic el centro espacial inicial de la traza. El resultado se muestra como una tira 1D repetida (el taller todavía no tiene un visor de espectros dedicado).",
             parameters=(
                 ParameterSpec("fit_degree", "Grado del ajuste de traza", "int", 3, minimum=1, maximum=10),
                 ParameterSpec("aperture_half_width", "Semiancho de apertura (px)", "float", 4.0, minimum=1.0, maximum=100.0),
-                ParameterSpec("optimal_extraction", "Extracción óptima (Horne)", "bool", True),
+                ParameterSpec(
+                    "extraction_method", "Método de extracción", "choice", "óptima (Horne 1986)",
+                    choices=tuple(_EXTRACTION_METHODS),
+                    help_text="suma simple / óptima (Horne 1986, mejor S/N para una fuente débil) / media (§3, flujo medio por píxel de apertura en vez de flujo total).",
+                ),
+                ParameterSpec(
+                    "sky_smooth_degree", "Suavizado polinómico del cielo (grado, 0 = sin suavizar)", "int", 0,
+                    minimum=0, maximum=6,
+                    help_text="§5: 0 desactiva el suavizado (cielo tal cual por columna); >0 ajusta un polinomio real de ese grado al cielo ya estimado, con rechazo iterativo de outliers.",
+                ),
                 ParameterSpec(
                     "instrument_profile", "Perfil de instrumento (respaldo GAIN/RDNOISE)", "choice",
                     _NO_INSTRUMENT_PROFILE, choices=instrument_profile_choices,
