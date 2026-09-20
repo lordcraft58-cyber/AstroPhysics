@@ -10,7 +10,9 @@ from astropy.io import fits
 from astrophysics_suite.spectroscopy.calibration_provenance import CalibrationSource, WavelengthCalibrationRecord
 from astrophysics_suite.spectroscopy.spectrum1d_io import (
     load_spectrum1d_fits,
+    processing_history_path_for_product,
     save_spectrum1d_fits,
+    standard_product_name,
     wavelength_header_cards,
 )
 from astrophysics_suite.spectroscopy.wavelength import fit_wavelength_solution
@@ -172,3 +174,29 @@ def test_flux_bunit_override_is_never_silently_clobbered_back_to_adu(tmp_path):
     )
     with fits.open(path) as hdul:
         assert hdul[0].header["BUNIT"] == "erg/s/cm2/Angstrom"
+
+
+def test_standard_product_name_uses_the_real_object_header():
+    assert standard_product_name("Vega", "/tmp/whatever.fits") == "Vega_1D.fits"
+
+
+def test_standard_product_name_sanitizes_unsafe_characters():
+    assert standard_product_name("Vega (sintética)") == "Vega_sintética_1D.fits"
+
+
+def test_standard_product_name_falls_back_to_the_source_stem_without_a_real_object():
+    assert standard_product_name(None, "/data/night3/frame6.fit") == "frame6_1D.fits"
+    assert standard_product_name("   ", "/data/night3/frame6.fit") == "frame6_1D.fits"
+
+
+def test_standard_product_name_falls_back_to_an_honest_placeholder_without_anything_real():
+    assert standard_product_name(None, None) == "espectro_1D.fits"
+
+
+def test_standard_product_name_respects_a_different_product_kind():
+    assert standard_product_name("Vega", kind="2D") == "Vega_2D.fits"
+
+
+def test_processing_history_path_for_product_sits_alongside_the_fits_file():
+    path = processing_history_path_for_product("/tmp/out/Vega_1D.fits")
+    assert str(path) == "/tmp/out/Vega_1D.fits.history.json"

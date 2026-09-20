@@ -80,6 +80,13 @@ class ImageView(QGraphicsView):
         líneas de arco para `fitted_wavelength_solution` -- el mismo
         array que "Guardar espectro calibrado..." escribe a FITS, para
         no volver a suponer qué fila es el espectro."""
+        self.processing_history: list = []
+        """Cadena real de `astrophysics_suite.spectroscopy.processing_
+        history.ProcessingHistoryEntry` -- una por cada proceso que se
+        aplicó sobre ESTA ventana, en el orden real en que se ejecutó
+        (§36/§39), rellenada por `main_window._on_process_finished`.
+        Nunca se reordena ni se recorta: es la trazabilidad completa que
+        "Guardar espectro calibrado..." escribe junto al producto."""
         self.stf_params: STFParams = compute_stf_params(data)
         self.stf_enabled = True
 

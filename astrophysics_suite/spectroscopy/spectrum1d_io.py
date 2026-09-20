@@ -24,6 +24,7 @@ procedencia completa (`CALTYPE`, motor, avisos) de
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,35 @@ _LINEAR_DEGREE_MAX = 1
 """Grado <= este valor se escribe como WCS lineal real; por encima, se
 usa la tabla `-TAB` exacta -- nunca una aproximación lineal de un
 polinomio de verdad."""
+
+_UNSAFE_FILENAME_CHARS = re.compile(r"[^\w.-]+", re.UNICODE)
+_REPEATED_UNDERSCORES = re.compile(r"_+")
+_FALLBACK_PRODUCT_BASE = "espectro"
+"""Marcador honesto cuando no hay ni `OBJECT` real ni ruta de origen de
+la que derivar un nombre -- nunca se inventa un nombre de objeto."""
+
+
+def standard_product_name(object_name: str | None, source_path: str | Path | None = None, *, kind: str = "1D") -> str:
+    """Nombre de producto estándar (§37, p. ej. `Vega_1D.fits`): el
+    `OBJECT` real de la cabecera FITS de origen, saneado a caracteres
+    seguros de nombre de archivo, o -- si no hay `OBJECT` real -- el
+    nombre base de `source_path`; sin ninguno de los dos, el marcador
+    honesto `espectro` (nunca un nombre de objeto inventado)."""
+    candidate = (object_name or "").strip()
+    if not candidate and source_path:
+        candidate = Path(source_path).stem
+    safe = _UNSAFE_FILENAME_CHARS.sub("_", candidate)
+    safe = _REPEATED_UNDERSCORES.sub("_", safe).strip("_")
+    if not safe:
+        safe = _FALLBACK_PRODUCT_BASE
+    return f"{safe}_{kind}.fits"
+
+
+def processing_history_path_for_product(product_path: str | Path) -> Path:
+    """Ruta del historial de procesamiento (§36) que acompaña a un
+    producto guardado -- un `.history.json` junto al FITS, nunca
+    mezclado con sus datos científicos."""
+    return Path(f"{product_path}.history.json")
 
 
 def wavelength_header_cards(

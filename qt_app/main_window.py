@@ -27,6 +27,7 @@ from astrophysics_suite.discovery.pipeline import (
 )
 from astrophysics_suite.photometry.psf import select_psf_reference_stars
 from astrophysics_suite.spectroscopy.multiaperture import find_aperture_centers
+from astrophysics_suite.spectroscopy.processing_history import ProcessingHistoryEntry, append_processing_history
 from astrophysics_suite.spectroscopy.wavelength import find_arc_lines
 from astrophysics_suite.tables.table import Table
 from qt_app.astrometry.registration_dialog import RegistrationDialog
@@ -932,12 +933,11 @@ class MainWindow(QMainWindow):
             )
             return
 
-        from astrophysics_suite.spectroscopy.spectrum1d_io import save_spectrum1d_fits
+        from astrophysics_suite.spectroscopy.spectrum1d_io import processing_history_path_for_product, save_spectrum1d_fits, standard_product_name
 
-        default_path = ""
-        if view.source_path:
-            source = Path(view.source_path)
-            default_path = str(source.with_name(f"{source.stem}_1D_calibrado.fits"))
+        object_name = (view.header or {}).get("OBJECT")
+        default_name = standard_product_name(object_name, view.source_path)  # §37: nombre de producto estándar
+        default_path = str(Path(view.source_path).with_name(default_name)) if view.source_path else default_name
         path, _ = QFileDialog.getSaveFileName(self, "Guardar espectro calibrado", default_path, "FITS (*.fits *.fit *.fts)")
         if not path:
             return
@@ -951,6 +951,23 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Guardar espectro calibrado", f"No se pudo guardar «{Path(path).name}»:\n\n{exc}")
             return
         logger.info("Espectro calibrado de %s guardado en %s (%s)", view.title, path, view.wavelength_calibration_record.source.value)
+
+        # §36/§39: junto al producto, el historial real de TODO lo que se
+        # aplicó sobre esta vista (nunca solo el último paso) -- por
+        # APPEND (`append_processing_history`), así que guardar el mismo
+        # producto varias veces nunca pierde la cadena ya registrada.
+        view.processing_history.append(
+            ProcessingHistoryEntry(
+                timestamp_utc=datetime.now(timezone.utc).isoformat(),
+                process_name="Guardar espectro calibrado (FITS)",
+                summary=f"Guardado en {path} ({view.wavelength_calibration_record.source.value}).",
+            )
+        )
+        history_path = processing_history_path_for_product(path)
+        try:
+            append_processing_history(history_path, tuple(view.processing_history))
+        except Exception as exc:  # noqa: BLE001 -- error real de escritura del historial, no debe silenciarse
+            logger.error("No se pudo escribir el historial de procesamiento en %s: %s", history_path, exc)
         self.statusBar().showMessage(f"Espectro calibrado guardado en {path}", 6000)
 
     def _open_radial_velocity_dialog(self) -> None:
@@ -1313,6 +1330,11 @@ class MainWindow(QMainWindow):
         logger.info("[%s] %s", process.name, result.summary)
         for line in result.log_lines:
             logger.info("    %s", line)
+        view.processing_history.append(
+            ProcessingHistoryEntry(
+                timestamp_utc=datetime.now(timezone.utc).isoformat(), process_name=process.name, summary=result.summary,
+            )
+        )
         spectrum = result.artifacts.get("spectrum")
         if spectrum is not None:
             self.add_spectrum_window(spectrum, f"{view.title} -> {process.name}")
