@@ -45,10 +45,17 @@ polinomio de verdad."""
 
 
 def wavelength_header_cards(
-    record: WavelengthCalibrationRecord, n_pixels: int, *, provenance: Provenance | None = None
+    record: WavelengthCalibrationRecord, n_pixels: int, *, provenance: Provenance | None = None, bunit: str = "ADU"
 ) -> tuple[dict[str, Any], np.ndarray | None]:
     """Tarjetas FITS de la calibración -- WCS real más procedencia
     (`CALTYPE`/`APSWAVE*`/`HISTORY`).
+
+    `bunit` describe el propio array de flujo que se está guardando --
+    `"ADU"` por defecto (cuentas crudas, el caso de un espectro recién
+    calibrado en longitud de onda), pero el llamador debe darlo real
+    cuando el flujo ya pasó por una calibración física de verdad
+    (p. ej. `"erg/s/cm2/Angstrom"` tras `fluxcal.calibrate_flux`) --
+    nunca se asume aquí, y nunca se deja como `"ADU"` cuando no lo es.
 
     Devuelve `(cards, wave_table)`: `wave_table` es `None` cuando el
     grado permite un WCS lineal exacto (ya está todo en `cards`), o el
@@ -66,7 +73,7 @@ def wavelength_header_cards(
         "APSWAVRM": float(solution.rms_residual),
         "APSWAVNL": int(record.n_lines_used),
         "APSWAVNR": int(record.n_lines_rejected),
-        "BUNIT": "ADU",
+        "BUNIT": bunit,
     }
     if record.lamp_name:
         cards["APSWAVLM"] = record.lamp_name
@@ -109,6 +116,7 @@ def save_spectrum1d_fits(
     header: dict[str, Any] | None = None,
     pipeline_version: str = "",
     overwrite: bool = True,
+    flux_bunit: str = "ADU",
 ) -> None:
     """Escribe un espectro 1D calibrado como FITS real (§38): `OBJECT`,
     `DATE-OBS`, `EXPTIME`, `BUNIT`, WCS espectral real (lineal o `-TAB`
@@ -121,6 +129,15 @@ def save_spectrum1d_fits(
     que `astrometry.provenance.strip_wcs_keywords`): un header de un
     FITS 2D crudo no tiene ninguna relación con el eje de longitud de
     onda del espectro 1D extraído.
+
+    `flux_bunit` describe las unidades reales de `flux` -- `"ADU"` por
+    defecto. Hallazgo real: antes de este parámetro, `BUNIT` en el
+    header de salida SIEMPRE era `"ADU"` pase lo que pase en `header`
+    (`wavelength_header_cards` se aplica DESPUÉS y lo pisaba en
+    silencio) -- así que un `flux` ya calibrado físicamente (p. ej. por
+    `fluxcal.calibrate_flux`, en erg/s/cm2/Å) se guardaba etiquetado
+    como si fueran cuentas crudas. Ahora el llamador debe dar las
+    unidades reales explícitamente cuando no son ADU.
     """
     flux = np.asarray(flux, dtype=np.float64)
     if flux.ndim != 1:
@@ -129,7 +146,7 @@ def save_spectrum1d_fits(
         raise ValueError("flux_uncertainty debe tener la misma forma que flux")
 
     provenance = build_wavelength_provenance(record, pipeline_version=pipeline_version)
-    wave_cards, wave_table = wavelength_header_cards(record, flux.size, provenance=provenance)
+    wave_cards, wave_table = wavelength_header_cards(record, flux.size, provenance=provenance, bunit=flux_bunit)
 
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     hdu = fits.PrimaryHDU(data=flux.astype(np.float32))

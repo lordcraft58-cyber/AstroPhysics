@@ -148,3 +148,27 @@ def test_scaling_keywords_from_the_raw_header_are_never_copied(tmp_path):
         assert "BZERO" not in hdul[0].header
         assert "BSCALE" not in hdul[0].header
         np.testing.assert_allclose(hdul[0].data, 100.0)
+
+
+def test_default_bunit_is_adu(tmp_path):
+    record = _linear_record()
+    path = tmp_path / "adu.fits"
+    save_spectrum1d_fits(str(path), np.full(1000, 100.0), record)
+    with fits.open(path) as hdul:
+        assert hdul[0].header["BUNIT"] == "ADU"
+
+
+def test_flux_bunit_override_is_never_silently_clobbered_back_to_adu(tmp_path):
+    """Hallazgo real: `wavelength_header_cards` fijaba `BUNIT='ADU'`
+    incondicionalmente y se aplicaba DESPUÉS del `header` del llamador,
+    así que un flujo ya calibrado físicamente (p. ej. por
+    `fluxcal.calibrate_flux`) se guardaba etiquetado como si fueran
+    cuentas crudas -- incluso pasando un `BUNIT` real en `header`."""
+    record = _linear_record()
+    path = tmp_path / "physical.fits"
+    save_spectrum1d_fits(
+        str(path), np.full(1000, 1e-15), record, header={"BUNIT": "esto se ignora, manda flux_bunit"},
+        flux_bunit="erg/s/cm2/Angstrom",
+    )
+    with fits.open(path) as hdul:
+        assert hdul[0].header["BUNIT"] == "erg/s/cm2/Angstrom"
