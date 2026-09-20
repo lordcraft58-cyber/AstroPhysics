@@ -8,6 +8,7 @@ diálogo de `qt_app/`.
 """
 from __future__ import annotations
 
+import textwrap
 import unicodedata
 from pathlib import Path
 from typing import Any
@@ -34,7 +35,7 @@ Detectado con los LIGHTS reales de M 31, no en pruebas sintéticas.
 """
 
 
-def _ascii_safe(text: str) -> str:
+def ascii_safe(text: str) -> str:
     """El estándar FITS solo admite ASCII imprimible en las tarjetas, y
     todo este producto escribe en castellano. Se translitera (ó -> o,
     ñ -> n) en vez de descartar el valor entero: antes, cualquier cadena
@@ -45,6 +46,29 @@ def _ascii_safe(text: str) -> str:
     decomposed = unicodedata.normalize("NFKD", text)
     stripped = "".join(c for c in decomposed if not unicodedata.combining(c))
     return "".join(c if c.isascii() and c.isprintable() else "?" for c in stripped)
+
+
+_HISTORY_PAYLOAD_CHARS = 72
+"""Una tarjeta `HISTORY` son 8 caracteres de clave más 72 de texto. Si
+una línea se pasa, `astropy` la parte por donde caiga -- y parte
+palabras por la mitad (`... a 749 m` / `m`, que ya no se puede ni
+buscar en el archivo). Se parte aquí, por espacios, antes de
+entregarla -- hallazgo original de `astrometry/provenance.py`,
+promovido aquí porque cualquier motor que escriba HISTORY largo en
+castellano tiene el mismo problema, no solo ese."""
+
+
+def wrap_history_lines(lines: list[str], *, prefix: str = "") -> list[str]:
+    """Prefija la primera línea (si se da `prefix`) e indenta las demás,
+    partiendo por palabras lo que no quepa en una tarjeta `HISTORY`."""
+    wrapped: list[str] = []
+    for index, line in enumerate(lines):
+        text = f"{prefix} {line}" if index == 0 and prefix else line if index == 0 else f"  {line}"
+        wrapped.extend(
+            textwrap.wrap(text, width=_HISTORY_PAYLOAD_CHARS, subsequent_indent="    ", break_long_words=False)
+            or [text]
+        )
+    return wrapped
 
 
 def save_fits_image(
@@ -85,12 +109,12 @@ def save_fits_image(
             if key == "HISTORY":
                 lines = value if isinstance(value, (list, tuple)) else [value]
                 for line in lines:
-                    hdu.header.add_history(_ascii_safe(str(line)))
+                    hdu.header.add_history(ascii_safe(str(line)))
                 continue
             if not isinstance(value, (int, float, bool, str)):
                 continue
             try:
-                hdu.header[key] = _ascii_safe(value) if isinstance(value, str) else value
+                hdu.header[key] = ascii_safe(value) if isinstance(value, str) else value
             except (ValueError, KeyError):
                 continue
 

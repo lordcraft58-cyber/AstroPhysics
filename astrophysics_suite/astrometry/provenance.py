@@ -17,12 +17,12 @@ resolvió de verdad.
 from __future__ import annotations
 
 import re
-import textwrap
 from dataclasses import dataclass
 
 from astrophysics_suite.astrometry.optical_wcs import is_optical_wcs, pixel_scale_of
 from astrophysics_suite.astrometry.wcs_fit import WCSSolution, wcs_solution_to_astropy
 from astrophysics_suite.core.provenance import Provenance
+from astrophysics_suite.io.fits_writer import wrap_history_lines
 
 SOURCE_PLATE_SOLVE = "astrometry.plate_solve"
 SOURCE_BLIND_SOLVE = "astrometry.blind_solve"
@@ -109,25 +109,6 @@ ENGINE_NAME = "astrometry.provenance"
 ENGINE_VERSION = "1.0"
 
 _HISTORY_PREFIX = "AstroPhysics Suite:"
-
-_HISTORY_PAYLOAD_CHARS = 72
-"""Una tarjeta `HISTORY` son 8 caracteres de clave más 72 de texto. Si
-una línea se pasa, `astropy` la parte por donde caiga -- y parte
-palabras por la mitad: `... a 749 m` / `m`, que ya no se puede ni buscar
-en el archivo. Se parte aquí, por espacios, antes de entregarla."""
-
-
-def _history_lines(lines: list[str]) -> list[str]:
-    """Prefija la primera línea e indenta las demás (misma forma que
-    `reduction/provenance.py`), partiendo por palabras lo que no quepa."""
-    wrapped: list[str] = []
-    for index, line in enumerate(lines):
-        text = f"{_HISTORY_PREFIX} {line}" if index == 0 else f"  {line}"
-        wrapped.extend(
-            textwrap.wrap(text, width=_HISTORY_PAYLOAD_CHARS, subsequent_indent="    ", break_long_words=False)
-            or [text]
-        )
-    return wrapped
 
 
 @dataclass(frozen=True)
@@ -235,5 +216,5 @@ def wcs_header_cards(record: WCSRecord, *, provenance: Provenance | None = None)
     lines = list(record.describe())
     if provenance is not None:
         lines.extend(f"! {w}" for w in provenance.warnings)
-    cards["HISTORY"] = _history_lines(lines)
+    cards["HISTORY"] = wrap_history_lines(lines, prefix=_HISTORY_PREFIX)
     return cards
