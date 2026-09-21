@@ -469,6 +469,56 @@ def test_open_3d_fits_cancelled_at_plane_dialog_opens_no_window(qapp, main_windo
     assert len(main_window.mdi.subWindowList()) == windows_before
 
 
+def _write_minimal_xisf(path, data: np.ndarray, *, fits_keywords: dict[str, str] | None = None) -> None:
+    """Mismo formato real que `tests/unit/io/test_fits_loader_xisf.py`
+    (construido byte a byte, verificado ahí contra una herramienta de
+    desarrollo independiente) -- reproducido aquí para probar el
+    despacho de VERDAD desde la GUI (`open_fits`), no solo desde
+    `io.fits_loader.load_image` a nivel de unidad."""
+    import struct
+
+    height, width = data.shape
+    sample_format = {np.dtype("uint16"): "UInt16", np.dtype("float32"): "Float32"}[data.dtype]
+    raw = data.tobytes()
+    placeholder = "0" * 12
+    kw_xml = "".join(f'<FITSKeyword name="{k}" value="{v}" comment="" />' for k, v in (fits_keywords or {}).items())
+    xml = (
+        f'<?xml version="1.0" encoding="utf8"?>'
+        f'<xisf xmlns="http://www.pixinsight.com/xisf" version="1.0">'
+        f'<Image id="image" geometry="{width}:{height}:1" colorSpace="Gray" sampleFormat="{sample_format}" '
+        f'location="attachment:{placeholder}:{len(raw)}">{kw_xml}</Image></xisf>'
+    )
+    xml_bytes = xml.encode("utf-8")
+    data_offset = 16 + len(xml_bytes)
+    real_offset_str = str(data_offset).zfill(len(placeholder))
+    xml_bytes = xml_bytes.replace(placeholder.encode("ascii"), real_offset_str.encode("ascii"), 1)
+    with open(path, "wb") as f:
+        f.write(b"XISF0100")
+        f.write(struct.pack("<I", len(xml_bytes)))
+        f.write(b"\x00\x00\x00\x00")
+        f.write(xml_bytes)
+        f.write(raw)
+
+
+def test_open_fits_opens_a_real_xisf_file_through_the_same_gui_flow(qapp, main_window, tmp_path):
+    # `open_fits_dialog` lista *.xisf en su filtro nativo junto a FITS,
+    # pero ningún test de humo GUI había abierto uno de verdad por el
+    # flujo real (`main_window.open_fits`) -- solo a nivel de unidad
+    # (`io.fits_loader.load_image`). Cierra ese hueco de cobertura.
+    rng = np.random.default_rng(11)
+    data = rng.integers(2800, 5000, size=(30, 40), dtype=np.uint16)
+    path = tmp_path / "field.xisf"
+    _write_minimal_xisf(path, data, fits_keywords={"OBJECT": "'M 31'", "EXPTIME": "300.0"})
+
+    sub_window = main_window.open_fits(str(path))
+    qapp.processEvents()
+
+    assert sub_window is not None
+    assert sub_window in main_window.mdi.subWindowList()
+    np.testing.assert_array_equal(sub_window.widget().data.astype(np.uint16), data)
+    assert sub_window.widget().header.get("OBJECT") == "M 31"
+
+
 def test_open_fits_shows_error_dialog_instead_of_failing_silently(qapp, main_window, tmp_path, monkeypatch):
     from qt_app import main_window as main_window_module
 

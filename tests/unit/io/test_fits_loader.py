@@ -192,3 +192,19 @@ def test_probe_fits_shape_matches_2d_fits(tmp_path):
     _write_minimal_fits_2d(path, data)
 
     assert probe_fits_shape(str(path)) == (16, 16)
+
+
+def test_load_image_raises_a_real_clear_error_for_a_corrupt_file(tmp_path):
+    """Nunca debe devolver una imagen inventada ni fallar en silencio --
+    la GUI (`open_fits`) depende de que esto lance de verdad para poder
+    mostrar el error real al usuario, no de que ella misma lo invente."""
+    path = tmp_path / "not_really_a_fits.fits"
+    path.write_bytes(b"esto no es un FITS real, solo texto")
+
+    with pytest.raises(OSError, match="FITS"):
+        load_image(str(path), band="OIII")
+
+
+def test_load_image_raises_a_real_clear_error_for_a_missing_file():
+    with pytest.raises(FileNotFoundError):
+        load_image("/tmp/este_archivo_no_existe_nunca.fits", band="OIII")

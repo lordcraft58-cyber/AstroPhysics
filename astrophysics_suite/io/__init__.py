@@ -1,8 +1,11 @@
-"""Lectura de imágenes y construcción de `Observation`.
+"""Lectura/escritura de imágenes (FITS y XISF nativo) y construcción de
+`Observation`/`ImageRef` (Fase 4).
 
-Fase 6, slice 1 (ver docs/audit/07-FASE6-REFACTOR-PROGRESIVO-SLICE1.md):
-delega la lectura real de FITS en `legacy.AstroPhysicsSuite_v57_3_COMMERCIAL.
-load_fits` -- probada, con manejo cuidadoso de cubos 3D/4D y WCS -- en vez
-de reimplementarla. Lo nuevo aquí es la traducción a los contratos de la
-Fase 4 (`ImageRef`, `Observation`), no el algoritmo de lectura FITS en sí.
+La lectura de FITS vive en `fits_reader.py` -- reimplementación propia,
+sin ninguna dependencia del monolito legacy, verificada campo a campo y
+píxel a píxel contra él (`tests/regression/test_fits_reader_matches_
+legacy.py`, ver docs/audit/51-CIERRE-IO-FITS-AL-100.md). Este docstring
+describía un estado anterior (Fase 6, slice 1) en el que `fits_loader.py`
+sí delegaba en `legacy...load_fits` -- ya no es cierto, corregido para
+no confundir a quien lea este paquete primero.
 """

@@ -29,6 +29,7 @@ from astrophysics_suite.io.fits_reader import (
     FitsImage,
     fits_image_from_arrays,
     load_fits,
+    resolve_path,
     sha256_file,
 )
 from astrophysics_suite.io.fits_reader import probe_fits_shape as _probe_fits_shape
@@ -74,7 +75,7 @@ def load_image(path: str, *, band: str, role: str = "science", plane: int | tupl
     else:
         legacy_image = load_fits(path, plane=plane)
     image_ref = ImageRef(
-        path=str(Path(path).resolve()),
+        path=resolve_path(path),
         band=band,
         role=role,
         pixel_scale_arcsec=legacy_image.pixel_scale_arcsec,
