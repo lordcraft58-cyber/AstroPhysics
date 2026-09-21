@@ -204,9 +204,18 @@ class TemplateComparisonDialog(QDialog):
         if self._template_wavelength is None or self._template_flux is None:
             self.result_label.setText("Elige primero una plantilla real (FITS 1D).")
             return
+        if view.wavelength_calibration_spectrum is None:
+            self.result_label.setText(
+                f"{view.title} no tiene guardado el espectro real sobre el que se calibró -- "
+                "vuelve a calibrar (p. ej. \"Autoprocesar espectro (§34)\")."
+            )
+            return
 
-        row_index = view.data.shape[0] // 2
-        flux = view.data[row_index, :].astype(np.float64)
+        # El espectro REAL ya extraído (§13/§34, óptimo/suma/media según se
+        # haya usado) -- nunca la fila central del fotograma 2D crudo, sin
+        # extracción ni resta de cielo: eso comparaba forma de continuo de
+        # una sola fila, no el espectro real (hallazgo real del usuario).
+        flux = np.asarray(view.wavelength_calibration_spectrum, dtype=np.float64)
         pixel = np.arange(flux.size, dtype=np.float64)
         wavelength = np.asarray(view.fitted_wavelength_solution.pixel_to_wavelength(pixel), dtype=np.float64)
 

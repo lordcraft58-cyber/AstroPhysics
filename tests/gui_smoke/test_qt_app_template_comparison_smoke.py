@@ -135,6 +135,10 @@ def test_template_comparison_dialog_imports_an_ascii_template_and_can_compare_wi
     qapp.processEvents()
     view = sub_window.widget()
     view.fitted_wavelength_solution = fit_wavelength_solution(list(_TRUE_PIXELS), list(_TRUE_WAVELENGTHS), degree=1)
+    # el espectro REAL ya extraído sobre el que se calibró -- nunca la
+    # fila 2D cruda, siempre en sincronía con fitted_wavelength_solution
+    # en código real (main_window._on_wavelength_fitted/_on_process_finished).
+    view.wavelength_calibration_spectrum = data[data.shape[0] // 2, :].astype(float)
 
     dialog = TemplateComparisonDialog(main_window._image_views_by_title(), main_window)
 
@@ -165,6 +169,7 @@ def test_template_comparison_dialog_loads_a_real_standard_from_the_bundled_jacob
     qapp.processEvents()
     view = sub_window.widget()
     view.fitted_wavelength_solution = fit_wavelength_solution(list(_TRUE_PIXELS), list(_TRUE_WAVELENGTHS), degree=1)
+    view.wavelength_calibration_spectrum = data[data.shape[0] // 2, :].astype(float)
 
     dialog = TemplateComparisonDialog(main_window._image_views_by_title(), main_window)
     assert dialog.atlas_combo.count() == 161  # las 161 estrellas reales del atlas incluido
@@ -180,6 +185,38 @@ def test_template_comparison_dialog_loads_a_real_standard_from_the_bundled_jacob
     dialog.normalize_combo.setCurrentText("median")
     dialog._on_compare()
     assert "Solape real" in dialog.result_label.text()
+
+
+def test_template_comparison_dialog_uses_the_real_extracted_spectrum_not_the_raw_ccd_row(qapp, main_window):
+    # Regresión directa del hallazgo real del usuario ("pero compara el
+    # continuo no el espectro"): el diálogo debe leer SIEMPRE view.
+    # wavelength_calibration_spectrum (el espectro ya extraído con
+    # Horne 1986 y resta de cielo), nunca la fila central cruda del
+    # fotograma 2D -- aquí las dos son deliberadamente distintas para
+    # que cualquier regresión al comportamiento antiguo falle el test.
+    from astrophysics_suite.spectroscopy.wavelength import fit_wavelength_solution
+    from qt_app.spectroscopy.template_comparison_dialog import TemplateComparisonDialog
+
+    data = _synthetic_arc_row()
+    raw_row = data[data.shape[0] // 2, :].astype(float)
+    real_extracted_spectrum = raw_row + 5000.0  # inconfundible frente a la fila cruda
+
+    sub_window = main_window.add_image_window(data, "target_for_real_spectrum_check.fits")
+    main_window.mdi.setActiveSubWindow(sub_window)
+    qapp.processEvents()
+    view = sub_window.widget()
+    view.fitted_wavelength_solution = fit_wavelength_solution(list(_TRUE_PIXELS), list(_TRUE_WAVELENGTHS), degree=1)
+    view.wavelength_calibration_spectrum = real_extracted_spectrum
+
+    dialog = TemplateComparisonDialog(main_window._image_views_by_title(), main_window)
+    dialog.atlas_combo.setCurrentIndex(0)
+    dialog._on_use_atlas_standard()
+    dialog.normalize_combo.setCurrentText("none")
+    dialog._on_compare()
+
+    assert dialog._last_result is not None
+    assert np.allclose(dialog._last_result.observed_flux, real_extracted_spectrum)
+    assert not np.allclose(dialog._last_result.observed_flux, raw_row)
 
 
 def test_template_comparison_dialog_requires_a_real_template_before_comparing(qapp, main_window):
