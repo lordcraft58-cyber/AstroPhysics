@@ -35,7 +35,7 @@ from typing import Callable
 
 from astrophysics_suite.anomaly.vector import build_anomaly_vector
 from astrophysics_suite.artifacts.artifact_screen import FieldStatistics, compute_field_statistics, screen_detection
-from astrophysics_suite.artifacts.morphology_screen import classify_morphology
+from astrophysics_suite.artifacts.morphology_screen import classify_morphology, quality_check_for
 from astrophysics_suite.astrometry import blind_solve
 from astrophysics_suite.astrometry.plate_solve import PlateSolveResult, estimate_approx_pointing_from_header, solve_plate
 from astrophysics_suite.astrometry.wcs_fit import angular_separation_deg, rescale_wcs_for_binning, wcs_solution_to_astropy
@@ -43,14 +43,14 @@ from astrophysics_suite.catalogs.local_cache import CatalogCache
 from astrophysics_suite.imtools.debayer import bayer_pattern_from_header, debayer_to_luminance, describe_bayer_agreement
 from astrophysics_suite.catalogs.gaia import identify_detection
 from astrophysics_suite.catalogs.simbad import resolve_object_coordinates
-from astrophysics_suite.core.enums import IdentificationState, QualityLevel, ValueKind
+from astrophysics_suite.core.enums import IdentificationState, ValueKind
 from astrophysics_suite.core.provenance import Provenance
 from astrophysics_suite.core.quantity import Quantity
 from astrophysics_suite.detection.point_sources import detect_point_sources
 from astrophysics_suite.discovery.source_tracks import EpochDetection, SourceTrack, group_detections_into_tracks
 from astrophysics_suite.evidence.chain_builder import build_evidence_chain
 from astrophysics_suite.io.fits_loader import LoadedImage
-from astrophysics_suite.models.candidate import ArtifactCheck, Candidate, CatalogMatch, CatalogQuery, QualityCheckItem, QualitySummary
+from astrophysics_suite.models.candidate import ArtifactCheck, Candidate, CatalogMatch, CatalogQuery, QualitySummary
 from astrophysics_suite.models.characterization import CharacterizationResult
 from astrophysics_suite.models.detection import Detection
 from astrophysics_suite.models.observation import Observation
@@ -59,13 +59,6 @@ from astrophysics_suite.photometry.calibration import ZeropointFit, fit_zeropoin
 from astrophysics_suite.photometry.quality import characterize_point_source
 from astrophysics_suite.temporal.motion import analyze_motion
 from astrophysics_suite.temporal.variability import analyze_variability
-
-_QUALITY_LEVEL_FOR_STATE = {
-    "SCIENCE_CANDIDATE": QualityLevel.PASS,
-    "REVIEW": QualityLevel.WARNING,
-    "QUALITY_LIMITED": QualityLevel.WARNING,
-}
-
 
 class DiscoveryCancelled(Exception):
     """El usuario canceló la ejecución -- ver `cancel` en
@@ -318,8 +311,6 @@ class _ProcessedSource:
     characterization: CharacterizationResult
     artifact_checks: tuple[ArtifactCheck, ...]
     image_index: int
-    morphology_state: str
-    morphology_reason: str
 
 
 @dataclass(frozen=True)
@@ -632,29 +623,29 @@ def run_generic_discovery(
         # más laxo que `screen_detection`, así que nunca rechaza algo que
         # el cribado real habría aceptado; existe solo para no gastar
         # caracterización de píxeles en basura evidente.
-        kept: list[tuple[Detection, CharacterizationResult, str, str]] = []
+        kept: list[tuple[Detection, CharacterizationResult]] = []
         for detection_index, detection in enumerate(detections):
             check_cancelled()
             if detections:
                 within_image = detection_index / len(detections)
                 report((image_index + within_image) / n_images, f"Caracterizando fuente {detection_index + 1}/{len(detections)}")
 
-            state, reason = classify_morphology(detection)
+            state, _reason = classify_morphology(detection)
             if state == "ARTIFACT_REJECTED":
                 n_rejected += 1
                 continue
             characterization = characterize_point_source(loaded, detection, pipeline_version=pipeline_version)
-            kept.append((detection, characterization, state, reason))
+            kept.append((detection, characterization))
 
         # --- Pase 2: estadística de campo real, una vez por imagen -- la
         # necesitan COSMIC_RAY/PSF_DEFECT de `screen_detection` (comparan
         # contra la PSF real del campo, no un umbral fijo inventado).
-        field_stats = compute_field_statistics([c for _, c, _, _ in kept])
+        field_stats = compute_field_statistics([c for _, c in kept])
         field_stats_by_image[image_index] = field_stats
 
         # --- Pase 3: cribado REAL de artefactos -- el gate autoritativo.
         # Ninguna detección se convierte en Candidate sin pasar por aquí.
-        for detection, characterization, state, reason in kept:
+        for detection, characterization in kept:
             check_cancelled()
             screen = screen_detection(detection, characterization, field_stats)
             if screen.rejected:
@@ -662,7 +653,7 @@ def run_generic_discovery(
                 continue
             processed_by_id[detection.detection_id] = _ProcessedSource(
                 detection=detection, characterization=characterization, artifact_checks=screen.checks,
-                image_index=image_index, morphology_state=state, morphology_reason=reason,
+                image_index=image_index,
             )
             epoch_detections_by_band.setdefault(image_ref.band, []).append(
                 EpochDetection(image_index, epoch_time, image_ref.band, image_ref.path, detection)
@@ -814,10 +805,15 @@ def run_generic_discovery(
         )
 
         final_state = _upgrade_identification_state(ctx.identification_state, ctx.temporal, ctx.motion)
-        quality = QualitySummary(
-            overall_level=_QUALITY_LEVEL_FOR_STATE[reference.morphology_state],
-            checks=(QualityCheckItem(name="morphology_screen", level=_QUALITY_LEVEL_FOR_STATE[reference.morphology_state], detail=reference.morphology_reason),),
-        )
+        # `quality_check_for` (artifacts/morphology_screen.py) es la única
+        # fuente real del mapeo estado->QualityLevel -- antes este módulo
+        # tenía su propia copia local (`_QUALITY_LEVEL_FOR_STATE`), sin la
+        # entrada ARTIFACT_REJECTED (inofensivo hoy: el Pase 1 descarta esas
+        # detecciones antes de llegar aquí, así que ese estado nunca era
+        # posible en este punto -- pero sí un riesgo real de divergencia si
+        # `classify_morphology` gana un estado nuevo en el futuro).
+        morphology_check = quality_check_for(reference_detection)
+        quality = QualitySummary(overall_level=morphology_check.level, checks=(morphology_check,))
         snr = Quantity(value=reference_detection.peak_snr, error=None, unit="dimensionless", kind=ValueKind.OBSERVED, method=reference_detection.method)
 
         candidates.append(

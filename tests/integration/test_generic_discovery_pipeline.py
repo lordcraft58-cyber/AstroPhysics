@@ -79,6 +79,58 @@ def test_run_generic_discovery_end_to_end(tmp_path):
         assert Candidate.from_dict(candidate.to_dict()) == candidate
 
 
+def test_candidate_quality_matches_the_real_morphology_screen_single_source_of_truth(tmp_path):
+    # Hallazgo real de la re-auditoría del motor de rechazo de artefactos
+    # (informe 93): `discovery/pipeline.py` construía `QualitySummary`
+    # con una copia local del mapeo estado->QualityLevel
+    # (`_QUALITY_LEVEL_FOR_STATE`), duplicando lo que
+    # `artifacts/morphology_screen.py::quality_check_for` ya hace -- y esa
+    # copia local le faltaba la entrada `ARTIFACT_REJECTED` (inofensivo
+    # hoy porque el Pase 1 descarta esas detecciones antes de llegar aquí,
+    # pero un riesgo real de divergencia). Ahora el pipeline llama a la
+    # función real: este test prueba que el resultado coincide EXACTAMENTE
+    # con lo que `quality_check_for`/`classify_morphology` calculan de
+    # forma independiente sobre la misma detección real -- una sola fuente
+    # de verdad, no dos copias que puedan desincronizarse.
+    from astrophysics_suite.artifacts.morphology_screen import classify_morphology, quality_check_for
+
+    positions = [(40, 40), (100, 60), (70, 120)]
+    field = _star_field((160, 160), positions)
+    path = tmp_path / "field_HA.fits"
+    _write_minimal_fits_2d(path, field, pixel_scale_arcsec=1.0)
+
+    observation, loaded = build_observation(
+        [(str(path), "HA")], observation_id="OBS-INT-QUALITY", target_name="Campo sintético"
+    )
+    candidates, _summary = run_generic_discovery(observation, loaded, threshold_sigma=4.0)
+    assert candidates
+
+    from astrophysics_suite.core.provenance import Provenance
+    from astrophysics_suite.models.detection import Detection
+
+    stub_provenance = Provenance.now(pipeline_version="test", engine="test", engine_version="1.0")
+    for candidate in candidates:
+        # El `Candidate` no guarda el `Detection` completo, pero
+        # `classify_morphology` es puro sobre morfología+peak_snr -- se
+        # reconstruye lo mínimo necesario para invocar la MISMA función
+        # real de forma independiente y comparar.
+        detection = Detection.create(
+            detection_id=candidate.detection_id, observation_id=candidate.observation_id,
+            position=candidate.position, morphology=candidate.morphology, bands=candidate.bands,
+            peak_snr=candidate.snr.value, method="test", provenance=stub_provenance,
+        )
+        expected_state, expected_reason = classify_morphology(detection)
+        expected_check = quality_check_for(detection)
+
+        assert expected_state != "ARTIFACT_REJECTED"  # el Pase 1 ya lo habría descartado
+        assert len(candidate.quality.checks) == 1
+        actual_check = candidate.quality.checks[0]
+        assert actual_check.name == "morphology_screen"
+        assert actual_check.level == expected_check.level
+        assert actual_check.detail == expected_reason
+        assert candidate.quality.overall_level == expected_check.level
+
+
 def test_run_generic_discovery_populates_candidate_flux_from_real_aperture_photometry(tmp_path):
     # Cierre del motor de fotometría de apertura: antes de conectarlo en
     # `characterize_point_source`, `Candidate.flux` llegaba SIEMPRE vacío
