@@ -10,8 +10,8 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from legacy.AstroPhysicsSuite_v57_3_COMMERCIAL import angular_separation_arcsec
 
+from astrophysics_suite.astrometry.wcs_fit import angular_separation_deg
 from astrophysics_suite.catalogs.gaia import query_gaia_neighbors
 from astrophysics_suite.imtools.ccd_noise import ccd_noise_adu
 from astrophysics_suite.imtools.cosmic_rays import detect_cosmic_rays
@@ -266,8 +266,8 @@ def _run_photometric_zeropoint(data: np.ndarray, params: dict) -> ProcessResult:
         if not gaia_rows:
             log_lines.append(f"({x:.1f}, {y:.1f}) [RA={ra:.5f}, Dec={dec:.5f}]: sin fuentes Gaia en el radio de búsqueda -- descartada.")
             continue
-        best = min(gaia_rows, key=lambda row: angular_separation_arcsec(ra, dec, row["ra_deg"], row["dec_deg"]))
-        separation = angular_separation_arcsec(ra, dec, best["ra_deg"], best["dec_deg"])
+        best = min(gaia_rows, key=lambda row: angular_separation_deg(ra, dec, row["ra_deg"], row["dec_deg"]) * 3600.0)
+        separation = angular_separation_deg(ra, dec, best["ra_deg"], best["dec_deg"]) * 3600.0
         if separation > match_radius_arcsec:
             log_lines.append(f"({x:.1f}, {y:.1f}): fuente Gaia más cercana a {separation:.2f}\", fuera del radio -- descartada.")
             continue

@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from astrophysics_suite.astrometry.wcs_fit import angular_separation_deg
 from astrophysics_suite.catalogs.local_cache import CatalogCache, download_field_to_cache
 from astrophysics_suite.catalogs.simbad import resolve_object_coordinates
 from qt_app.workers import CallableWorker
@@ -45,17 +46,7 @@ def field_centre_and_radius_from_wcs(wcs, shape) -> tuple[float, float, float] |
     except Exception:
         return None
 
-    import math
-
-    ra1, dec1 = math.radians(float(centre_ra)), math.radians(float(centre_dec))
-    ra2, dec2 = math.radians(float(corner_ra)), math.radians(float(corner_dec))
-    delta_ra = ra2 - ra1
-    numerator = math.hypot(
-        math.cos(dec2) * math.sin(delta_ra),
-        math.cos(dec1) * math.sin(dec2) - math.sin(dec1) * math.cos(dec2) * math.cos(delta_ra),
-    )
-    denominator = math.sin(dec1) * math.sin(dec2) + math.cos(dec1) * math.cos(dec2) * math.cos(delta_ra)
-    radius_arcsec = math.degrees(math.atan2(numerator, denominator)) * 3600.0
+    radius_arcsec = angular_separation_deg(float(centre_ra), float(centre_dec), float(corner_ra), float(corner_dec)) * 3600.0
     return float(centre_ra), float(centre_dec), radius_arcsec * 1.1
 
 

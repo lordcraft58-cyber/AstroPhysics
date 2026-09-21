@@ -43,6 +43,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from astrophysics_suite.astrometry.wcs_fit import angular_separation_deg
+
 DEFAULT_CACHE_DIR = Path.home() / ".astrophysics_suite" / "catalogs"
 
 _SCHEMA = """
@@ -80,17 +82,6 @@ class CachedRegion:
     mag_limit: float
     downloaded_at: str
     n_sources: int
-
-
-def _angular_separation_deg(ra1: float, dec1: float, ra2: float, dec2: float) -> float:
-    r1, d1, r2, d2 = map(math.radians, (ra1, dec1, ra2, dec2))
-    delta_ra = r2 - r1
-    numerator = math.hypot(
-        math.cos(d2) * math.sin(delta_ra),
-        math.cos(d1) * math.sin(d2) - math.sin(d1) * math.cos(d2) * math.cos(delta_ra),
-    )
-    denominator = math.sin(d1) * math.sin(d2) + math.cos(d1) * math.cos(d2) * math.cos(delta_ra)
-    return math.degrees(math.atan2(numerator, denominator))
 
 
 class CatalogCache:
@@ -152,7 +143,7 @@ class CatalogCache:
         (con `margin_arcsec` de holgura hacia adentro, para no servir
         resultados incompletos justo en el borde de lo descargado)."""
         for region in self.regions():
-            separation_arcsec = _angular_separation_deg(ra_deg, dec_deg, region.ra_deg, region.dec_deg) * 3600.0
+            separation_arcsec = angular_separation_deg(ra_deg, dec_deg, region.ra_deg, region.dec_deg) * 3600.0
             if separation_arcsec <= max(0.0, region.radius_arcsec - margin_arcsec):
                 return True
         return False
@@ -188,7 +179,7 @@ class CatalogCache:
 
         rows: list[tuple[float, dict]] = []
         for source_id, row_ra, row_dec, mag_g in candidates:
-            separation_arcsec = _angular_separation_deg(ra_deg, dec_deg, row_ra, row_dec) * 3600.0
+            separation_arcsec = angular_separation_deg(ra_deg, dec_deg, row_ra, row_dec) * 3600.0
             if separation_arcsec <= radius_arcsec:
                 rows.append((separation_arcsec, {"source_id": source_id, "ra_deg": row_ra, "dec_deg": row_dec, "mag_g": mag_g}))
         rows.sort(key=lambda item: item[0])
