@@ -37,11 +37,10 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from legacy.AstroPhysicsSuite_v57_3_COMMERCIAL import PhysicalConstraintEngine as _LegacyPhysicalConstraintEngine
-
 from astrophysics_suite.core.enums import ValueKind
 from astrophysics_suite.core.quantity import Quantity
 from astrophysics_suite.models.physical import PhysicalInference
+from astrophysics_suite.physics.inference import _get_float
 
 ENGINE_NAME = "physics.constraints"
 ENGINE_VERSION = "1.0"
@@ -157,6 +156,80 @@ def _parameter_space_from(
     return space, missing
 
 
+def _evaluate_physical_constraints(row: dict, estimates: dict, *, min_sigma: float) -> dict:
+    """Busca incompatibilidades entre parámetros relacionados por física
+    básica -- migrado 1:1 del `PhysicalConstraintEngine.evaluate`
+    heredado (cierre sistemático del motor 11/16, informe 99). Nunca
+    convierte una incompatibilidad en descubrimiento: devuelve
+    restricciones, z/tensión y los supuestos que permiten interpretar el
+    resultado, mismas fórmulas y criterios que la versión heredada."""
+    r = dict(row or {})
+    p = dict(estimates or {})
+    issues: list[dict] = []
+
+    def par(name: str) -> tuple[float, float]:
+        d = p.get(name, {})
+        try:
+            v = float(d.get("value"))
+        except (TypeError, ValueError):
+            v = float("nan")
+        if not math.isfinite(v):
+            v = float("nan")
+        try:
+            e = abs(float(d.get("error")))
+        except (TypeError, ValueError):
+            e = float("nan")
+        if not math.isfinite(e):
+            e = float("nan")
+        return v, e
+
+    # Kinematic age consistency: age = 0.4 R/v in the uniform Sedov self-similar case.
+    R, Re = par("radius_pc")
+    v, ve = par("velocity_kms")
+    age, agee = par("age_yr")
+    if all(math.isfinite(q) for q in (R, v, age)) and R > 0 and v > 0:
+        pred = 0.4 * R * 3.0856775814913673e13 / (v * 1e3) / (365.25 * 86400.0)
+        pred_err = abs(pred) * math.sqrt((Re / R) ** 2 + (ve / v) ** 2) if math.isfinite(Re) and Re > 0 and math.isfinite(ve) and ve > 0 else float("nan")
+        den = math.sqrt(max(0.0, pred_err**2) + (agee**2 if math.isfinite(agee) and agee > 0 else 0.0))
+        z = (age - pred) / den if den > 0 else float("nan")
+        issues.append({
+            "constraint": "Sedov age-radius-velocity", "observed_age_yr": age, "predicted_age_yr": pred,
+            "z_score": float(z) if math.isfinite(z) else None,
+            "flag": bool(math.isfinite(z) and abs(z) >= min_sigma),
+            "assumptions": ["spherical", "adiabatic", "uniform_medium", "self_similar_eta=0.4"],
+        })
+
+    # Strong shock consistency: T ~= (3/16) mu mp v^2 / kB for gamma=5/3.
+    T, Te = par("postshock_temperature_K")
+    if math.isfinite(v) and math.isfinite(T) and v > 0 and T > 0:
+        kB = 1.380649e-23
+        mp = 1.67262192369e-27
+        mu = 0.61
+        pred = (3.0 / 16.0) * mu * mp * (v * 1e3) ** 2 / kB
+        pe = abs(pred * 2 * ve / v) if math.isfinite(ve) and ve > 0 else float("nan")
+        den = math.sqrt(max(0.0, pe**2) + (Te**2 if math.isfinite(Te) and Te > 0 else 0.0))
+        z = (T - pred) / den if den > 0 else float("nan")
+        issues.append({
+            "constraint": "Strong-shock T-v", "observed_temperature_K": T, "predicted_temperature_K": pred,
+            "z_score": float(z) if math.isfinite(z) else None,
+            "flag": bool(math.isfinite(z) and abs(z) >= min_sigma),
+            "assumptions": ["gamma=5/3", "mu=0.61", "fully_ionized", "strong_shock"],
+        })
+
+    # Ratio sanity; negative or non-finite flux-derived ratios are measurement issues.
+    ratio = _get_float(r, "ratio", "oiii_ha_ratio")
+    if math.isfinite(ratio) and ratio <= 0:
+        issues.append({"constraint": "positive emission-line ratio", "flag": True, "classification": "measurement_issue"})
+
+    return {
+        "engine_version": "1.0",
+        "issues": issues,
+        "n_physical_tensions": sum(bool(i.get("flag")) and i.get("classification") != "measurement_issue" for i in issues),
+        "n_measurement_issues": sum(i.get("classification") == "measurement_issue" for i in issues),
+        "threshold_sigma": min_sigma,
+    }
+
+
 def evaluate_consistency(
     measured_observables: dict[str, float],
     inferred: PhysicalInference | None,
@@ -170,7 +243,7 @@ def evaluate_consistency(
     medidos llegan de verdad a donde el motor los busca, así que las
     comprobaciones dejan de ser inalcanzables."""
     parameter_space, missing = _parameter_space_from(measured_observables, inferred)
-    raw = _LegacyPhysicalConstraintEngine(min_sigma=sigma_threshold).evaluate(measured_observables, parameter_space)
+    raw = _evaluate_physical_constraints(measured_observables, parameter_space, min_sigma=sigma_threshold)
 
     issues = tuple(
         ConsistencyIssue(
