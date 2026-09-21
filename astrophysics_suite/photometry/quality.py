@@ -3,14 +3,32 @@
 Convención de forma: igual que en `detection/point_sources.py`, la
 elipticidad heredada (`1 - b/a`) se convierte a la convención de
 elongación de la Fase 4 (`sqrt(l1/l2)` = `1/(1-ellipticity)`).
+
+## Migración (cierre sistemático, motor 6/16, informe 94)
+
+`measure_source_quality` era la última delegación real en `legacy...
+AstroPhysicsSuite_v57_3_COMMERCIAL` que quedaba en la ruta de
+Caracterización -- mismo patrón ya cerrado en Detection (informe 54) y
+en el filtro morfológico de Artifact Rejection (informe 87). Reproducida
+aquí de forma nativa, verificada campo a campo contra el original en
+`tests/regression/test_quality_matches_legacy.py` antes de quitar la
+delegación.
+
+`measure_psf_quality` (la otra función del bloque heredado, una mediana
+de FWHM/elipticidad sobre varias fuentes) NO se migra: no tiene ningún
+consumidor en `astrophysics_suite`/`qt_app` -- su trabajo ya lo hace de
+forma nativa `artifacts.artifact_screen.compute_field_statistics`, que
+resuelve el mismo problema (referencia de PSF del campo) a partir de
+`CharacterizationResult` reales en vez de volver a medir sobre `dict`s
+sueltos. Migrarla sería reconstruir una función ya sustituida, no cerrar
+un hueco real.
 """
 from __future__ import annotations
 
 import math
 
 import numpy as np
-
-from legacy.AstroPhysicsSuite_v57_3_COMMERCIAL import measure_source_quality as _legacy_measure_source_quality
+from scipy import ndimage as ndi
 
 from astrophysics_suite.core.enums import ValueKind
 from astrophysics_suite.core.provenance import Provenance
@@ -22,6 +40,105 @@ from astrophysics_suite.photometry.aperture import aperture_photometry
 
 ENGINE_NAME = "photometry.quality"
 ENGINE_VERSION = "1.0"
+
+
+def measure_source_quality(
+    image: np.ndarray, x: float, y: float, *, cutout_size: int = 25, gain: float = 1.0, saturation_level: float | None = None,
+) -> dict:
+    """Mide FWHM/elipticidad/agudeza/SNR local/saturación/aislamiento de
+    una fuente en `(x, y)` a partir de un recorte real alrededor de esa
+    posición -- vía momentos de segundo orden (sin depender de ningún
+    catálogo externo). Reimplementación nativa 1:1 de la función
+    heredada del mismo nombre (ver "Migración" arriba); `gain` se
+    conserva en la firma por compatibilidad, sin usarse en el cálculo,
+    igual que en el original.
+
+    `sigma_avg = sqrt((mxx+myy)/2)` (raíz de la VARIANZA MEDIA de ambos
+    ejes) es una convención de FWHM distinta de la que usa
+    `detection/finder.py::enrich_detections` (`(l1*l2)**0.25`, media
+    GEOMÉTRICA de sigma_mayor/sigma_menor) -- ambas son dimensionalmente
+    correctas (a diferencia del bug real que sí se corrigió en Detection,
+    informe 54: aquella fórmula heredada estaba en px^4, no en px^2), solo
+    difieren en qué promedio usan para una fuente elongada. Se conserva
+    aquí tal cual estaba, sin unificar con la de Detection -- unificarlas
+    sería un cambio de comportamiento no pedido, fuera del alcance de
+    "cerrar lo que ya existe" de esta fase."""
+    height, width = image.shape
+    half = cutout_size // 2
+    ix, iy = int(round(x)), int(round(y))
+    x0, x1 = max(0, ix - half), min(width, ix + half + 1)
+    y0, y1 = max(0, iy - half), min(height, iy + half + 1)
+    if x1 - x0 < 5 or y1 - y0 < 5:
+        return {"state": "NO DISPONIBLE", "error": "Cutout demasiado pequeño"}
+
+    stamp = image[y0:y1, x0:x1].astype(float)
+    bg = np.median(stamp)
+    stamp_bg = stamp - bg
+    peak = np.max(stamp_bg)
+
+    saturated = False
+    if saturation_level is not None:
+        saturated = bool(np.max(stamp) >= saturation_level * 0.95)
+    elif image.dtype.kind == "i" and np.max(stamp) >= 0.95 * np.iinfo(image.dtype).max:
+        saturated = True
+
+    noise = np.std(stamp_bg[stamp_bg < 0.3 * peak]) if peak > 0 else 1.0
+    snr = float(peak / noise) if noise > 0 else 0.0
+
+    cy, cx = np.mgrid[0 : stamp_bg.shape[0], 0 : stamp_bg.shape[1]]
+    # `total` se recalcula 3 líneas más abajo (`max(sum(stamp_pos), 1.0)`),
+    # así que esta primera asignación -- y el `if total <= 0` que depende de
+    # ella -- son inalcanzables tal cual están en el original heredado: sin
+    # señal positiva, la rama `else 1.0` deja `total = 1.0`, nunca <= 0.
+    # Hallazgo real durante la migración (ver test_quality_matches_legacy.py):
+    # un recorte totalmente plano NO devuelve NO DISPONIBLE en el heredado,
+    # devuelve OBSERVABLE con fwhm_px/ellipticity/sharpness en None -- se
+    # conserva tal cual (no es un bug de unidades como el de Detection,
+    # informe 54; es un comportamiento real y ya consumido más abajo por
+    # `characterize_point_source`, que YA maneja fwhm=None con honestidad).
+    total = np.sum(stamp_bg[stamp_bg > 0]) if np.any(stamp_bg > 0) else 1.0
+    if total <= 0:
+        return {"state": "NO DISPONIBLE", "error": "Sin señal positiva"}
+
+    stamp_pos = np.where(stamp_bg > 0, stamp_bg, 0)
+    total = max(np.sum(stamp_pos), 1.0)
+    mx = np.sum(cx * stamp_pos) / total
+    my = np.sum(cy * stamp_pos) / total
+    mxx = np.sum(((cx - mx) ** 2) * stamp_pos) / total
+    myy = np.sum(((cy - my) ** 2) * stamp_pos) / total
+    mxy = np.sum((cx - mx) * (cy - my) * stamp_pos) / total
+    sigma_avg = math.sqrt((mxx + myy) / 2.0)
+    fwhm = 2.0 * math.sqrt(2.0 * math.log(2.0)) * sigma_avg if sigma_avg > 0 else None
+
+    a_squared = (mxx + myy) / 2.0 + math.sqrt(((mxx - myy) / 2.0) ** 2 + mxy**2)
+    b_squared = (mxx + myy) / 2.0 - math.sqrt(((mxx - myy) / 2.0) ** 2 + mxy**2)
+    ellipticity = 1.0 - math.sqrt(max(b_squared, 0) / a_squared) if a_squared > 0 else None
+
+    cy_stamp, cx_stamp = stamp_bg.shape[0] // 2, stamp_bg.shape[1] // 2
+    r = 1
+    central_region = stamp_bg[max(0, cy_stamp - r) : cy_stamp + r + 1, max(0, cx_stamp - r) : cx_stamp + r + 1]
+    mean_central = np.mean(central_region) if central_region.size > 0 else 0
+    sharpness = float(peak / mean_central) if mean_central > 0 else None
+
+    threshold = 0.3 * peak
+    _labeled, n_components = ndi.label(stamp_bg > threshold)
+    isolated = n_components <= 1
+
+    return {
+        "fwhm_px": float(fwhm) if fwhm is not None else None,
+        "ellipticity": float(ellipticity) if ellipticity is not None else None,
+        "sharpness": sharpness,
+        "snr_local": float(snr),
+        "saturated": saturated,
+        "isolated": isolated,
+        "n_peaks_in_stamp": n_components,
+        "peak_adu": float(peak),
+        "background_adu": float(bg),
+        "noise_adu": float(noise),
+        "state": "OBSERVABLE",
+        "note": "Medida directa desde imagen; FWHM via momentos 2D",
+    }
+
 
 #: Radio de apertura como múltiplo del FWHM real medido -- ~3x FWHM
 #: captura ~99% del flujo de un perfil gaussiano (Howell, *Handbook of
@@ -75,7 +192,7 @@ def characterize_point_source(
     saturation_level: float | None = None,
     pipeline_version: str = "",
 ) -> CharacterizationResult:
-    raw = _legacy_measure_source_quality(
+    raw = measure_source_quality(
         loaded_image.legacy_image.data,
         detection.position.x_px,
         detection.position.y_px,
