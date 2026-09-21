@@ -9,9 +9,28 @@ para que el resto de esta función (clasificación de sesión) no tenga que
 distinguir el formato de origen."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from astropy.io import fits
 
 from astrophysics_suite.io.xisf_reader import is_xisf_path, read_xisf_header
+
+
+def parse_date_obs(header: dict) -> datetime | None:
+    """Instante real de adquisición a partir de `DATE-OBS` -- única
+    implementación real (antes duplicada en `discovery/pipeline.py`,
+    consolidada aquí para reutilizarla desde cualquier motor multiépoca,
+    p. ej. `photometry/multi_frame.py`). Nunca se inventa: sin una
+    cabecera FITS con `DATE-OBS` en un formato ISO 8601 reconocible,
+    devuelve `None` -- quien llama decide qué hacer sin tiempo real."""
+    raw = (header or {}).get("DATE-OBS")
+    if not raw or not isinstance(raw, str):
+        return None
+    try:
+        value = datetime.fromisoformat(raw.strip())
+    except ValueError:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
 def read_fits_header(path: str) -> dict:

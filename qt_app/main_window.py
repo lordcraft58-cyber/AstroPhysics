@@ -67,6 +67,7 @@ from qt_app.spectroscopy.wavelength_fit_dialog import WavelengthFitDialog
 from qt_app.theme import DARK, build_stylesheet
 from qt_app.tutorial.tutorial_overlay import TutorialOverlay
 from qt_app.tutorial.tutorial_steps import build_tutorial_steps
+from qt_app.variable_stars.light_curve_dialog import LightCurveDialog
 from qt_app.workers import CallableWorker, ProcessWorker
 from services.app_preferences import AppPreferencesStore
 from services.instrument_profiles import InstrumentProfileStore
@@ -293,6 +294,11 @@ class MainWindow(QMainWindow):
         observation_report_action = QAction("Generar informe de &observación...", self)
         observation_report_action.triggered.connect(self._generate_observation_report_dialog)
         self.discovery_menu.addAction(observation_report_action)
+
+        self.variable_stars_menu = self.menuBar().addMenu("Es&trellas Variables")
+        light_curve_action = QAction("&Curva de luz multiépoca...", self)
+        light_curve_action.triggered.connect(self._open_light_curve_flow)
+        self.variable_stars_menu.addAction(light_curve_action)
 
         help_menu = self.menuBar().addMenu("A&yuda")
         tutorial_action = QAction("&Tutorial guiado", self)
@@ -805,6 +811,32 @@ class MainWindow(QMainWindow):
             dialog = WCSFitDialog(points, view.data.shape, self)
             dialog.fitted.connect(lambda solution, table, v=view: self._on_wcs_fitted(v, solution, table))
             dialog.exec()
+
+        view.picking_finished.connect(on_picked)
+        view.start_picking()
+
+    def _open_light_curve_flow(self) -> None:
+        view = self._active_image_view()
+        if view is None:
+            self.statusBar().showMessage("Abre o selecciona el primer LIGHT de la variable antes de calcular una curva de luz.", 5000)
+            return
+        self.statusBar().showMessage(
+            "Curva de luz: primer clic = la estrella VARIABLE; hasta 5 clics más = estrellas de COMPARACIÓN -- clic derecho para terminar."
+        )
+
+        def on_picked(points: list[tuple[float, float]]) -> None:
+            view.picking_finished.disconnect(on_picked)
+            if len(points) < 2:
+                self.statusBar().showMessage("Hacen falta al menos 2 clics: la variable y una estrella de comparación.", 6000)
+                return
+            if len(points) > 6:
+                self.statusBar().showMessage(f"Máximo 5 estrellas de comparación (más la variable) -- se marcaron {len(points)} puntos.", 6000)
+                return
+            dialog = LightCurveDialog(points, view.data, view.header, view.source_path, self)
+            dialog.exec()
+            table = dialog.result_table()
+            if table is not None:
+                self._last_result_table = table
 
         view.picking_finished.connect(on_picked)
         view.start_picking()

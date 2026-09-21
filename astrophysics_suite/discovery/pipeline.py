@@ -30,7 +30,7 @@ from __future__ import annotations
 import math
 import threading
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Callable
 
 from astrophysics_suite.anomaly.vector import build_anomaly_vector
@@ -49,6 +49,7 @@ from astrophysics_suite.core.quantity import Quantity
 from astrophysics_suite.detection.point_sources import detect_point_sources
 from astrophysics_suite.discovery.source_tracks import EpochDetection, SourceTrack, group_detections_into_tracks
 from astrophysics_suite.evidence.chain_builder import build_evidence_chain
+from astrophysics_suite.io.fits_header_reader import parse_date_obs
 from astrophysics_suite.io.fits_loader import LoadedImage
 from astrophysics_suite.models.candidate import ArtifactCheck, Candidate, CatalogMatch, CatalogQuery, QualitySummary
 from astrophysics_suite.models.characterization import CharacterizationResult
@@ -454,15 +455,13 @@ def _parse_epoch_time(header: dict) -> datetime | None:
     ajuste de trayectoria de `temporal/motion.py`. Nunca se inventa: sin
     una cabecera FITS con `DATE-OBS` en un formato ISO 8601 reconocible,
     la imagen simplemente no aporta tiempo real a su traza -- ambos
-    motores ya declaran explícitamente qué hacen sin él."""
-    raw = (header or {}).get("DATE-OBS")
-    if not raw or not isinstance(raw, str):
-        return None
-    try:
-        value = datetime.fromisoformat(raw.strip())
-    except ValueError:
-        return None
-    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    motores ya declaran explícitamente qué hacen sin él.
+
+    Delegación fina en `io.fits_header_reader.parse_date_obs` (única
+    implementación real, reutilizada también por `photometry/
+    multi_frame.py`) -- se conserva este nombre local para no tocar su
+    único punto de uso más abajo."""
+    return parse_date_obs(header)
 
 
 def _brightness_epochs(track: SourceTrack, processed_by_id: dict[str, _ProcessedSource]) -> list[dict]:
