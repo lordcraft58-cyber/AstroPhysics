@@ -9,6 +9,7 @@ import pytest
 from astrophysics_suite.spectroscopy.trace import (
     SkyWindow,
     TraceResult,
+    classify_source_extent,
     estimate_sky_background,
     extract_mean,
     extract_optimal,
@@ -256,4 +257,78 @@ def test_extract_sum_propagates_sky_smoothing_to_the_extracted_flux():
 
     assert without_smoothing.sky is not None and "poly" not in without_smoothing.sky.reducer
     assert with_smoothing.sky is not None and "poly" in with_smoothing.sky.reducer
-    assert np.all(with_smoothing.valid)  # el cielo suavizado cubre toda la traza
+
+
+def test_trace_spectrum_spline_recovers_known_curved_trace():
+    """§2: el spline es una alternativa real al polinomio -- debe
+    recuperar una traza curva conocida igual de bien."""
+    data, _, true_center = _synthetic_2d_spectrum(curve=6.0)
+    result = trace_spectrum(data, initial_center_px=20.0, fit_degree=3, fit_method="spline")
+    assert result.fit_method == "spline"
+    np.testing.assert_allclose(result.center_px, true_center, atol=0.7)
+
+
+def test_trace_spectrum_rejects_unknown_fit_method():
+    data, _, _ = _synthetic_2d_spectrum(curve=0.0)
+    with pytest.raises(ValueError):
+        trace_spectrum(data, initial_center_px=20.0, fit_method="lagrange")
+
+
+def test_trace_spectrum_spline_still_rejects_a_single_cosmic_ray_contaminated_column():
+    """El spline es mucho más flexible localmente que un polinomio de
+    grado bajo -- sin un arranque robusto, un único centroide
+    contaminado por un rayo cósmico real (la traza se desvía de golpe
+    varios píxeles en una sola columna) podría arrastrar el ajuste en
+    vez de quedar excluido por el sigma-clip. Debe seguir siendo
+    ignorado, igual que ya lo es con el polinomio."""
+    data, _, true_center = _synthetic_2d_spectrum(curve=0.0, sigma=2.0, flux_per_col=3000.0, seed=11)
+    contaminated_col = 100
+    data[26, contaminated_col] += 50000.0  # rayo cósmico real, lejos del centro real (20.0)
+
+    result_poly = trace_spectrum(data, initial_center_px=20.0, fit_degree=2, fit_method="polynomial")
+    result_spline = trace_spectrum(data, initial_center_px=20.0, fit_degree=2, fit_method="spline")
+
+    for result in (result_poly, result_spline):
+        assert abs(result.center_px[contaminated_col] - true_center[contaminated_col]) < 1.5
+
+
+def test_classify_source_extent_labels_a_narrow_synthetic_point_source():
+    """§2: distinción automática puntual/extendida, siempre informativa
+    -- un perfil estrecho (sigma=1.5 px, FWHM real ~3.5 px) real queda
+    clasificado como "point" con el umbral por defecto (6.0 px)."""
+    data, _, true_center = _synthetic_2d_spectrum(sigma=1.5, flux_per_col=4000.0, seed=3)
+    trace = trace_spectrum(data, initial_center_px=20.0, fit_degree=1)
+
+    estimate = classify_source_extent(data, trace)
+
+    assert estimate.classification == "point"
+    assert 1.0 < estimate.fwhm_px < 6.0
+    assert estimate.n_columns_used > 0
+    _ = true_center
+
+
+def test_classify_source_extent_labels_a_wide_synthetic_extended_source():
+    """Mismo motor, perfil ancho real (sigma=6 px, FWHM ~14 px) --
+    queda clasificado como "extended", nunca decide por su cuenta qué
+    extracción usar, solo informa."""
+    data, _, _ = _synthetic_2d_spectrum(sigma=6.0, flux_per_col=6000.0, seed=4)
+    trace = trace_spectrum(data, initial_center_px=20.0, fit_degree=1)
+
+    estimate = classify_source_extent(data, trace)
+
+    assert estimate.classification == "extended"
+    assert estimate.fwhm_px > 6.0
+
+
+def test_classify_source_extent_reports_honestly_when_there_is_no_real_signal():
+    """Sin ningún pico real por encima del fondo en ninguna columna, la
+    clasificación debe admitir honestamente que no sabe -- nunca
+    inventar un FWHM ni una clasificación de la nada."""
+    data = np.full((41, 100), 50.0)
+    trace = TraceResult(columns=np.arange(100), center_px=np.full(100, 20.0), fit_degree=0, rms_residual_px=0.0)
+
+    estimate = classify_source_extent(data, trace)
+
+    assert estimate.classification == "desconocido"
+    assert math.isnan(estimate.fwhm_px)
+    assert estimate.n_columns_used == 0

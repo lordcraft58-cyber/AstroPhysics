@@ -261,6 +261,47 @@ def test_continuum_fit_process_runs_on_central_row():
     assert plot_data.series[1].style == "dashed"
 
 
+def test_continuum_fit_process_supports_spline_method():
+    # §19: alternativa spline al polinomio.
+    data = np.full((21, 200), 100.0)
+    data[10, 50:55] += 300.0
+    process = _get("spectroscopy.continuum")
+    params = _default_params(process)
+    params["method"] = "spline"
+    result = process.run(data, params)
+    assert "Continuo ajustado (spline)" in result.summary
+
+
+def test_continuum_fit_process_restricts_to_manual_regions_when_given():
+    # §19: selección manual de regiones de continuo -- el resumen debe
+    # reflejar honestamente que se usaron, y el ajuste no debe verse
+    # arrastrado por la línea inyectada fuera de esas regiones.
+    data = np.full((21, 200), 100.0)
+    data[10, 100:105] += 5000.0  # línea fuerte fuera de las regiones manuales
+    process = _get("spectroscopy.continuum")
+    params = _default_params(process)
+    params["degree"] = 1
+    params["manual_regions"] = "0-40,160-199"
+    result = process.run(data, params)
+    assert "regiones manuales de continuo (§19): 0-40,160-199" in result.summary
+    plot_data = result.artifacts["spectrum"]
+    continuum_curve = plot_data.series[1].y
+    assert np.max(continuum_curve) < 200.0  # nunca se dejó arrastrar por la línea de 5000
+
+
+def test_continuum_fit_process_reports_a_clear_error_for_a_malformed_region():
+    data = np.full((21, 200), 100.0)
+    process = _get("spectroscopy.continuum")
+    params = _default_params(process)
+    params["manual_regions"] = "no-es-un-rango"
+    try:
+        process.run(data, params)
+    except ValueError as exc:
+        assert "mal escrita" in str(exc)
+    else:
+        raise AssertionError("se esperaba ValueError con una región de continuo mal escrita")
+
+
 def test_psf_photometry_process_requires_picking_and_recovers_flux():
     process = _get("photometry.psf")
     assert process.requires_picking == 0  # ilimitado
@@ -491,6 +532,26 @@ def test_spectral_trace_process_applies_real_sky_smoothing_when_requested():
     result = process.run(data, params)
 
     assert "polinomio real de grado 2" in result.summary
+
+
+def test_spectral_trace_process_supports_spline_fit_method_and_reports_extent():
+    # §2: alternativa spline al polinomio + distinción automática
+    # puntual/extendida, siempre solo informativa.
+    height, width = 41, 150
+    yy, _xx = np.mgrid[0:height, 0:width]
+    profile = np.exp(-(((yy - 20.0) ** 2)) / (2 * 1.5**2))
+    profile /= profile.sum(axis=0, keepdims=True)
+    data = 80.0 + 4000.0 * profile
+
+    process = _get("spectroscopy.trace")
+    params = _default_params(process)
+    params["fit_method"] = "spline"
+    params["_picked_points"] = [(0.0, 20.0)]
+    result = process.run(data, params)
+
+    assert "ajuste spline" in result.summary
+    assert "clasificación automática informativa" in result.summary
+    assert "'point'" in result.summary
 
 
 def test_spectral_trace_process_rejects_wrong_number_of_points():

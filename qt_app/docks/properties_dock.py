@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -90,6 +91,12 @@ class PropertiesDock(QWidget):
             widget = QCheckBox()
             widget.setChecked(bool(spec.default))
             return widget
+        if spec.kind == "text":
+            widget = QLineEdit()
+            widget.setText(str(spec.default))
+            if spec.help_text:
+                widget.setPlaceholderText(spec.help_text)
+            return widget
         if spec.kind == "int":
             widget = QSpinBox()
             widget.setMinimum(int(spec.minimum) if spec.minimum is not None else -1_000_000)
@@ -118,6 +125,8 @@ class PropertiesDock(QWidget):
                 params[spec.name] = widget.currentText()
             elif spec.kind == "bool":
                 params[spec.name] = widget.isChecked()
+            elif spec.kind == "text":
+                params[spec.name] = widget.text()
             else:
                 params[spec.name] = widget.value()
         self.run_requested.emit(self.current_process.process_id, params)

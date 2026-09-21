@@ -42,6 +42,44 @@ def _combined_bad(data: np.ndarray, mask: np.ndarray | None) -> np.ndarray:
     return bad
 
 
+_TRACE_FIT_METHODS = ("polynomial", "spline")
+
+
+def _robust_noise_variance(values: np.ndarray) -> float:
+    """Misma estimación robusta que `continuum._robust_noise_variance`
+    (reimplementada aquí para no crear una dependencia cruzada por una
+    función de 8 líneas) -- varianza real del ruido vía la MAD de las
+    diferencias consecutivas, insensible a un puñado de columnas
+    contaminadas (rayos cósmicos) que todavía no se han rechazado."""
+    if values.size < 3:
+        return 0.0
+    diffs = np.diff(values)
+    mad = float(np.median(np.abs(diffs - np.median(diffs))))
+    sigma = _MAD_TO_SIGMA * mad / math.sqrt(2.0)
+    return sigma**2
+
+
+def _fit_curve(columns: np.ndarray, values: np.ndarray, *, method: str, degree: int, spline_smoothing: float | None):
+    """Ajusta `values(columns)` con el método pedido (§2/§19: "spline como
+    alternativa al polinomio") y devuelve una función evaluable en
+    cualquier columna -- nunca duplica la lógica de rechazo iterativo,
+    que vive en el llamador y solo necesita reevaluar el ajuste en cada
+    iteración."""
+    if method == "polynomial":
+        coeffs = np.polyfit(columns, values, deg=degree)
+        return lambda x: np.polyval(coeffs, x)
+    if method == "spline":
+        from scipy.interpolate import UnivariateSpline
+
+        k = min(degree, 5, columns.size - 1)
+        if k < 1:
+            raise ValueError(f"se necesitan al menos 2 puntos para un ajuste spline (hay {columns.size})")
+        s = float(columns.size) * _robust_noise_variance(values) if spline_smoothing is None else spline_smoothing
+        spline = UnivariateSpline(columns, values, k=k, s=s)
+        return spline
+    raise ValueError(f"method debe ser uno de {_TRACE_FIT_METHODS}, recibido {method!r}")
+
+
 @dataclass(frozen=True)
 class TraceResult:
     columns: np.ndarray
@@ -54,6 +92,10 @@ class TraceResult:
     """Cuántas columnas tenían un centroide medible y sobrevivieron al
     rechazo iterativo -- si es mucho menor que `len(columns)`, el ajuste
     se apoya en poca evidencia real y el RMS puede no ser representativo."""
+    fit_method: str = "polynomial"
+    """§2: "polynomial" (por defecto, `np.polyfit`) o "spline"
+    (`scipy.interpolate.UnivariateSpline`, más flexible ante trazas que
+    no siguen bien un polinomio de bajo grado en toda la imagen)."""
 
 
 def trace_spectrum(
@@ -63,15 +105,26 @@ def trace_spectrum(
     mask: np.ndarray | None = None,
     search_half_width: float = 8.0,
     fit_degree: int = 3,
+    fit_method: str = "polynomial",
+    spline_smoothing: float | None = None,
     sigma_clip: float = 3.0,
     max_iters: int = 5,
 ) -> TraceResult:
     """Sigue el centroide ponderado por flujo columna a columna (una
     ventana de búsqueda alrededor de la posición de la columna anterior,
     para no perder la traza si el objeto se curva o se inclina), y ajusta
-    un polinomio suave con rechazo iterativo de columnas ruidosas
-    (rayos cósmicos, columnas sin señal) -- el resultado es el centro de
+    una curva suave con rechazo iterativo de columnas ruidosas (rayos
+    cósmicos, columnas sin señal) -- el resultado es el centro de
     extracción que usan `extract_sum`/`extract_optimal`.
+
+    `fit_method` (§2): `"polynomial"` (por defecto, `np.polyfit(deg=
+    fit_degree)`) o `"spline"` (`scipy.interpolate.UnivariateSpline`,
+    grado `min(fit_degree, 5)`, factor de suavizado `spline_smoothing` --
+    `None` deja que scipy lo estime a partir del número de puntos). Un
+    spline sigue mejor una traza con curvatura irregular que ningún
+    polinomio de grado bajo puede capturar sin oscilar en los extremos;
+    un polinomio sigue siendo más robusto con pocas columnas de señal
+    real.
 
     `mask`, si se da (misma forma que `data`, bits `PixelFlag` o
     booleana), excluye esos píxeles del centroide -- además de excluir
@@ -86,6 +139,8 @@ def trace_spectrum(
     """
     if data.ndim != 2:
         raise ValueError("trace_spectrum opera sobre imágenes 2D (espacial x dispersión)")
+    if fit_method not in _TRACE_FIT_METHODS:
+        raise ValueError(f"fit_method debe ser uno de {_TRACE_FIT_METHODS}, recibido {fit_method!r}")
     height, n_columns = data.shape
     if not (0 <= initial_center_px < height):
         raise ValueError("initial_center_px debe caer dentro de la imagen")
@@ -118,9 +173,25 @@ def trace_spectrum(
     columns_all = np.arange(n_columns)
     columns, values = columns_all[valid], centers[valid]
 
+    if fit_method == "spline" and columns.size >= min(fit_degree, 3) + 1:
+        # mismo arranque robusto que `continuum.fit_continuum` -- un
+        # spline puede seguir de cerca un centroide contaminado por un
+        # rayo cósmico si todavía está presente en el primer ajuste (la
+        # condición de suavizado es una suma global, sensible a un solo
+        # residuo enorme); un polinomio de grado bajo lo ignora mucho
+        # mejor y da un primer conjunto de columnas ya limpio.
+        pilot_degree = min(fit_degree, 3)
+        pilot_coeffs = np.polyfit(columns, values, deg=pilot_degree)
+        pilot_residuals = values - np.polyval(pilot_coeffs, columns)
+        pilot_mad = float(np.median(np.abs(pilot_residuals)))
+        pilot_sigma = max(pilot_mad * _MAD_TO_SIGMA, 1e-6)
+        pilot_keep = np.abs(pilot_residuals) <= sigma_clip * pilot_sigma
+        if np.count_nonzero(pilot_keep) >= fit_degree + 1:
+            columns, values = columns[pilot_keep], values[pilot_keep]
+
     for _ in range(max_iters):
-        coeffs = np.polyfit(columns, values, deg=fit_degree)
-        residuals = values - np.polyval(coeffs, columns)
+        predict = _fit_curve(columns, values, method=fit_method, degree=fit_degree, spline_smoothing=spline_smoothing)
+        residuals = values - predict(columns)
         mad = float(np.median(np.abs(residuals)))
         sigma = max(mad * _MAD_TO_SIGMA, 1e-6)
         keep = np.abs(residuals) <= sigma_clip * sigma
@@ -128,13 +199,86 @@ def trace_spectrum(
             break
         columns, values = columns[keep], values[keep]
 
-    coeffs = np.polyfit(columns, values, deg=fit_degree)
-    fitted_all = np.polyval(coeffs, columns_all)
-    rms = float(math.sqrt(np.mean((values - np.polyval(coeffs, columns)) ** 2)))
+    predict = _fit_curve(columns, values, method=fit_method, degree=fit_degree, spline_smoothing=spline_smoothing)
+    fitted_all = predict(columns_all)
+    rms = float(math.sqrt(np.mean((values - predict(columns)) ** 2)))
 
     return TraceResult(
         columns=columns_all, center_px=fitted_all, fit_degree=fit_degree, rms_residual_px=rms,
-        n_columns_used_for_fit=int(columns.size),
+        n_columns_used_for_fit=int(columns.size), fit_method=fit_method,
+    )
+
+
+@dataclass(frozen=True)
+class SourceExtentEstimate:
+    """§2: "distinción automática puntual/extendida" -- SIEMPRE
+    informativa. Mide un FWHM espacial real y lo compara con un umbral
+    explícito, pero nunca decide por su cuenta qué extracción usar: el
+    usuario sigue eligiendo entre `spectroscopy.trace` (puntual) y
+    `spectroscopy.extended_extraction` (extendida), ahora con una
+    medida real en vez de una suposición a ciegas."""
+
+    fwhm_px: float
+    """Mediana real del FWHM del perfil espacial en las columnas de
+    referencia usables. `NaN` si ninguna columna tuvo señal medible --
+    nunca un valor inventado."""
+    classification: str
+    """`"point"`, `"extended"`, o `"desconocido"` si no hubo ninguna
+    columna usable."""
+    threshold_px: float
+    n_columns_used: int
+
+
+def classify_source_extent(
+    data: np.ndarray,
+    trace: TraceResult,
+    *,
+    mask: np.ndarray | None = None,
+    half_width_search_px: float = 15.0,
+    threshold_px: float = 6.0,
+    n_reference_columns: int = 25,
+) -> SourceExtentEstimate:
+    """Mide el FWHM real del perfil espacial (columna a columna, centrado
+    en la traza YA conocida -- nunca retraza) en un muestreo de columnas
+    de referencia bien espaciadas a lo largo de la traza, vía cruce
+    directo a mitad de pico (sin asumir una forma Gaussiana), y clasifica
+    la fuente comparando la mediana de esos anchos con `threshold_px`
+    (§2). `threshold_px=6.0` por defecto es un valor razonable para el
+    ancho típico de un perfil puntual bajo un seeing/PSF normal, pero es
+    deliberadamente configurable -- no hay un umbral universal correcto
+    para cualquier instrumento."""
+    if data.ndim != 2:
+        raise ValueError("classify_source_extent opera sobre imágenes 2D (espacial x dispersión)")
+    height, n_columns = data.shape
+    bad = _combined_bad(data, mask)
+    step = max(1, n_columns // n_reference_columns)
+    fwhms: list[float] = []
+    for col in range(0, n_columns, step):
+        center = trace.center_px[col]
+        if not np.isfinite(center):
+            continue
+        row_lo = max(0, int(round(center - half_width_search_px)))
+        row_hi = min(height, int(round(center + half_width_search_px)) + 1)
+        window_bad = bad[row_lo:row_hi, col]
+        if np.all(window_bad):
+            continue
+        profile = np.where(window_bad, np.nan, data[row_lo:row_hi, col].astype(np.float64))
+        baseline = np.nanpercentile(profile, 10)
+        profile = profile - baseline
+        peak = np.nanmax(profile)
+        if not np.isfinite(peak) or peak <= 0:
+            continue
+        above = np.where(np.nan_to_num(profile, nan=-np.inf) >= peak / 2.0)[0]
+        if above.size == 0:
+            continue
+        fwhms.append(float(above[-1] - above[0] + 1))
+
+    if not fwhms:
+        return SourceExtentEstimate(fwhm_px=float("nan"), classification="desconocido", threshold_px=threshold_px, n_columns_used=0)
+    fwhm = float(np.median(fwhms))
+    return SourceExtentEstimate(
+        fwhm_px=fwhm, classification="extended" if fwhm > threshold_px else "point",
+        threshold_px=threshold_px, n_columns_used=len(fwhms),
     )
 
 

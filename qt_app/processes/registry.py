@@ -67,6 +67,7 @@ from astrophysics_suite.spectroscopy.multiaperture import extract_multi_aperture
 from astrophysics_suite.spectroscopy.trace import (
     DEFAULT_SKY_WINDOWS,
     SkyWindow,
+    classify_source_extent,
     extract_mean,
     extract_optimal,
     extract_sum,
@@ -498,7 +499,10 @@ def _run_spectral_trace(data: np.ndarray, params: dict) -> ProcessResult:
     x0, y0 = points[0]
 
     mask, n_saturated, saturate_adu = _saturation_mask_from_header(data, params)
-    trace = trace_spectrum(data, initial_center_px=y0, fit_degree=int(params["fit_degree"]), mask=mask)
+    trace = trace_spectrum(
+        data, initial_center_px=y0, fit_degree=int(params["fit_degree"]), fit_method=params["fit_method"], mask=mask,
+    )
+    extent = classify_source_extent(data, trace, mask=mask, threshold_px=params["extent_threshold_px"])
     uncertainty, gain_note = _uncertainty_adu(data, params)
     extraction_method = params["extraction_method"]
     extractor = _EXTRACTION_METHODS[extraction_method]
@@ -526,9 +530,21 @@ def _run_spectral_trace(data: np.ndarray, params: dict) -> ProcessResult:
     invalid_note = f"; {n_invalid} columna(s) sin medida real (huecos en el gráfico)" if n_invalid else ""
     saturation_note = f"; {n_saturated} píxel(es) saturado(s) (SATURATE={saturate_adu:.0f} ADU) excluido(s)" if n_saturated else ""
     noise_note = f"; ruido real ({gain_note})" if gain_note else "; ruido Poisson aproximado (sin GAIN real)"
+    # §2: distinción automática puntual/extendida -- SIEMPRE informativa,
+    # nunca cambia por sí sola qué extracción se usó; el usuario sigue
+    # eligiendo entre esta traza (puntual) y "Extracción de objetos
+    # extendidos" (extendida) con una medida real, no a ciegas.
+    if extent.classification == "desconocido":
+        extent_note = "; perfil espacial: sin señal real medible para estimar su anchura"
+    else:
+        extent_note = (
+            f"; perfil espacial FWHM={extent.fwhm_px:.1f} px -> clasificación automática informativa: "
+            f"'{extent.classification}' (umbral {extent.threshold_px:.1f} px)"
+        )
     summary = (
-        f"Traza extraída ({method}) desde y={y0:.1f} en x={x0:.1f}; RMS de traza={trace.rms_residual_px:.2f} px, "
-        f"S/N mediana={median_snr:.1f}{invalid_note}{saturation_note}{noise_note}{sky_note}."
+        f"Traza extraída ({method}, ajuste {trace.fit_method}) desde y={y0:.1f} en x={x0:.1f}; "
+        f"RMS de traza={trace.rms_residual_px:.2f} px, "
+        f"S/N mediana={median_snr:.1f}{invalid_note}{saturation_note}{noise_note}{sky_note}{extent_note}."
     )
     overlay = TraceOverlay(
         trace_columns=trace.columns.astype(np.float64), trace_center_px=trace.center_px,
@@ -754,6 +770,31 @@ def _run_extended_extraction(data: np.ndarray, params: dict) -> ProcessResult:
     )
 
 
+def _parse_continuum_regions(text: str) -> tuple[tuple[float, float], ...] | None:
+    """Parsea "lo-hi,lo-hi" (§19: selección manual de regiones de
+    continuo) -- texto vacío/solo espacios significa "sin regiones
+    manuales, usar todo el rango con sigma-clip automático". Lanza
+    `ValueError` honesto con el fragmento exacto que no se pudo
+    interpretar, en vez de ignorarlo en silencio."""
+    text = text.strip()
+    if not text:
+        return None
+    regions: list[tuple[float, float]] = []
+    for chunk in text.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        parts = chunk.split("-")
+        if len(parts) != 2:
+            raise ValueError(f"región de continuo mal escrita: {chunk!r} -- se espera 'lo-hi' (p. ej. '6500-6550')")
+        try:
+            lo, hi = float(parts[0]), float(parts[1])
+        except ValueError as exc:
+            raise ValueError(f"región de continuo mal escrita: {chunk!r} -- se espera 'lo-hi' con números reales") from exc
+        regions.append((lo, hi))
+    return tuple(regions) if regions else None
+
+
 def _run_continuum_fit_central_row(data: np.ndarray, params: dict) -> ProcessResult:
     row_index = data.shape[0] // 2
     flux = data[row_index, :].astype(np.float64)
@@ -761,8 +802,16 @@ def _run_continuum_fit_central_row(data: np.ndarray, params: dict) -> ProcessRes
     uncertainty_full, _gain_note = _uncertainty_adu(data, params)
     flux_uncertainty = uncertainty_full[row_index, :].astype(np.float64)
 
-    fit = fit_continuum(pixel, flux, degree=int(params["degree"]), sigma_clip=params["sigma_clip"])
-    summary = f"Continuo ajustado sobre la fila central (grado {int(params['degree'])}); RMS={fit.rms_residual:.2f}, {fit.n_rejected} píxel(es) rechazados."
+    regions = _parse_continuum_regions(params["manual_regions"])
+    fit = fit_continuum(
+        pixel, flux, degree=int(params["degree"]), sigma_clip=params["sigma_clip"],
+        method=params["method"], regions=regions,
+    )
+    regions_note = f"; regiones manuales de continuo (§19): {params['manual_regions'].strip()}" if regions else ""
+    summary = (
+        f"Continuo ajustado ({fit.method}) sobre la fila central (grado {int(params['degree'])}); "
+        f"RMS={fit.rms_residual:.2f}, {fit.n_rejected} píxel(es) rechazados{regions_note}."
+    )
     plot_data = SpectrumPlotData(
         series=(
             SpectrumSeries(label="Flujo", x=pixel, y=flux, y_error=flux_uncertainty),
@@ -1430,10 +1479,18 @@ def build_process_registry(*, profile_store: InstrumentProfileStore | None = Non
             process_id="spectroscopy.continuum",
             name="Ajuste de continuo (fila central)",
             category="Espectroscopía",
-            description="Ajuste polinómico iterativo con sigma-clipping sobre la fila central de la imagen, tratada como espectro 1D -- equivalente a continuum.",
+            description="Ajuste iterativo con sigma-clipping sobre la fila central de la imagen, tratada como espectro 1D -- equivalente a continuum.",
             parameters=(
-                ParameterSpec("degree", "Grado del polinomio", "int", 3, minimum=1, maximum=10),
+                ParameterSpec("degree", "Grado del ajuste", "int", 3, minimum=1, maximum=10),
+                ParameterSpec(
+                    "method", "Método de ajuste", "choice", "polynomial", choices=("polynomial", "spline"),
+                    help_text="§19: 'polynomial' (np.polyfit) o 'spline' (más flexible localmente, útil si el continuo real no es una curva suave de bajo grado en todo el rango).",
+                ),
                 ParameterSpec("sigma_clip", "Umbral σ de rechazo", "float", 2.5, minimum=0.5, maximum=10.0),
+                ParameterSpec(
+                    "manual_regions", "Regiones de continuo manuales (opcional)", "text", "",
+                    help_text="§19: 'lo-hi,lo-hi' en píxel (p. ej. '50-150,600-700') -- si se da, SOLO esos rangos entran en el ajuste, en vez de dejar que el sigma-clip automático decida qué es línea. Vacío = automático (todo el rango).",
+                ),
             ),
             run=_run_continuum_fit_central_row,
         ),
@@ -1454,11 +1511,19 @@ def build_process_registry(*, profile_store: InstrumentProfileStore | None = Non
             description="Traza espacial + extracción por suma, media u óptima (Horne 1986) -- eje 0 espacial, eje 1 dispersión. Al pulsar Aplicar, marca con un clic el centro espacial inicial de la traza. El resultado se muestra como una tira 1D repetida (el taller todavía no tiene un visor de espectros dedicado).",
             parameters=(
                 ParameterSpec("fit_degree", "Grado del ajuste de traza", "int", 3, minimum=1, maximum=10),
+                ParameterSpec(
+                    "fit_method", "Método de ajuste de la traza", "choice", "polynomial", choices=("polynomial", "spline"),
+                    help_text="§2: 'polynomial' (np.polyfit, robusto con pocas columnas) o 'spline' (más flexible ante curvaturas irregulares que un polinomio de grado bajo no puede seguir).",
+                ),
                 ParameterSpec("aperture_half_width", "Semiancho de apertura (px)", "float", 4.0, minimum=1.0, maximum=100.0),
                 ParameterSpec(
                     "extraction_method", "Método de extracción", "choice", "óptima (Horne 1986)",
                     choices=tuple(_EXTRACTION_METHODS),
                     help_text="suma simple / óptima (Horne 1986, mejor S/N para una fuente débil) / media (§3, flujo medio por píxel de apertura en vez de flujo total).",
+                ),
+                ParameterSpec(
+                    "extent_threshold_px", "Umbral puntual/extendida (px, informativo)", "float", 6.0, minimum=1.0, maximum=100.0,
+                    help_text="§2: solo informa -- mide el FWHM espacial real y lo compara con este umbral para sugerir 'point'/'extended' en el resumen; nunca cambia qué extracción se ejecuta.",
                 ),
                 ParameterSpec(
                     "sky_smooth_degree", "Suavizado polinómico del cielo (grado, 0 = sin suavizar)", "int", 0,

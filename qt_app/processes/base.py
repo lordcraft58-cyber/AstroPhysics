@@ -21,8 +21,10 @@ class ParameterSpec:
     name: str
     label: str
     kind: str
-    """"float", "int", "bool" o "choice" (una de varias opciones fijas,
-    en `choices`)."""
+    """"float", "int", "bool", "choice" (una de varias opciones fijas, en
+    `choices`) o "text" (texto libre corto -- p. ej. una lista de
+    regiones "lo-hi,lo-hi" que el propio motor parsea e interpreta, no
+    un tipo numérico/fijo más)."""
     default: Any
     minimum: float | int | None = None
     maximum: float | int | None = None
@@ -33,8 +35,8 @@ class ParameterSpec:
     como desplegable. Vacío para cualquier otro tipo."""
 
     def __post_init__(self) -> None:
-        if self.kind not in ("float", "int", "bool", "choice"):
-            raise ValueError(f"kind debe ser 'float', 'int', 'bool' o 'choice'; recibido {self.kind!r}")
+        if self.kind not in ("float", "int", "bool", "choice", "text"):
+            raise ValueError(f"kind debe ser 'float', 'int', 'bool', 'choice' o 'text'; recibido {self.kind!r}")
         if self.kind == "choice":
             if not self.choices:
                 raise ValueError(f"el parámetro {self.name!r} es de tipo 'choice' pero no declara ninguna opción en `choices`")
