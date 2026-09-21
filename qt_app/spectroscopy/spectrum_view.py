@@ -67,6 +67,13 @@ class SpectrumView(QWidget):
     lleva incertidumbre real (`SpectrumSeries.y_error is None`). Todos
     `NaN` si el cursor cae fuera del área de la gráfica o ninguna serie
     tiene datos finitos."""
+    point_right_clicked = Signal(float, float, QPointF)
+    """`(x_real, y_real, global_pos)` del punto REAL más cercano al clic
+    derecho (nunca una posición interpolada, mismo criterio que
+    `point_hovered`) -- identificación manual de líneas (§10): el
+    llamador decide qué candidatas de catálogo mostrar y si añadir una
+    marca real (`add_marker`), este widget solo informa del punto real
+    señalado. No se emite si el clic cae fuera del área de la gráfica."""
 
     def __init__(self, plot_data: SpectrumPlotData, title: str, parent=None):
         super().__init__(parent)
@@ -133,6 +140,25 @@ class SpectrumView(QWidget):
         unidad nueva."""
         self._data = plot_data
         self.reset_view()
+
+    @property
+    def x_unit(self) -> str:
+        """Unidad real del eje X activo ahora mismo (`""` si es un eje de
+        píxel sin calibrar) -- para que el llamador de `point_right_
+        clicked` sepa en qué unidad viene `x_real` antes de buscar en un
+        catálogo (siempre en Å, §10/§15)."""
+        return self._data.x_unit
+
+    def add_marker(self, marker: SpectrumMarker) -> None:
+        """Añade una marca real (p. ej. una identificación de línea
+        aceptada por el usuario, §10) sin resetear el zoom/paneo actual
+        -- a diferencia de `set_plot_data`, que sí lo hace porque cambia
+        los propios datos."""
+        self._data = SpectrumPlotData(
+            series=self._data.series, x_label=self._data.x_label, y_label=self._data.y_label,
+            markers=self._data.markers + (marker,), x_unit=self._data.x_unit,
+        )
+        self.update()
 
     # ---------------------------------------------------------------- mapeo dato <-> píxel
     def _plot_rect(self) -> QRectF:
@@ -317,6 +343,14 @@ class SpectrumView(QWidget):
             self._panning = True
             self._pan_last_pixel = event.position()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        elif event.button() == Qt.MouseButton.RightButton:
+            pos = event.position()
+            if self._plot_rect().contains(pos):
+                x, _y = self._pixel_to_data(pos.x(), pos.y())
+                nearest = self._nearest_real_point(x)
+                if nearest is not None:
+                    x_real, y_real, _y_error = nearest
+                    self.point_right_clicked.emit(x_real, y_real, event.globalPosition())
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802 -- override de Qt

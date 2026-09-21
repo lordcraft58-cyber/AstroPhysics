@@ -7,9 +7,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from astrophysics_suite.spectroscopy.calibration_provenance import CalibrationSource
+from astrophysics_suite.spectroscopy.calibration_provenance import CalibrationSource, build_wavelength_provenance
 from astrophysics_suite.spectroscopy.line_catalog import BALMER_LINES
-from astrophysics_suite.spectroscopy.reference_star_calibration import calibrate_from_reference_star
+from astrophysics_suite.spectroscopy.reference_star_calibration import (
+    blind_calibrate_from_reference_star,
+    calibrate_from_reference_star,
+)
 
 
 def _synthetic_star_spectrum(*, true_wave0=4000.0, true_dispersion=2.0, width=2000, sigma_px=2.5, depth=40.0, seed=3):
@@ -88,4 +91,72 @@ def test_calibrate_from_reference_star_raises_when_too_few_lines_match_the_reque
             pixel, flux, continuum, BALMER_LINES,
             approx_dispersion_angstrom_per_px=2.0, approx_wavelength_at_pixel0=4000.0,
             tolerance_angstrom=15.0, reference_object="estrella de prueba", degree=5,  # 4 lineas de Balmer, grado imposible
+        )
+
+
+def test_blind_calibrate_from_reference_star_recovers_a_known_dispersion_without_any_approximate_guess():
+    pixel, flux, continuum, _wavelength_true = _synthetic_star_spectrum()
+    true_wave0, true_dispersion = 4000.0, 2.0
+
+    record = blind_calibrate_from_reference_star(
+        pixel, flux, continuum, BALMER_LINES,
+        tolerance_angstrom=5.0, reference_object="Vega (sintética, A0V)", degree=1,
+    )
+
+    assert record.source is CalibrationSource.REFERENCE_STAR
+    assert record.blind_search is True
+    assert record.n_lines_used >= 2
+    assert record.solution.pixel_to_wavelength(0.0) == pytest.approx(true_wave0, abs=5.0)
+    assert record.solution.pixel_to_wavelength(1000.0) == pytest.approx(true_wave0 + true_dispersion * 1000.0, abs=5.0)
+
+
+def test_blind_calibrate_from_reference_star_provenance_warns_about_the_blind_search():
+    pixel, flux, continuum, _wavelength_true = _synthetic_star_spectrum()
+    record = blind_calibrate_from_reference_star(
+        pixel, flux, continuum, BALMER_LINES,
+        tolerance_angstrom=5.0, reference_object="Vega (sintética, A0V)", degree=1,
+    )
+    provenance = build_wavelength_provenance(record)
+    assert any("búsqueda ciega" in w for w in provenance.warnings)
+    assert any("estrella de referencia" in w for w in provenance.warnings)  # sigue llevando el aviso normal de REFERENCE_STAR
+
+
+def test_blind_calibrate_from_reference_star_raises_honestly_when_nothing_matches():
+    pixel = np.arange(200, dtype=np.float64)
+    flux = np.full(200, 100.0)  # continuo puro plano, sin ninguna línea real
+    continuum = flux.copy()
+    with pytest.raises(ValueError):
+        blind_calibrate_from_reference_star(
+            pixel, flux, continuum, BALMER_LINES,
+            tolerance_angstrom=3.0, reference_object="estrella de prueba",
+        )
+
+
+def test_blind_calibrate_from_reference_star_raises_when_only_one_detection():
+    # Una sola desviación real no basta para proponer una dispersión (hacen falta al menos 2 puntos).
+    pixel = np.arange(400, dtype=np.float64)
+    continuum = np.full(400, 200.0)
+    flux = continuum.copy()
+    flux -= 60.0 * np.exp(-((pixel - 150.0) ** 2) / (2 * 2.5**2))
+    with pytest.raises(ValueError, match="al menos 2"):
+        blind_calibrate_from_reference_star(
+            pixel, flux, continuum, BALMER_LINES,
+            tolerance_angstrom=5.0, reference_object="estrella de prueba",
+        )
+
+
+def test_blind_calibrate_from_reference_star_rejects_an_empty_reference_object():
+    pixel, flux, continuum, _wavelength_true = _synthetic_star_spectrum()
+    with pytest.raises(ValueError, match="reference_object"):
+        blind_calibrate_from_reference_star(
+            pixel, flux, continuum, BALMER_LINES, tolerance_angstrom=5.0, reference_object="   ",
+        )
+
+
+def test_blind_calibrate_from_reference_star_rejects_an_invalid_dispersion_range():
+    pixel, flux, continuum, _wavelength_true = _synthetic_star_spectrum()
+    with pytest.raises(ValueError, match="dispersion_angstrom_per_px"):
+        blind_calibrate_from_reference_star(
+            pixel, flux, continuum, BALMER_LINES, tolerance_angstrom=5.0, reference_object="estrella de prueba",
+            min_dispersion_angstrom_per_px=10.0, max_dispersion_angstrom_per_px=1.0,
         )

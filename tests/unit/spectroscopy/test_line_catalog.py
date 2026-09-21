@@ -8,14 +8,19 @@ from astrophysics_suite.spectroscopy.air_vacuum import air_to_vacuum
 from astrophysics_suite.spectroscopy.line_catalog import (
     ARGON_ARC_LINES,
     BALMER_LINES,
+    CALCIUM_LINES,
     HELIUM_ARC_LINES,
     HENEAR_ARC_LINES,
+    NAMED_OBJECT_LINE_CATALOGS,
+    NEBULAR_EMISSION_LINES,
     NEON_ARC_LINES,
+    SODIUM_LINES,
     STELLAR_NEBULAR_LINES,
     LineType,
     arc_catalog,
     identify_object_lines,
     match_lines_to_catalog,
+    nearby_catalog_lines,
 )
 
 
@@ -116,3 +121,41 @@ def test_spectral_line_vacuum_wavelength_matches_air_to_vacuum():
 def test_spectral_line_vacuum_wavelength_is_a_real_number_for_every_catalog_line():
     for line in HENEAR_ARC_LINES + STELLAR_NEBULAR_LINES:
         assert line.wavelength_vacuum_angstrom > line.wavelength_air_angstrom
+
+
+def test_named_object_line_catalogs_matches_the_five_real_catalogs():
+    assert set(NAMED_OBJECT_LINE_CATALOGS) == {
+        "Balmer (H, estelar)", "Ca II H&K (estelar)", "Na D (estelar/interestelar)",
+        "Nebulares ([O III]/[N II]/[S II])", "Todas (estelar + nebular)",
+    }
+    assert NAMED_OBJECT_LINE_CATALOGS["Balmer (H, estelar)"] is BALMER_LINES
+    assert NAMED_OBJECT_LINE_CATALOGS["Ca II H&K (estelar)"] is CALCIUM_LINES
+    assert NAMED_OBJECT_LINE_CATALOGS["Na D (estelar/interestelar)"] is SODIUM_LINES
+    assert NAMED_OBJECT_LINE_CATALOGS["Nebulares ([O III]/[N II]/[S II])"] is NEBULAR_EMISSION_LINES
+    assert NAMED_OBJECT_LINE_CATALOGS["Todas (estelar + nebular)"] is STELLAR_NEBULAR_LINES
+
+
+def test_nearby_catalog_lines_finds_and_sorts_real_candidates_by_distance():
+    h_alpha = next(line for line in BALMER_LINES if line.label == "H-alpha")
+    h_beta = next(line for line in BALMER_LINES if line.label == "H-beta")
+    # 6562.8 (Ha) y 4861.3 (Hb) estan a mas de 1700 A -- una tolerancia de 20 A solo alcanza a una de las dos
+    candidates = nearby_catalog_lines(h_alpha.wavelength_air_angstrom + 3.0, BALMER_LINES, tolerance_angstrom=20.0)
+    assert candidates == (h_alpha,)
+    assert h_beta not in candidates
+
+
+def test_nearby_catalog_lines_orders_multiple_real_candidates_by_closeness():
+    # Ca II K y H (3933.7 / 3968.5) estan a menos de 35 A -- con tolerancia amplia deben salir las dos, la mas cercana primero
+    target = 3950.0  # mas cerca de Ca II K (3933.7, Delta=16.3) que de Ca II H (3968.5, Delta=18.5)
+    candidates = nearby_catalog_lines(target, CALCIUM_LINES, tolerance_angstrom=25.0)
+    assert [line.label for line in candidates] == ["Ca II K", "Ca II H"]
+
+
+def test_nearby_catalog_lines_returns_nothing_when_no_real_line_is_close():
+    candidates = nearby_catalog_lines(9999.0, BALMER_LINES, tolerance_angstrom=5.0)
+    assert candidates == ()
+
+
+def test_nearby_catalog_lines_rejects_nonpositive_tolerance():
+    with pytest.raises(ValueError):
+        nearby_catalog_lines(5000.0, BALMER_LINES, tolerance_angstrom=0.0)

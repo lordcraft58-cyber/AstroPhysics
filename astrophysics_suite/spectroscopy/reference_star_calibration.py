@@ -112,3 +112,112 @@ def calibrate_from_reference_star(
         solution=solution, source=CalibrationSource.REFERENCE_STAR, n_lines_used=len(matched),
         n_lines_rejected=len(detections) - len(matched), reference_object=reference_object,
     )
+
+
+def blind_calibrate_from_reference_star(
+    pixel: np.ndarray,
+    flux: np.ndarray,
+    continuum: np.ndarray,
+    catalog: tuple[SpectralLine, ...],
+    *,
+    tolerance_angstrom: float,
+    reference_object: str,
+    degree: int = 1,
+    min_snr: float = 5.0,
+    min_separation_px: float = 3.0,
+    min_dispersion_angstrom_per_px: float = 0.1,
+    max_dispersion_angstrom_per_px: float = 20.0,
+) -> WavelengthCalibrationRecord:
+    """Igual que `calibrate_from_reference_star`, pero SIN que el
+    llamador dé una dispersión/origen aproximados: los busca él mismo
+    entre las detecciones reales, probando la transformación lineal
+    (dispersión, origen) que implica cada PAR de detecciones reales
+    emparejado con cada PAR de líneas del catálogo, y quedándose con la
+    que hace que más detecciones reales DISTINTAS caigan dentro de
+    `tolerance_angstrom` de una línea de catálogo distinta -- mismo
+    principio de "candidato desde un par real, verificado contra el
+    resto" que ya usa `astrometry.frame_registration.
+    estimate_frame_translation` para registrar fotogramas sin WCS, aquí
+    aplicado en 1D a longitud de onda en vez de a posición en el cielo.
+
+    `min_dispersion_angstrom_per_px`/`max_dispersion_angstrom_per_px`
+    acotan la búsqueda a valores físicamente plausibles para un
+    espectrógrafo amateur (ambos signos: una dispersión negativa es una
+    orientación del espectro invertida, real y posible) -- nunca a un
+    valor concreto, que es justo lo que no se conoce aquí.
+
+    Calibración incluso MÁS provisional que `calibrate_from_reference_
+    star` (`WavelengthCalibrationRecord.blind_search=True`, con su
+    propio aviso en `build_wavelength_provenance`): con pocas
+    detecciones reales, una combinación puede casar por azar. Lanza
+    `ValueError` (nunca un resultado silencioso) si ninguna combinación
+    real explica al menos `degree + 1` detecciones distintas."""
+    if not reference_object.strip():
+        raise ValueError("reference_object no puede estar vacío -- qué estrella se usó es parte de la trazabilidad obligatoria (§13)")
+    if min_dispersion_angstrom_per_px <= 0 or max_dispersion_angstrom_per_px <= min_dispersion_angstrom_per_px:
+        raise ValueError("min_dispersion_angstrom_per_px debe ser positivo y menor que max_dispersion_angstrom_per_px")
+
+    detections = detect_object_lines(
+        pixel, flux, continuum, min_snr=min_snr, min_separation_angstrom=min_separation_px
+    )
+    if len(detections) < 2:
+        raise ValueError(
+            f"solo {len(detections)} desviación(es) real(es) del continuo detectada(s) -- la búsqueda ciega "
+            "necesita al menos 2 para proponer una dispersión"
+        )
+    detected_pixels = [d[0] for d in detections]
+
+    best: tuple[int, float] | None = None
+    best_pixels: list[float] = []
+    best_wavelengths: list[float] = []
+    for i, p1 in enumerate(detected_pixels):
+        for p2 in detected_pixels[i + 1:]:
+            delta_pixel = p2 - p1
+            if delta_pixel == 0:
+                continue
+            for line1 in catalog:
+                for line2 in catalog:
+                    if line1 is line2:
+                        continue
+                    dispersion = (line2.wavelength_air_angstrom - line1.wavelength_air_angstrom) / delta_pixel
+                    if not (min_dispersion_angstrom_per_px <= abs(dispersion) <= max_dispersion_angstrom_per_px):
+                        continue
+                    origin = line1.wavelength_air_angstrom - dispersion * p1
+
+                    matches = match_lines_to_catalog(
+                        detected_pixels, catalog,
+                        approx_dispersion_angstrom_per_px=dispersion, approx_wavelength_at_pixel0=origin,
+                        tolerance_angstrom=tolerance_angstrom,
+                    )
+                    best_per_line: dict[SpectralLine, tuple[float, float]] = {}
+                    for detected_pixel, match in zip(detected_pixels, matches):
+                        if match is None:
+                            continue
+                        previous = best_per_line.get(match.catalog_line)
+                        if previous is None or abs(match.residual_angstrom) < abs(previous[1]):
+                            best_per_line[match.catalog_line] = (detected_pixel, match.residual_angstrom)
+                    if len(best_per_line) < degree + 1:
+                        continue
+                    total_residual = sum(abs(residual) for _p, residual in best_per_line.values())
+                    score = (len(best_per_line), -total_residual)
+                    if best is None or score > best:
+                        best = score
+                        best_pixels = [p for p, _r in best_per_line.values()]
+                        best_wavelengths = [
+                            line.wavelength_air_angstrom for line, (p, _r) in best_per_line.items()
+                        ]
+
+    if best is None:
+        raise ValueError(
+            f"ninguna combinación real de dispersión/origen entre [{min_dispersion_angstrom_per_px:g}, "
+            f"{max_dispersion_angstrom_per_px:g}] Å/px explica al menos {degree + 1} de las {len(detections)} "
+            "desviación(es) real(es) detectada(s) contra el catálogo -- prueba dando tú la dispersión "
+            "aproximada (\"Calibrar por estrella de referencia...\"), o revisa el catálogo elegido"
+        )
+
+    solution = fit_wavelength_solution(best_pixels, best_wavelengths, degree=degree)
+    return WavelengthCalibrationRecord(
+        solution=solution, source=CalibrationSource.REFERENCE_STAR, n_lines_used=len(best_pixels),
+        n_lines_rejected=len(detections) - len(best_pixels), reference_object=reference_object,
+        blind_search=True,
+    )

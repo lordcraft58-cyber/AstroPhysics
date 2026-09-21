@@ -91,6 +91,15 @@ class WavelengthCalibrationRecord:
     reidentify_profile_offset`, §12) -- la forma del polinomio sigue
     siendo la validada originalmente, sin nueva evidencia de líneas.
     Dispara el aviso de posible deriva mecánica/térmica del encargo."""
+    blind_search: bool = False
+    """`True` cuando `source=REFERENCE_STAR` salió de `reference_star_
+    calibration.blind_calibrate_from_reference_star` -- sin que el
+    usuario diera una dispersión/origen aproximados, encontrada
+    probando combinaciones reales hasta que una explica varias
+    detecciones reales a la vez. Con pocas líneas reales detectadas, una
+    coincidencia por azar es más probable que dando la dispersión
+    aproximada a mano -- dispara un aviso propio, aparte del ya
+    obligatorio de `REFERENCE_STAR`."""
 
     @property
     def is_synthetic(self) -> bool:
@@ -116,6 +125,8 @@ class WavelengthCalibrationRecord:
         )
         if self.offset_only_reidentified:
             lines.append("solo se recalculó el desplazamiento global (A0); la forma del polinomio no es nueva evidencia")
+        if self.blind_search:
+            lines.append("dispersión/origen encontrados por búsqueda ciega, no dados por el usuario")
         return tuple(lines)
 
 
@@ -135,6 +146,13 @@ def build_wavelength_provenance(record: WavelengthCalibrationRecord, *, pipeline
             "solución instrumental reutilizada con solo el desplazamiento global recalculado (§12): "
             "un cambio mecánico o térmico real del instrumento puede haber desplazado el espectro "
             "de una forma que una correlación cruzada de un solo desplazamiento no puede detectar"
+        )
+    if record.blind_search:
+        warnings.append(
+            "búsqueda ciega: dispersión/origen NO los dio el usuario, se encontraron probando combinaciones "
+            "reales hasta que una explicó varias detecciones reales a la vez -- con pocas líneas detectadas, "
+            "una coincidencia por azar es más probable que con una dispersión aproximada real dada a mano; "
+            "comprueba que la línea más fuerte identificada tenga sentido para este objeto antes de aceptarla"
         )
     min_lines = record.solution.degree * MIN_LINES_PER_DEGREE
     if record.n_lines_used < min_lines and record.solution.degree > 0:

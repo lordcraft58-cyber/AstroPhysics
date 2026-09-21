@@ -14,10 +14,11 @@ from pathlib import Path
 import numpy as np
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QColor
-from PySide6.QtWidgets import QDockWidget, QFileDialog, QInputDialog, QLabel, QMainWindow, QMdiArea, QMdiSubWindow, QMessageBox, QProgressBar
+from PySide6.QtWidgets import QDockWidget, QFileDialog, QInputDialog, QLabel, QMainWindow, QMdiArea, QMdiSubWindow, QMenu, QMessageBox, QProgressBar
 
 from astrophysics_suite.astrometry.provenance import SOURCE_MANUAL_FIT, SOURCE_OPTICS, RegistrationRecord, WCSRecord
 from astrophysics_suite.spectroscopy.calibration_provenance import build_wavelength_provenance
+from astrophysics_suite.spectroscopy.line_catalog import NAMED_OBJECT_LINE_CATALOGS, nearby_catalog_lines
 from astrophysics_suite.astrometry.registration import apply_affine_transform, fit_affine_transform
 from astrophysics_suite.detection.point_sources import detect_point_sources_in_array, detect_psf_candidates
 from astrophysics_suite.discovery.pipeline import (
@@ -60,7 +61,13 @@ from qt_app.spectroscopy.flexure_correction_dialog import FlexureCorrectionDialo
 from qt_app.spectroscopy.telluric_correction_dialog import TelluricCorrectionDialog
 from qt_app.spectroscopy.flux_calibration_dialog import FluxCalibrationDialog
 from qt_app.spectroscopy.radial_velocity_dialog import RadialVelocityDialog
-from qt_app.spectroscopy.spectrum_plot_data import SpectrumPlotData, SpectrumSeries
+from qt_app.spectroscopy.spectrum_plot_data import (
+    SpectrumMarker,
+    SpectrumPlotData,
+    SpectrumSeries,
+    angstrom_to_wavelength_unit,
+    wavelength_to_angstrom,
+)
 from qt_app.spectroscopy.spectrum_view import SpectrumView
 from qt_app.spectroscopy.synthetic_photometry_dialog import SyntheticPhotometryDialog
 from qt_app.spectroscopy.wavelength_fit_dialog import WavelengthFitDialog
@@ -77,6 +84,15 @@ from services.session_state import SessionState
 _TUTORIAL_SHOW_ON_STARTUP_KEY = "tutorial_show_on_startup"
 _RECENT_SESSIONS_PREFERENCE_KEY = "recent_sessions"
 _MAX_RECENT_SESSIONS = 8
+
+_IDENTIFY_LINE_TOLERANCE_ANGSTROM = 15.0
+"""Radio de búsqueda real del clic derecho sobre el visor de espectros
+(§10, identificación manual) -- mismo orden de magnitud que la
+tolerancia por defecto de `calibrate_from_reference_star`; suficiente
+para encontrar una línea real desplazada por velocidad radial sin
+devolver cualquier línea lejana del catálogo."""
+_IDENTIFY_LINE_MAX_CANDIDATES = 8
+_IDENTIFY_LINE_MARK_HALF_WIDTH_ANGSTROM = 1.0
 
 APP_TITLE = "AstroPhysics Suite -- Taller de Procesamiento"
 PIPELINE_VERSION = "0.5.0-dev"
@@ -418,6 +434,7 @@ class MainWindow(QMainWindow):
     def add_spectrum_window(self, plot_data: SpectrumPlotData, title: str) -> QMdiSubWindow:
         view = SpectrumView(plot_data, title, self.mdi)
         view.point_hovered.connect(self._on_spectrum_point_hovered)
+        view.point_right_clicked.connect(lambda x, y, pos, v=view: self._on_spectrum_point_right_clicked(v, x, y, pos))
 
         sub_window = QMdiSubWindow()
         sub_window.setWidget(view)
@@ -442,6 +459,42 @@ class MainWindow(QMainWindow):
         error_text = f"{y_error:.3g}" if y_error == y_error else "N/D"
         snr_text = f"{y / y_error:.1f}" if (y_error == y_error and y_error > 0) else "N/D"
         self.readout_label.setText(f"{x_label}: {x:.3f}  {y_label}: {y:.2f}  Error: {error_text}  S/N: {snr_text}")
+
+    def _on_spectrum_point_right_clicked(self, view: SpectrumView, x: float, y: float, global_pos) -> None:
+        """Identificación MANUAL de una línea por clic derecho (§10):
+        sobre un punto real ya calibrado en longitud de onda, ofrece las
+        líneas de catálogo reales más cercanas (todos los catálogos de
+        objeto a la vez, §20) -- nunca identifica nada por sí sola; solo
+        añade una marca real si el usuario elige una del menú."""
+        menu = QMenu(self)
+        if not view.x_unit:
+            menu.addAction("Este eje está en píxeles, sin calibrar -- no hay líneas de catálogo que buscar aquí.").setEnabled(False)
+            menu.exec(global_pos.toPoint())
+            return
+
+        wavelength_air_angstrom = wavelength_to_angstrom(x, view.x_unit)
+        all_catalog_lines = tuple(dict.fromkeys(
+            line for catalog in NAMED_OBJECT_LINE_CATALOGS.values() for line in catalog
+        ))
+        candidates = nearby_catalog_lines(
+            wavelength_air_angstrom, all_catalog_lines, tolerance_angstrom=_IDENTIFY_LINE_TOLERANCE_ANGSTROM,
+        )[:_IDENTIFY_LINE_MAX_CANDIDATES]
+
+        menu.addAction(f"Punto real: {x:.2f} {view.x_unit}").setEnabled(False)
+        menu.addSeparator()
+        if not candidates:
+            menu.addAction(f"Sin líneas de catálogo conocidas dentro de ±{_IDENTIFY_LINE_TOLERANCE_ANGSTROM:g} Å.").setEnabled(False)
+        else:
+            for line in candidates:
+                residual = wavelength_air_angstrom - line.wavelength_air_angstrom
+                action = menu.addAction(f"Añadir marca: {line.label} (Δ={residual:+.2f} Å)")
+                action.triggered.connect(lambda checked=False, ln=line, v=view: self._add_identified_line_marker(v, ln))
+        menu.exec(global_pos.toPoint())
+
+    def _add_identified_line_marker(self, view: SpectrumView, line) -> None:
+        center = angstrom_to_wavelength_unit(line.wavelength_air_angstrom, view.x_unit)
+        half_width = angstrom_to_wavelength_unit(_IDENTIFY_LINE_MARK_HALF_WIDTH_ANGSTROM, view.x_unit)
+        view.add_marker(SpectrumMarker(x_start=center - half_width, x_end=center + half_width, label=line.label, color="#54a24b"))
 
     def _active_image_view(self) -> ImageView | None:
         sub_window = self.mdi.activeSubWindow()

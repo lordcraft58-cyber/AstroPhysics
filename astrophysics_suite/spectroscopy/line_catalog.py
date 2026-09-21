@@ -160,6 +160,19 @@ es responsabilidad del llamador elegir el subconjunto relevante (p. ej.
 una nebulosa) -- `identify_object_lines`, más abajo, sí filtra por
 `line_type` cuando se le pide."""
 
+NAMED_OBJECT_LINE_CATALOGS: dict[str, tuple[SpectralLine, ...]] = {
+    "Balmer (H, estelar)": BALMER_LINES,
+    "Ca II H&K (estelar)": CALCIUM_LINES,
+    "Na D (estelar/interestelar)": SODIUM_LINES,
+    "Nebulares ([O III]/[N II]/[S II])": NEBULAR_EMISSION_LINES,
+    "Todas (estelar + nebular)": STELLAR_NEBULAR_LINES,
+}
+"""Única implementación real de "qué catálogo de objeto se llama cómo"
+-- antes duplicado de forma privada en `qt_app.processes.registry.
+_OBJECT_LINE_CATALOGS`, que ahora importa esto en vez de redeclararlo
+(mismo criterio de "una sola implementación real" ya aplicado en el
+ciclo de cierre sistemático)."""
+
 
 @dataclass(frozen=True)
 class LineMatch:
@@ -228,6 +241,29 @@ def match_lines_to_catalog(
             )
         )
     return matches
+
+
+def nearby_catalog_lines(
+    wavelength_air_angstrom: float, catalog: tuple[SpectralLine, ...], *, tolerance_angstrom: float,
+) -> tuple[SpectralLine, ...]:
+    """Líneas reales de `catalog` dentro de `tolerance_angstrom` de
+    `wavelength_air_angstrom`, ordenadas de más a menos cercana --
+    identificación manual asistida (clic del usuario sobre un rasgo real
+    del espectro YA calibrado, §10): a diferencia de `match_lines_to_
+    catalog` (que PREDICE una posición a partir de una dispersión
+    aproximada todavía sin calibración real), aquí la posición ya es un
+    dato real -- la longitud de onda bajo el punto real que el usuario
+    señaló --, y solo se buscan candidatas cercanas. Ninguna se acepta
+    aquí: la decisión de cuál (si alguna) aplica es siempre del usuario,
+    mismo principio que ya exige `match_lines_to_catalog`."""
+    if tolerance_angstrom <= 0:
+        raise ValueError("tolerance_angstrom debe ser positivo")
+    candidates = [
+        line for line in catalog
+        if abs(line.wavelength_air_angstrom - wavelength_air_angstrom) <= tolerance_angstrom
+    ]
+    candidates.sort(key=lambda line: abs(line.wavelength_air_angstrom - wavelength_air_angstrom))
+    return tuple(candidates)
 
 
 def identify_object_lines(

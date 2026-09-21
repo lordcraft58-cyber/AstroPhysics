@@ -96,6 +96,26 @@ def convert_wavelength_plot_data(plot_data: SpectrumPlotData, to_unit: str) -> S
     )
 
 
+def wavelength_to_angstrom(value: float, unit: str) -> float:
+    """`value` (en `unit`, una de `WAVELENGTH_UNITS`) convertido a Å --
+    p. ej. para buscar líneas de catálogo (siempre en Å, §10) a partir de
+    una posición real leída del visor en la unidad que esté mostrando en
+    ese momento (§15)."""
+    if unit not in _WAVELENGTH_UNIT_FACTORS:
+        raise ValueError(f"unidad desconocida: {unit!r} (válidas: {sorted(_WAVELENGTH_UNIT_FACTORS)})")
+    return value / _WAVELENGTH_UNIT_FACTORS[unit]
+
+
+def angstrom_to_wavelength_unit(value_angstrom: float, unit: str) -> float:
+    """Inversa de `wavelength_to_angstrom` -- un valor real en Å (p. ej.
+    la longitud de onda de catálogo de una línea, §10) convertido a la
+    unidad que el visor esté mostrando en ese momento, para dibujar una
+    marca en el sitio correcto sin importar la unidad activa."""
+    if unit not in _WAVELENGTH_UNIT_FACTORS:
+        raise ValueError(f"unidad desconocida: {unit!r} (válidas: {sorted(_WAVELENGTH_UNIT_FACTORS)})")
+    return value_angstrom * _WAVELENGTH_UNIT_FACTORS[unit]
+
+
 _SERIES_PALETTE: tuple[str, ...] = (DARK.accent, DARK.cyan, DARK.amber, DARK.coral, DARK.indigo)
 
 

@@ -267,6 +267,64 @@ def test_series_with_nan_gap_builds_a_broken_path_without_crashing(qapp):
     qapp.processEvents()
 
 
+def test_right_click_emits_the_nearest_real_point_and_a_global_position(qapp):
+    # §10: identificación manual de líneas -- el clic derecho debe
+    # reportar el punto REAL más cercano (nunca interpolado), igual que
+    # ya hace point_hovered para el hover normal.
+    x = np.array([6000.0, 6002.0, 6004.0])
+    y = np.array([100.0, 150.0, 120.0])
+    plot_data = SpectrumPlotData(series=(SpectrumSeries(label="Flujo", x=x, y=y),), x_label="λ", y_label="Flujo", x_unit="Å")
+    view = _view(qapp, plot_data)
+    received: dict = {}
+    view.point_right_clicked.connect(lambda x, y, pos: received.update(x=x, y=y, pos=pos))
+
+    pixel = view._data_to_pixel(6002.6, 145.0)
+    press = QMouseEvent(
+        QMouseEvent.Type.MouseButtonPress, pixel, Qt.MouseButton.RightButton, Qt.MouseButton.RightButton, Qt.KeyboardModifier.NoModifier
+    )
+    view.mousePressEvent(press)
+
+    assert received["x"] == pytest.approx(6002.0)
+    assert received["y"] == pytest.approx(150.0)
+    assert isinstance(received["pos"], QPointF)
+
+
+def test_right_click_outside_the_plot_area_emits_nothing(qapp):
+    view = _view(qapp)
+    received: list = []
+    view.point_right_clicked.connect(lambda x, y, pos: received.append((x, y, pos)))
+
+    press = QMouseEvent(
+        QMouseEvent.Type.MouseButtonPress, QPointF(2.0, 2.0), Qt.MouseButton.RightButton, Qt.MouseButton.RightButton, Qt.KeyboardModifier.NoModifier
+    )
+    view.mousePressEvent(press)
+
+    assert received == []
+
+
+def test_x_unit_reports_the_active_display_unit(qapp):
+    plot_data = SpectrumPlotData(
+        series=(SpectrumSeries(label="Flujo", x=np.array([6000.0, 6500.0]), y=np.array([100.0, 120.0])),),
+        x_label="Longitud de onda (Å)", y_label="Flujo (ADU)", x_unit="Å",
+    )
+    view = _view(qapp, plot_data)
+    assert view.x_unit == "Å"
+
+    plot_data_unitless = _linear_plot_data()
+    view2 = _view(qapp, plot_data_unitless)
+    assert view2.x_unit == ""
+
+
+def test_add_marker_appends_a_real_marker_without_resetting_the_zoom(qapp):
+    view = _view(qapp)
+    view._x_range = (6000.0, 6010.0)  # zoom simulado, no debe cambiar tras add_marker
+
+    view.add_marker(SpectrumMarker(x_start=6003.0, x_end=6005.0, label="H-delta"))
+
+    assert view._data.markers[-1].label == "H-delta"
+    assert view._x_range == (6000.0, 6010.0)
+
+
 def test_plot_data_with_marker_and_legend_renders_without_crashing(qapp):
     x = np.linspace(6000.0, 6100.0, 40)
     plot_data = SpectrumPlotData(

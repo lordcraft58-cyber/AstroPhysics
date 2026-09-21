@@ -51,7 +51,10 @@ from astrophysics_suite.spectroscopy.qc_report import (
     wavelength_calibration_quality_metric,
     wavelength_range_metric,
 )
-from astrophysics_suite.spectroscopy.reference_star_calibration import calibrate_from_reference_star
+from astrophysics_suite.spectroscopy.reference_star_calibration import (
+    blind_calibrate_from_reference_star,
+    calibrate_from_reference_star,
+)
 from astrophysics_suite.spectroscopy.trace import ExtractedSpectrum, TraceResult, trace_spectrum
 from astrophysics_suite.spectroscopy.wavelength import WavelengthSolution
 
@@ -102,6 +105,7 @@ def run_autoprocess_spectrum(
     sky_smooth_sigma_clip: float = 3.0,
     calibrate_wavelength: bool = True,
     reference_object: str = "(objeto sin nombre en la cabecera FITS)",
+    blind_dispersion_search: bool = False,
     approx_dispersion_angstrom_per_px: float = 1.4,
     approx_wavelength_at_pixel0: float = 3800.0,
     calibration_tolerance_angstrom: float = 15.0,
@@ -120,6 +124,13 @@ def run_autoprocess_spectrum(
     star_calibration`/`spectroscopy.identify_lines` como procesos
     independientes -- quien necesite ajustarlos a mano sigue teniendo esos
     dos procesos dedicados.
+
+    `blind_dispersion_search`: cuando es `True`, ignora `approx_
+    dispersion_angstrom_per_px`/`approx_wavelength_at_pixel0` y usa
+    `reference_star_calibration.blind_calibrate_from_reference_star` en
+    su lugar -- para cuando no se conoce la dispersión aproximada del
+    instrumento (calibración incluso más provisional, ver su propio
+    docstring y el aviso que añade a la procedencia).
     """
     steps: list[AutoprocessStep] = []
 
@@ -150,21 +161,29 @@ def run_autoprocess_spectrum(
     if calibrate_wavelength:
         try:
             continuum_for_calibration = fit_continuum(pixel, spectrum.flux, degree=3, sigma_clip=2.5)
-            calibration_record = calibrate_from_reference_star(
-                pixel, spectrum.flux, continuum_for_calibration.continuum, calibration_catalog,
-                approx_dispersion_angstrom_per_px=approx_dispersion_angstrom_per_px,
-                approx_wavelength_at_pixel0=approx_wavelength_at_pixel0,
-                tolerance_angstrom=calibration_tolerance_angstrom, reference_object=reference_object,
-                degree=calibration_degree,
-            )
+            if blind_dispersion_search:
+                calibration_record = blind_calibrate_from_reference_star(
+                    pixel, spectrum.flux, continuum_for_calibration.continuum, calibration_catalog,
+                    tolerance_angstrom=calibration_tolerance_angstrom, reference_object=reference_object,
+                    degree=calibration_degree,
+                )
+            else:
+                calibration_record = calibrate_from_reference_star(
+                    pixel, spectrum.flux, continuum_for_calibration.continuum, calibration_catalog,
+                    approx_dispersion_angstrom_per_px=approx_dispersion_angstrom_per_px,
+                    approx_wavelength_at_pixel0=approx_wavelength_at_pixel0,
+                    tolerance_angstrom=calibration_tolerance_angstrom, reference_object=reference_object,
+                    degree=calibration_degree,
+                )
         except ValueError as exc:
             steps.append(AutoprocessStep("Calibración en longitud de onda (§13, provisional)", _STATUS_ERROR, str(exc)))
         else:
             wavelength_solution = calibration_record.solution
+            search_note = " (búsqueda ciega, sin dispersión dada)" if calibration_record.blind_search else ""
             steps.append(AutoprocessStep(
                 "Calibración en longitud de onda (§13, provisional)", _STATUS_OK,
                 f"grado {calibration_record.solution.degree}, {calibration_record.n_lines_used} línea(s) real(es), "
-                f"RMS={calibration_record.solution.rms_residual:.4f} Å.",
+                f"RMS={calibration_record.solution.rms_residual:.4f} Å{search_note}.",
             ))
     else:
         steps.append(AutoprocessStep("Calibración en longitud de onda (§13, provisional)", _STATUS_SKIPPED, "desactivada por el usuario."))

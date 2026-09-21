@@ -40,19 +40,16 @@ from astrophysics_suite.reduction.overscan import subtract_overscan
 from astrophysics_suite.spectroscopy.autoprocess import run_autoprocess_spectrum
 from astrophysics_suite.spectroscopy.continuum import fit_continuum
 from astrophysics_suite.spectroscopy.frame2d import PixelFlag, build_pixel_mask
-from astrophysics_suite.spectroscopy.line_catalog import (
-    BALMER_LINES,
-    CALCIUM_LINES,
-    NEBULAR_EMISSION_LINES,
-    SODIUM_LINES,
-    STELLAR_NEBULAR_LINES,
-)
+from astrophysics_suite.spectroscopy.line_catalog import NAMED_OBJECT_LINE_CATALOGS
 from astrophysics_suite.spectroscopy.line_profile_fit import fit_gaussian_line, fit_voigt_line, spectral_resolution
 from astrophysics_suite.spectroscopy.wavelength import local_dispersion_at_pixel
 from astrophysics_suite.spectroscopy.lines import measure_line
 from astrophysics_suite.spectroscopy.calibration_provenance import build_wavelength_provenance
 from astrophysics_suite.spectroscopy.object_line_identification import identify_object_lines_in_spectrum
-from astrophysics_suite.spectroscopy.reference_star_calibration import calibrate_from_reference_star
+from astrophysics_suite.spectroscopy.reference_star_calibration import (
+    blind_calibrate_from_reference_star,
+    calibrate_from_reference_star,
+)
 from astrophysics_suite.spectroscopy.qc_report import (
     QCReport,
     dispersion_metric,
@@ -1028,13 +1025,7 @@ def _run_line_profile_fit_central_row(data: np.ndarray, params: dict) -> Process
     return ProcessResult(output_data=None, summary=summary, log_lines=log_lines, table=table, artifacts={"spectrum": plot_data})
 
 
-_OBJECT_LINE_CATALOGS: dict[str, tuple] = {
-    "Balmer (H, estelar)": BALMER_LINES,
-    "Ca II H&K (estelar)": CALCIUM_LINES,
-    "Na D (estelar/interestelar)": SODIUM_LINES,
-    "Nebulares ([O III]/[N II]/[S II])": NEBULAR_EMISSION_LINES,
-    "Todas (estelar + nebular)": STELLAR_NEBULAR_LINES,
-}
+_OBJECT_LINE_CATALOGS = NAMED_OBJECT_LINE_CATALOGS
 
 
 def _run_identify_object_lines(data: np.ndarray, params: dict) -> ProcessResult:
@@ -1126,13 +1117,20 @@ def _run_reference_star_calibration(data: np.ndarray, params: dict) -> ProcessRe
     reference_object = str(object_name).strip() if object_name else "(objeto sin nombre en la cabecera FITS)"
 
     try:
-        record = calibrate_from_reference_star(
-            pixel, flux, continuum_fit.continuum, _OBJECT_LINE_CATALOGS[params["catalog"]],
-            approx_dispersion_angstrom_per_px=params["approx_dispersion_angstrom_per_px"],
-            approx_wavelength_at_pixel0=params["approx_wavelength_at_pixel0"],
-            tolerance_angstrom=params["tolerance_angstrom"], reference_object=reference_object,
-            degree=int(params["degree"]), min_snr=params["min_snr"],
-        )
+        if bool(params.get("blind_dispersion_search")):
+            record = blind_calibrate_from_reference_star(
+                pixel, flux, continuum_fit.continuum, _OBJECT_LINE_CATALOGS[params["catalog"]],
+                tolerance_angstrom=params["tolerance_angstrom"], reference_object=reference_object,
+                degree=int(params["degree"]), min_snr=params["min_snr"],
+            )
+        else:
+            record = calibrate_from_reference_star(
+                pixel, flux, continuum_fit.continuum, _OBJECT_LINE_CATALOGS[params["catalog"]],
+                approx_dispersion_angstrom_per_px=params["approx_dispersion_angstrom_per_px"],
+                approx_wavelength_at_pixel0=params["approx_wavelength_at_pixel0"],
+                tolerance_angstrom=params["tolerance_angstrom"], reference_object=reference_object,
+                degree=int(params["degree"]), min_snr=params["min_snr"],
+            )
     except ValueError as exc:
         raise ValueError(f"No se pudo inferir una calibración por estrella de referencia: {exc}") from exc
 
@@ -1204,6 +1202,7 @@ def _run_autoprocess_spectrum(data: np.ndarray, params: dict) -> ProcessResult:
         extractor=extractor, extraction_method_label=extraction_method, sky_smooth_degree=sky_smooth_degree,
         calibrate_wavelength=bool(params["calibrate_wavelength"]),
         calibration_catalog=_OBJECT_LINE_CATALOGS[params["calibration_catalog"]], reference_object=reference_object,
+        blind_dispersion_search=bool(params.get("blind_dispersion_search")),
         approx_dispersion_angstrom_per_px=params["approx_dispersion_angstrom_per_px"],
         approx_wavelength_at_pixel0=params["approx_wavelength_at_pixel0"],
         calibration_tolerance_angstrom=params["calibration_tolerance_angstrom"],
@@ -1663,8 +1662,12 @@ def build_process_registry(*, profile_store: InstrumentProfileStore | None = Non
             description="Infiere una calibración en longitud de onda PROVISIONAL (§13) sobre la fila central, a partir de líneas reales de objeto (Balmer, Ca II, Na D...) detectadas y emparejadas contra el catálogo elegido -- SIN necesitar una lámpara de calibración real. Nunca al mismo nivel de fiabilidad que una lámpara: la posición de una línea estelar depende también de velocidad radial y ensanchamiento, avisado explícitamente en el registro de operaciones. La dispersión/origen aproximados (de la óptica conocida del instrumento, o de una calibración previa) son responsabilidad tuya -- el taller nunca los supone. Sin selección de posiciones: opera sobre toda la fila central de una vez. La estrella de referencia se toma del OBJECT real de la cabecera FITS si lo tiene.",
             parameters=(
                 ParameterSpec("catalog", "Catálogo de líneas de la estrella", "choice", "Balmer (H, estelar)", choices=tuple(_OBJECT_LINE_CATALOGS)),
-                ParameterSpec("approx_dispersion_angstrom_per_px", "Dispersión aprox. (Å/px)", "float", 1.4, minimum=0.01, maximum=100.0),
-                ParameterSpec("approx_wavelength_at_pixel0", "λ en píxel 0 aprox. (Å)", "float", 3800.0, minimum=0.0, maximum=20000.0),
+                ParameterSpec(
+                    "blind_dispersion_search", "Búsqueda ciega de dispersión (no conozco la dispersión aproximada)", "bool", False,
+                    help_text="Prueba combinaciones reales de dispersión/origen hasta encontrar una que explique varias detecciones reales a la vez, en vez de partir de la dispersión/origen aproximados de abajo -- calibración incluso más provisional, revisa el aviso que añade.",
+                ),
+                ParameterSpec("approx_dispersion_angstrom_per_px", "Dispersión aprox. (Å/px) -- ignorado con búsqueda ciega", "float", 1.4, minimum=0.01, maximum=100.0),
+                ParameterSpec("approx_wavelength_at_pixel0", "λ en píxel 0 aprox. (Å) -- ignorado con búsqueda ciega", "float", 3800.0, minimum=0.0, maximum=20000.0),
                 ParameterSpec("tolerance_angstrom", "Tolerancia de emparejamiento (Å)", "float", 15.0, minimum=0.1, maximum=500.0),
                 ParameterSpec("degree", "Grado del polinomio", "int", 1, minimum=1, maximum=6),
                 ParameterSpec("continuum_degree", "Grado del ajuste de continuo", "int", 3, minimum=1, maximum=10),
@@ -1707,8 +1710,12 @@ def build_process_registry(*, profile_store: InstrumentProfileStore | None = Non
                     "calibration_catalog", "Catálogo para la calibración", "choice", "Balmer (H, estelar)",
                     choices=tuple(_OBJECT_LINE_CATALOGS),
                 ),
-                ParameterSpec("approx_dispersion_angstrom_per_px", "Dispersión aprox. (Å/px)", "float", 1.4, minimum=0.01, maximum=100.0),
-                ParameterSpec("approx_wavelength_at_pixel0", "λ en píxel 0 aprox. (Å)", "float", 3800.0, minimum=0.0, maximum=20000.0),
+                ParameterSpec(
+                    "blind_dispersion_search", "Búsqueda ciega de dispersión (no conozco la dispersión aproximada)", "bool", False,
+                    help_text="Prueba combinaciones reales de dispersión/origen hasta encontrar una que explique varias detecciones reales a la vez, en vez de partir de la dispersión/origen aproximados de abajo -- calibración incluso más provisional, revisa el aviso que añade.",
+                ),
+                ParameterSpec("approx_dispersion_angstrom_per_px", "Dispersión aprox. (Å/px) -- ignorado con búsqueda ciega", "float", 1.4, minimum=0.01, maximum=100.0),
+                ParameterSpec("approx_wavelength_at_pixel0", "λ en píxel 0 aprox. (Å) -- ignorado con búsqueda ciega", "float", 3800.0, minimum=0.0, maximum=20000.0),
                 ParameterSpec("calibration_tolerance_angstrom", "Tolerancia de emparejamiento de calibración (Å)", "float", 15.0, minimum=0.1, maximum=500.0),
                 ParameterSpec("identify_lines", "Identificar líneas de objeto (sugerencias)", "bool", True),
                 ParameterSpec(
