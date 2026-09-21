@@ -182,7 +182,37 @@ def blind_calibrate_from_reference_star(
     (T CrB, Hα), maximizar solo el número de coincidencias encontraba
     una combinación que ignoraba esa línea dominante -- maximizar la
     amplitud total primero la ancla en ella en cuanto participa en la
-    combinación."""
+    combinación.
+
+    Se descarta cualquier combinación cuya solución implique una
+    longitud de onda NEGATIVA en algún punto real del sensor (entre
+    `pixel.min()` y `pixel.max()`, los dos extremos reales del espectro
+    extraído, no solo en las detecciones usadas) -- luz real nunca tiene
+    longitud de onda negativa, es una restricción física dura, no un
+    umbral arbitrario, así que cualquier combinación que la viole queda
+    descartada sin importar cuántas detecciones reales explique.
+    Segundo hallazgo real de esta sesión, con el T-CrB real: con solo
+    `degree + 2` puntos (el mínimo exigido arriba), el origen del ajuste
+    lineal es una extrapolación real desde las detecciones usadas hasta
+    el borde del sensor -- una combinación puede seguir casando varias
+    detecciones reales dentro de tolerancia y aun así extrapolar a un
+    origen negativo en el borde. Sin este filtro, dos fotogramas
+    DISTINTOS de la misma estrella (T-CrB, `frame3`/`frame6`) daban
+    soluciones completamente inconsistentes entre sí (una con origen
+    -605 Å, la otra con origen -11958 Å, ambas imposibles); con el
+    filtro, ambas convergen de forma independiente a la práctica misma
+    solución (Hδ/Hγ/Hβ, origen ≈2620 Å, dispersión ≈1.62 Å/px,
+    diferencia entre los dos fotogramas <5 Å en origen y <0.01 Å/px en
+    dispersión). Esa consistencia entre dos observaciones independientes
+    es evidencia real de mayor fiabilidad frente al resultado sin
+    filtro, pero NO es una prueba de que sea la asignación físicamente
+    correcta -- con solo 4 líneas de Balmer en el catálogo, más de una
+    combinación puede quedar dentro de tolerancia y pasar este filtro a
+    la vez; sigue siendo una calibración PROVISIONAL, y conviene
+    contrastar la dispersión resultante contra la documentación real del
+    instrumento (o repetir con "Calibrar por estrella de referencia..."
+    dando tú mismo la dispersión aproximada conocida) cuando sea
+    posible."""
     if not reference_object.strip():
         raise ValueError("reference_object no puede estar vacío -- qué estrella se usó es parte de la trazabilidad obligatoria (§13)")
     if min_dispersion_angstrom_per_px <= 0 or max_dispersion_angstrom_per_px <= min_dispersion_angstrom_per_px:
@@ -201,6 +231,7 @@ def blind_calibrate_from_reference_star(
         )
     detected_pixels = [d[0] for d in detections]
     detected_amplitude = {p: abs(a) for p, a in detections}
+    pixel_min, pixel_max = float(np.min(pixel)), float(np.max(pixel))
 
     best: tuple[int, float, float] | None = None
     best_pixels: list[float] = []
@@ -218,6 +249,12 @@ def blind_calibrate_from_reference_star(
                     if not (min_dispersion_angstrom_per_px <= abs(dispersion) <= max_dispersion_angstrom_per_px):
                         continue
                     origin = line1.wavelength_air_angstrom - dispersion * p1
+                    if min(origin + dispersion * pixel_min, origin + dispersion * pixel_max) < 0.0:
+                        # luz real nunca tiene longitud de onda negativa en
+                        # NINGÚN punto real del sensor -- restricción física
+                        # dura, no un umbral arbitrario (hallazgo real, ver
+                        # docstring de esta función).
+                        continue
 
                     matches = match_lines_to_catalog(
                         detected_pixels, catalog,
@@ -246,9 +283,10 @@ def blind_calibrate_from_reference_star(
     if best is None:
         raise ValueError(
             f"ninguna combinación real de dispersión/origen entre [{min_dispersion_angstrom_per_px:g}, "
-            f"{max_dispersion_angstrom_per_px:g}] Å/px explica al menos {min_required_matches} de las "
-            f"{len(detections)} desviación(es) real(es) detectada(s) contra el catálogo -- prueba dando tú la "
-            "dispersión aproximada (\"Calibrar por estrella de referencia...\"), o revisa el catálogo elegido"
+            f"{max_dispersion_angstrom_per_px:g}] Å/px, sin implicar una longitud de onda negativa en ningún "
+            f"punto real del sensor, explica al menos {min_required_matches} de las {len(detections)} "
+            "desviación(es) real(es) detectada(s) contra el catálogo -- prueba dando tú la dispersión aproximada "
+            "(\"Calibrar por estrella de referencia...\"), o revisa el catálogo elegido"
         )
 
     solution = fit_wavelength_solution(best_pixels, best_wavelengths, degree=degree)

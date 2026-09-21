@@ -211,3 +211,37 @@ def test_blind_calibrate_from_reference_star_rejects_an_invalid_dispersion_range
             pixel, flux, continuum, BALMER_LINES, tolerance_angstrom=5.0, reference_object="estrella de prueba",
             min_dispersion_angstrom_per_px=10.0, max_dispersion_angstrom_per_px=1.0,
         )
+
+
+def test_blind_calibrate_from_reference_star_rejects_a_combination_that_implies_negative_wavelength():
+    # Hallazgo real validado con el T-CrB real (frame3): la única
+    # asignación de catálogo que casaba estas tres detecciones dentro de
+    # tolerancia (H-gamma/H-beta/H-alpha a los píxeles reales 952.7,
+    # 1053.9, 1380.8) da una dispersión real y plausible (5.19 Å/px) pero
+    # un origen extrapolado NEGATIVO (-605 Å) al borde del sensor -- luz
+    # real nunca tiene longitud de onda negativa en ningún punto real,
+    # así que esta combinación se descarta aunque case las tres
+    # detecciones con residuo pequeño y sea la ÚNICA disponible: antes de
+    # esta corrección, `blind_calibrate_from_reference_star` la devolvía
+    # tal cual (residuo bajo, pero física imposible); ahora falla
+    # honestamente en vez de devolver una calibración que no puede ser
+    # real.
+    width = 1391
+    pixel = np.arange(width, dtype=np.float64)
+    rng = np.random.default_rng(0)
+    continuum = np.full(width, 500.0)
+    flux = continuum + rng.normal(0, 1.0, width)
+
+    def bump(center_px, depth, sigma=1.5):
+        xs = np.arange(max(0, int(center_px) - 8), min(width, int(center_px) + 9))
+        flux[xs] += depth * np.exp(-0.5 * ((xs - center_px) / sigma) ** 2)
+
+    for p in (952.72, 1053.85, 1380.80):
+        bump(p, depth=100.0)
+
+    continuum_fit = fit_continuum(pixel, flux, degree=1, sigma_clip=2.5)
+    with pytest.raises(ValueError, match="negativa"):
+        blind_calibrate_from_reference_star(
+            pixel, flux, continuum_fit.continuum, BALMER_LINES,
+            tolerance_angstrom=5.0, reference_object="T-CrB (reconstrucción real)", degree=1,
+        )
