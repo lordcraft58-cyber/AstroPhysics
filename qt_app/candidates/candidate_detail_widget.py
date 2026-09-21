@@ -331,9 +331,25 @@ class CandidateDetailWidget(QWidget):
         self._kv(form, "Nivel general", candidate.quality.overall_level.value)
         for check in candidate.quality.checks:
             self._kv(form, check.name, f"{check.level.value}  {check.detail}".strip())
+        if not candidate.artifact_checks:
+            self._muted_note(form, "Sin comprobaciones de artefactos registradas.")
+            return
+        # Un `Candidate` real solo existe si NINGUNA comprobación con
+        # criterio real quedó marcada -- `screen_detection` (motor de
+        # rechazo de artefactos) descarta la detección entera en ese caso,
+        # antes de que llegue a convertirse en candidato. Por eso mostrar
+        # solo `artifact.flagged` aquí nunca mostraba ninguna fila: era
+        # código muerto que ocultaba información real y útil (qué
+        # categorías se comprobaron de verdad y quedaron limpias, y
+        # cuáles no se pudieron evaluar, y por qué).
         for artifact in candidate.artifact_checks:
-            if artifact.flagged:
-                self._kv(form, f"Artefacto: {artifact.kind.value}", artifact.notes or "marcado")
+            if artifact.confidence is None or not artifact.confidence.is_available:
+                status = "no evaluable"
+            elif artifact.flagged:
+                status = "ARTEFACTO"
+            else:
+                status = "limpio"
+            self._kv(form, f"{artifact.kind.value} ({status})", artifact.notes or "")
 
     def _section_review_history(self, candidate) -> None:
         if not candidate.review_notes:

@@ -417,6 +417,40 @@ def test_candidate_detail_shows_real_flux_measured_by_aperture_photometry(qapp, 
     assert "adu" in flux_value_label.text()
 
 
+def test_candidate_detail_shows_the_real_artifact_checklist_not_just_flagged_ones(qapp, main_window, tmp_path):
+    # Cierre del motor de rechazo de artefactos (informe 87): un
+    # `Candidate` real solo existe si NINGUNA comprobación de
+    # `screen_detection` quedó marcada (la detección se descarta antes de
+    # llegar a ser candidato), así que filtrar aquí por `artifact.flagged`
+    # nunca mostraba ninguna fila -- código muerto que ocultaba qué se
+    # había comprobado de verdad. Confirma que ahora sí aparece el
+    # checklist real (categorías evaluadas y limpias, categorías no
+    # evaluables con su motivo) para un candidato real de un análisis de
+    # Descubrimiento de extremo a extremo, no solo a nivel de unidad.
+    from legacy.AstroPhysicsSuite_v57_3_COMMERCIAL import _write_minimal_fits_2d
+
+    field = _star_field((96, 96), [(30, 30), (60, 60)])
+    path = tmp_path / "field_artifact_checklist.fits"
+    _write_minimal_fits_2d(path, field)
+    _run_discovery_and_wait(qapp, main_window, "Campo checklist de artefactos", [(str(path), "OIII")])
+    assert main_window.session_state.candidates
+
+    candidate = main_window.session_state.candidates[0]
+    assert candidate.artifact_checks, "el candidato real debe traer ya las comprobaciones de artefactos"
+    assert not any(check.flagged for check in candidate.artifact_checks), (
+        "un Candidate real nunca puede tener una comprobación marcada -- screen_detection lo habría rechazado antes"
+    )
+
+    main_window._open_candidate_detail(candidate.candidate_id)
+    qapp.processEvents()
+    detail_widget = main_window._candidate_detail_windows[candidate.candidate_id].widget()
+
+    texts = [label.text() for label in detail_widget.findChildren(QLabel)]
+    assert any("(limpio)" in text for text in texts), texts
+    assert any("(no evaluable)" in text for text in texts), texts
+    assert not any("(ARTEFACTO)" in text for text in texts), texts
+
+
 def test_new_observation_dialog_rejects_empty_target_name(qapp, main_window):
     from qt_app.candidates.new_observation_dialog import NewObservationDialog
 
