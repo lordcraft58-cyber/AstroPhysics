@@ -16,7 +16,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import QDockWidget, QFileDialog, QInputDialog, QLabel, QMainWindow, QMdiArea, QMdiSubWindow, QMessageBox, QProgressBar
 
-from astrophysics_suite.astrometry.provenance import SOURCE_MANUAL_FIT, SOURCE_OPTICS, WCSRecord
+from astrophysics_suite.astrometry.provenance import SOURCE_MANUAL_FIT, SOURCE_OPTICS, RegistrationRecord, WCSRecord
 from astrophysics_suite.spectroscopy.calibration_provenance import build_wavelength_provenance
 from astrophysics_suite.astrometry.registration import apply_affine_transform, fit_affine_transform
 from astrophysics_suite.detection.point_sources import detect_point_sources_in_array, detect_psf_candidates
@@ -31,7 +31,7 @@ from astrophysics_suite.spectroscopy.multiaperture import find_aperture_centers
 from astrophysics_suite.spectroscopy.processing_history import ProcessingHistoryEntry, append_processing_history
 from astrophysics_suite.spectroscopy.wavelength import find_arc_lines
 from astrophysics_suite.tables.table import Table
-from qt_app.astrometry.registration_dialog import RegistrationDialog
+from qt_app.astrometry.registration_dialog import RegistrationDialog, RegistrationOutcome
 from qt_app.astrometry.star_pair_registration_dialog import StarPairConfigDialog
 from qt_app.astrometry.blind_solve_dialog import BlindPlateSolveDialog
 from qt_app.astrometry.optical_wcs_dialog import OpticalWCSDialog
@@ -482,8 +482,75 @@ class MainWindow(QMainWindow):
         active = self._active_image_view()
         active_title = active.title if active is not None else ""
         dialog = RegistrationDialog(views, active_title, self)
-        dialog.computed.connect(lambda data, title: self.add_image_window(data, title))
+        dialog.computed.connect(lambda outcome, v=views: self._on_registration_computed(outcome, v))
         dialog.exec()
+
+    def _on_registration_computed(self, outcome: RegistrationOutcome, views: dict[str, ImageView]) -> None:
+        self.add_image_window(outcome.data, outcome.title)
+        reference_view = views.get(outcome.record.reference_title)
+        target_view = views.get(outcome.record.target_title)
+        self._offer_to_save_registration_fits(outcome.data, outcome.record, reference_view=reference_view, target_view=target_view)
+
+    def _offer_to_save_registration_fits(
+        self, data, record: RegistrationRecord, *, reference_view: ImageView | None, target_view: ImageView | None,
+    ) -> None:
+        """Ofrece guardar a disco el resultado de "Registrar por WCS
+        compartido..." o "Registrar por pares de estrellas...".
+
+        Hallazgo real de la auditoría sistemática del motor de Astrometría/
+        WCS (informe 91): de los seis flujos de este menú, estos dos eran
+        los únicos que nunca ofrecían guardar su resultado -- las cuatro
+        resoluciones de WCS (plate solve, blind solve, ajuste manual,
+        óptica) sí lo hacen desde antes vía `_offer_to_save_wcs_fits_copy`.
+        Mismo patrón: procedencia real (`build_registration_provenance`/
+        `registration_header_cards`), sha256 real de las imágenes de
+        origen cuando siguen existiendo, degradación honesta si no.
+        """
+        from astrophysics_suite.astrometry.provenance import build_registration_provenance, registration_header_cards, strip_wcs_keywords
+        from astrophysics_suite.io.fits_reader import sha256_file
+        from astrophysics_suite.io.fits_writer import save_fits_image
+
+        input_hashes: list[tuple[str, str]] = []
+        for label, view in (("reference", reference_view), ("target", target_view)):
+            if view is None or not view.source_path:
+                continue
+            try:
+                input_hashes.append((f"{label}:{Path(view.source_path).name}", sha256_file(view.source_path)))
+            except OSError as exc:
+                logger.warning("No se pudo calcular el sha256 real de %s para la procedencia: %s", view.source_path, exc)
+
+        provenance = build_registration_provenance(record, input_hashes=tuple(input_hashes))
+        question = f"¿Guardar el resultado del registro en un FITS real?\n\n{'; '.join(record.describe())}"
+        reply = QMessageBox.question(
+            self, "Guardar registro", question,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        default_path = ""
+        if target_view is not None and target_view.source_path:
+            source = Path(target_view.source_path)
+            default_path = str(source.with_name(f"{source.stem}_registrada{source.suffix}"))
+        path, _ = QFileDialog.getSaveFileName(self, "Guardar FITS registrado", default_path, "FITS (*.fits *.fit *.fts)")
+        if not path:
+            return
+
+        # La cabecera de origen real es la del TARGET (los valores de
+        # píxel vienen de ahí, solo remuestreados) -- pero su WCS, si
+        # tenía uno, ya no describe la rejilla de salida (que ahora es la
+        # de la referencia, o ninguna en el caso de pares de estrellas):
+        # se elimina explícitamente antes de escribir la procedencia real.
+        header = strip_wcs_keywords(target_view.header) if target_view is not None and target_view.header else {}
+        header.update(registration_header_cards(record, provenance=provenance))
+        try:
+            save_fits_image(path, data, header=header)
+        except Exception as exc:  # noqa: BLE001 -- error real de escritura, debe ser visible
+            logger.error("No se pudo guardar %s: %s", path, exc)
+            QMessageBox.critical(self, "Guardar FITS registrado", f"No se pudo guardar «{Path(path).name}»:\n\n{exc}")
+            return
+        logger.info("FITS registrado guardado en %s", path)
+        self.statusBar().showMessage(f"FITS registrado guardado en {path}", 6000)
 
     def _open_star_pair_registration_dialog(self) -> None:
         views = self._image_views_by_title()
@@ -568,13 +635,17 @@ class MainWindow(QMainWindow):
             return transform, resampled, model
 
         worker = CallableWorker(run, self)
-        worker.finished_ok.connect(lambda result: self._on_star_pair_registration_done(result, reference_title, target_title))
+        worker.finished_ok.connect(lambda result: self._on_star_pair_registration_done(result, reference_view, target_view, reference_title, target_title))
         worker.failed.connect(self._on_process_failed)
         self._active_worker = worker
         worker.finished.connect(lambda: setattr(self, "_active_worker", None))
         worker.start()
 
-    def _on_star_pair_registration_done(self, result: tuple, reference_title: str, target_title: str) -> None:
+    def _on_star_pair_registration_done(
+        self, result: tuple, reference_view: ImageView, target_view: ImageView, reference_title: str, target_title: str,
+    ) -> None:
+        from astrophysics_suite.astrometry.provenance import ENGINE_STAR_PAIR_REGISTRATION
+
         transform, resampled, model = result
         title = f"{target_title} -> pares con {reference_title}"
         self.add_image_window(resampled, title)
@@ -583,6 +654,11 @@ class MainWindow(QMainWindow):
             target_title, reference_title, transform.rms_residual_px, transform.n_points, model,
         )
         self.statusBar().showMessage(f"Registro por pares completado (RMS={transform.rms_residual_px:.2f} px, {transform.n_points} par(es)).", 6000)
+        record = RegistrationRecord(
+            engine=ENGINE_STAR_PAIR_REGISTRATION, reference_title=reference_title, target_title=target_title,
+            model=model, rms_residual_px=transform.rms_residual_px, n_points=transform.n_points,
+        )
+        self._offer_to_save_registration_fits(resampled, record, reference_view=reference_view, target_view=target_view)
 
     def _open_catalog_cache_dialog(self) -> None:
         """Descarga el catálogo del campo a disco -- funciona con o sin

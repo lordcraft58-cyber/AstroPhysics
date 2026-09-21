@@ -76,8 +76,15 @@ def _wait_for_worker(qapp, main_window, timeout_s=10.0):
     qapp.processEvents()
 
 
-def test_star_pair_registration_flow_aligns_translated_field_end_to_end(qapp, main_window):
+def test_star_pair_registration_flow_aligns_translated_field_end_to_end(qapp, main_window, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
     from qt_app.astrometry.star_pair_registration_dialog import StarPairConfigDialog
+
+    # El registro por pares ofrece ahora guardar el resultado (informe 91,
+    # mismo hallazgo que "Registrar por WCS compartido..."); aquí interesa
+    # la alineación en sí, no el guardado (ver el test dedicado más abajo).
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.No))
 
     shape = (90, 90)
     reference_data = _star_field(shape, _REFERENCE_POSITIONS)
@@ -178,3 +185,57 @@ def test_star_pair_registration_without_second_image_warns(qapp, main_window):
     main_window._open_star_pair_registration_dialog()
 
     assert "dos imágenes" in main_window.statusBar().currentMessage().lower()
+
+
+def test_star_pair_registration_offers_to_save_with_its_real_rms(qapp, main_window, tmp_path, monkeypatch):
+    """Hallazgo real cerrado (informe 91): el registro por pares nunca
+    ofrecía guardar su resultado -- a diferencia de las cuatro
+    resoluciones de WCS del mismo menú. Sin WCS de por medio (ninguna de
+    las dos imágenes tiene uno), la procedencia real que sí existe es el
+    RMS/modelo del ajuste afín."""
+    from astropy.io import fits
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    from qt_app.astrometry.star_pair_registration_dialog import StarPairConfigDialog
+
+    shape = (90, 90)
+    reference_window = main_window.add_image_window(_star_field(shape, _REFERENCE_POSITIONS), "save_reference.fits")
+    target_window = main_window.add_image_window(_star_field(shape, _TARGET_POSITIONS), "save_target.fits")
+    main_window.mdi.setActiveSubWindow(reference_window)
+    qapp.processEvents()
+    reference_view = reference_window.widget()
+    target_view = target_window.widget()
+
+    original_exec = StarPairConfigDialog.exec
+
+    def _capture_and_accept(self):
+        self.reference_combo.setCurrentText("save_reference.fits")
+        self.target_combo.setCurrentText("save_target.fits")
+        self.n_pairs_spin.setValue(3)
+        return StarPairConfigDialog.DialogCode.Accepted
+
+    out_path = tmp_path / "pares_registrada.fits"
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(out_path), "")))
+
+    StarPairConfigDialog.exec = _capture_and_accept
+    try:
+        main_window._open_star_pair_registration_dialog()
+        qapp.processEvents()
+    finally:
+        StarPairConfigDialog.exec = original_exec
+
+    for x, y in _REFERENCE_POSITIONS:
+        _click(reference_view, x, y, Qt.MouseButton.LeftButton)
+    qapp.processEvents()
+    for x, y in _TARGET_POSITIONS:
+        _click(target_view, x, y, Qt.MouseButton.LeftButton)
+    qapp.processEvents()
+
+    _wait_for_worker(qapp, main_window)
+
+    assert out_path.exists()
+    with fits.open(out_path) as hdul:
+        assert hdul[0].header["APSREG"] is True
+        assert hdul[0].header["APSREGMD"] == "affine"
+        assert "CRVAL1" not in hdul[0].header  # nunca inventa un WCS que ninguna imagen tenía

@@ -145,7 +145,8 @@ def test_registration_dialog_reprojects_between_two_windows_with_wcs(qapp, main_
     assert set(views) == {"reference.fits", "target.fits"}
 
     dialog = RegistrationDialog(views, "reference.fits", main_window)
-    dialog.computed.connect(lambda data, title: main_window.add_image_window(data, title))
+    received = {}
+    dialog.computed.connect(lambda outcome: (received.update(outcome=outcome), main_window.add_image_window(outcome.data, outcome.title)))
     dialog.reference_combo.setCurrentText("reference.fits")
     dialog.target_combo.setCurrentText("target.fits")
 
@@ -167,6 +168,55 @@ def test_registration_dialog_reprojects_between_two_windows_with_wcs(qapp, main_
     # no en su posición desplazada -- confirma que la reproyección real corrigió el corrimiento
     aligned_peak = np.unravel_index(np.argmax(aligned_view.data), aligned_view.data.shape)
     np.testing.assert_allclose(aligned_peak, (25, 25), atol=1)
+
+    outcome = received["outcome"]
+    assert outcome.record.reference_title == "reference.fits"
+    assert outcome.record.target_title == "target.fits"
+    assert outcome.record.reference_wcs is not None  # el WCS heredado es real, no None
+
+
+def test_registration_dialog_offers_to_save_the_reprojected_result_with_real_wcs(qapp, main_window, tmp_path, monkeypatch):
+    """Hallazgo real cerrado (informe 91): "Registrar por WCS
+    compartido..." nunca ofrecía guardar su resultado -- a diferencia de
+    las cuatro resoluciones de WCS del mismo menú."""
+    from astropy.io import fits
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    from qt_app.astrometry.registration_dialog import RegistrationDialog
+
+    shape = (40, 40)
+    reference_data = np.full(shape, 100.0)
+    reference_wcs = _make_wcs(crpix=(20.5, 20.5))
+    target_data = np.full(shape, 200.0)
+    target_wcs = _make_wcs(crpix=(20.5, 20.5))
+
+    main_window.add_image_window(reference_data, "ref_save.fits", wcs=reference_wcs)
+    main_window.add_image_window(target_data, "target_save.fits", wcs=target_wcs)
+    qapp.processEvents()
+    views = main_window._image_views_by_title()
+
+    dialog = RegistrationDialog(views, "ref_save.fits", main_window)
+    dialog.reference_combo.setCurrentText("ref_save.fits")
+    dialog.target_combo.setCurrentText("target_save.fits")
+    dialog.computed.connect(lambda outcome: main_window._on_registration_computed(outcome, views))
+
+    out_path = tmp_path / "registrada.fits"
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(out_path), "")))
+
+    import time
+
+    dialog._on_apply()
+    deadline = time.monotonic() + 10.0
+    while dialog._worker is not None and dialog._worker.isRunning() and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.02)
+    qapp.processEvents()
+
+    assert out_path.exists()
+    with fits.open(out_path) as hdul:
+        assert hdul[0].header["APSREG"] is True
+        assert hdul[0].header["CRVAL1"] == pytest.approx(150.0)  # el WCS de la referencia, real
 
 
 def test_registration_dialog_reports_missing_wcs(qapp, main_window):

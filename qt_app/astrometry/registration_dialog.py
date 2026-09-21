@@ -8,12 +8,25 @@ Astrometría, no el árbol de procesos genérico).
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QComboBox, QDialog, QDialogButtonBox, QFormLayout, QLabel, QVBoxLayout
 
+from astrophysics_suite.astrometry.provenance import ENGINE_REGISTRATION, RegistrationRecord
 from astrophysics_suite.astrometry.registration import reproject_to_reference
 from astrophysics_suite.astrometry.wcs_fit import WCSSolution, wcs_solution_from_astropy
 from qt_app.workers import CallableWorker
+
+
+@dataclass(frozen=True)
+class RegistrationOutcome:
+    data: object
+    title: str
+    record: RegistrationRecord
+    """Trae el WCS de la referencia, real para la rejilla de `data` --
+    lo que hace falta para poder ofrecer guardar el resultado con
+    procedencia real (ver `main_window._offer_to_save_registration_fits`)."""
 
 
 def _resolve_wcs_solution(view) -> WCSSolution | None:
@@ -29,8 +42,9 @@ def _resolve_wcs_solution(view) -> WCSSolution | None:
 
 
 class RegistrationDialog(QDialog):
-    computed = Signal(object, str)
-    """(datos reproyectados, título sugerido para la nueva ventana)."""
+    computed = Signal(object)
+    """Emite un `RegistrationOutcome` real -- no solo (datos, título) --
+    para que el llamador pueda ofrecer guardarlo con procedencia real."""
 
     def __init__(self, views: dict[str, object], active_title: str, parent=None):
         """`views`: título de ventana -> `ImageView` (se necesita el
@@ -88,9 +102,13 @@ class RegistrationDialog(QDialog):
         target_data = target_view.data
         title = f"{target_title} -> WCS de {reference_title}"
 
-        def run() -> tuple:
+        def run() -> RegistrationOutcome:
             resampled = reproject_to_reference(target_data, target_solution, reference_solution, output_shape=output_shape)
-            return resampled, title
+            record = RegistrationRecord(
+                engine=ENGINE_REGISTRATION, reference_title=reference_title, target_title=target_title,
+                reference_wcs=reference_solution,
+            )
+            return RegistrationOutcome(data=resampled, title=title, record=record)
 
         self.apply_button.setEnabled(False)
         self.status_label.setText("Reproyectando...")
@@ -99,11 +117,10 @@ class RegistrationDialog(QDialog):
         self._worker.failed.connect(self._on_failure)
         self._worker.start()
 
-    def _on_success(self, result: tuple) -> None:
-        data, title = result
+    def _on_success(self, outcome: RegistrationOutcome) -> None:
         self.apply_button.setEnabled(True)
         self.status_label.setText("")
-        self.computed.emit(data, title)
+        self.computed.emit(outcome)
         self.accept()
 
     def _on_failure(self, message: str) -> None:

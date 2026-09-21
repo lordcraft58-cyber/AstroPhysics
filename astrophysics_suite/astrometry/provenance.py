@@ -230,3 +230,87 @@ def wcs_header_cards(record: WCSRecord, *, provenance: Provenance | None = None)
             lines.append(digest)
     cards["HISTORY"] = wrap_history_lines(lines, prefix=_HISTORY_PREFIX)
     return cards
+
+
+ENGINE_REGISTRATION = "astrometry.registration"
+ENGINE_STAR_PAIR_REGISTRATION = "astrometry.star_pair_registration"
+
+
+@dataclass(frozen=True)
+class RegistrationRecord:
+    """Qué se le hizo de verdad a un resultado de registro/reproyección
+    entre dos imágenes -- mismo papel que `ReductionRecord` para la
+    reducción: reúne en un solo sitio lo que hace falta para escribir
+    procedencia real en el archivo, en vez de dejar el resultado
+    (`registration.reproject_to_reference`/`fit_affine_transform` +
+    `apply_affine_transform`, ambos ya reales) solo en una ventana MDI
+    en memoria."""
+
+    engine: str
+    """`ENGINE_REGISTRATION` (reproyección por WCS compartido, exacta
+    dado el WCS de ambas imágenes) o `ENGINE_STAR_PAIR_REGISTRATION`
+    (transformación afín ajustada por pares marcados a clic, con su
+    propio RMS -- no hay WCS de por medio)."""
+    reference_title: str
+    target_title: str
+    reference_wcs: WCSSolution | None = None
+    """Solo para `ENGINE_REGISTRATION`: el resultado vive ahora en la
+    REJILLA de la imagen de referencia, así que el WCS de la referencia
+    describe correctamente los píxeles de salida -- no es un WCS nuevo
+    ajustado aquí, es el mismo WCS de la referencia, heredado porque la
+    reproyección lo hizo cierto."""
+    model: str = ""
+    """Solo para `ENGINE_STAR_PAIR_REGISTRATION`: "affine" o "similarity"."""
+    rms_residual_px: float | None = None
+    n_points: int | None = None
+
+    def describe(self) -> tuple[str, ...]:
+        if self.engine == ENGINE_REGISTRATION:
+            lines = [f"reproyectada sobre la rejilla de «{self.reference_title}» (WCS compartido, {ENGINE_REGISTRATION})"]
+        else:
+            lines = [f"registrada contra «{self.reference_title}» por pares de estrellas (modelo {self.model}, {ENGINE_STAR_PAIR_REGISTRATION})"]
+            if self.rms_residual_px is not None and self.n_points is not None:
+                lines.append(f"ajuste afín con {self.n_points} par(es), RMS = {self.rms_residual_px:.4f} px")
+        lines.append(f"imagen origen: «{self.target_title}»")
+        return tuple(lines)
+
+
+def build_registration_provenance(
+    record: RegistrationRecord, *, pipeline_version: str = "", input_hashes: tuple[tuple[str, str], ...] = (),
+) -> Provenance:
+    """`Provenance` real de un resultado de registro -- `input_hashes`
+    debe traer los sha256 reales de las imágenes de referencia/destino
+    que ya existan en disco (el llamador los calcula; este módulo no
+    los inventa, mismo criterio que `build_wcs_provenance`)."""
+    return Provenance.now(
+        pipeline_version=pipeline_version, engine=record.engine, engine_version="1.0", input_hashes=input_hashes,
+    )
+
+
+def registration_header_cards(record: RegistrationRecord, *, provenance: Provenance | None = None) -> dict:
+    """Tarjetas FITS reales para un resultado de registro/reproyección:
+    el WCS heredado de la referencia si lo hay (`ENGINE_REGISTRATION`)
+    MÁS la procedencia propia con prefijo `APS`, mismo criterio que
+    `wcs_header_cards`/`reduction_header_cards`."""
+    cards: dict = {}
+    if record.reference_wcs is not None:
+        cards.update(dict(wcs_solution_to_astropy(record.reference_wcs).to_header()))
+    cards["APSREG"] = True
+    cards["APSREGEN"] = record.engine
+    if record.model:
+        cards["APSREGMD"] = record.model
+    if record.rms_residual_px is not None:
+        cards["APSREGRM"] = round(float(record.rms_residual_px), 6)
+    if record.n_points is not None:
+        cards["APSREGNP"] = int(record.n_points)
+    if provenance is not None:
+        cards["APSREGDT"] = provenance.produced_at.isoformat()
+
+    lines = list(record.describe())
+    if provenance is not None:
+        lines.extend(f"! {w}" for w in provenance.warnings)
+        for label, digest in provenance.input_hashes:
+            lines.append(f"# entrada: {label}")
+            lines.append(digest)
+    cards["HISTORY"] = wrap_history_lines(lines, prefix=_HISTORY_PREFIX)
+    return cards

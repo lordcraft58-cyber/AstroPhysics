@@ -15,14 +15,19 @@ from astropy.wcs import WCS
 
 from astrophysics_suite.astrometry.optical_wcs import build_wcs_from_optics
 from astrophysics_suite.astrometry.provenance import (
+    ENGINE_REGISTRATION,
+    ENGINE_STAR_PAIR_REGISTRATION,
     MIN_STARS_FOR_MEANINGFUL_RMS,
     SOURCE_BLIND_SOLVE,
     SOURCE_MANUAL_FIT,
     SOURCE_OPTICS,
     SOURCE_PLATE_SOLVE,
+    RegistrationRecord,
     WCSRecord,
+    build_registration_provenance,
     build_wcs_provenance,
     is_wcs_keyword,
+    registration_header_cards,
     strip_wcs_keywords,
     wcs_header_cards,
 )
@@ -268,3 +273,62 @@ def test_a_new_solution_written_over_the_asiair_one_is_not_bent_by_its_sip(tmp_p
 
     assert worst_corner_error(leaky) > 0.1  # el SIP heredado desvía medio píxel
     assert worst_corner_error(clean) < 1e-6
+
+
+# Hallazgo real del informe 91 (motor 3, Astrometry/WCS): ni "Registrar por
+# WCS compartido..." ni "Registrar por pares de estrellas..." ofrecían
+# guardar su resultado a disco -- el único de los flujos de astrometría
+# que no lo hacía, a diferencia de las cuatro resoluciones de WCS.
+
+
+def test_shared_wcs_registration_writes_the_reference_wcs_as_real(tmp_path):
+    """Tras reproyectar sobre la rejilla de la referencia, el WCS de la
+    referencia describe correctamente los píxeles de salida -- no es un
+    WCS nuevo ajustado aquí, así que debe poder releerse como real."""
+    reference_solution = _optical_solution()
+    record = RegistrationRecord(engine=ENGINE_REGISTRATION, reference_title="Ha.fits", target_title="OIII.fits", reference_wcs=reference_solution)
+    provenance = build_registration_provenance(record, pipeline_version="test")
+    cards = registration_header_cards(record, provenance=provenance)
+
+    assert cards["APSREG"] is True
+    assert cards["APSREGEN"] == ENGINE_REGISTRATION
+    path = tmp_path / "registrada.fits"
+    save_fits_image(str(path), np.zeros(SHAPE, dtype=np.float32), header=cards)
+    with fits.open(path) as hdul:
+        reread = WCS(hdul[0].header, naxis=2)
+        for x_px, y_px in ((0.0, 0.0), (1504.0, 1504.0)):
+            ra_ref, dec_ref = reference_solution.pixel_to_sky(x_px, y_px)
+            ra_file, dec_file = reread.all_pix2world([[x_px, y_px]], 0)[0]
+            assert angular_separation_deg(ra_ref, dec_ref, ra_file, dec_file) * 3600.0 < 1e-6
+        history = _history_text(hdul[0].header)
+        assert "Ha.fits" in history and "OIII.fits" in history
+
+
+def test_star_pair_registration_reports_its_real_rms_and_no_invented_wcs():
+    record = RegistrationRecord(
+        engine=ENGINE_STAR_PAIR_REGISTRATION, reference_title="ref.fits", target_title="tgt.fits",
+        model="affine", rms_residual_px=0.42, n_points=5,
+    )
+    cards = registration_header_cards(record)
+
+    assert "CRVAL1" not in cards  # nunca inventa un WCS que no existe
+    assert cards["APSREGMD"] == "affine"
+    assert cards["APSREGRM"] == pytest.approx(0.42)
+    assert cards["APSREGNP"] == 5
+    history = _history_text(cards)
+    assert "RMS = 0.4200 px" in history
+    assert "5 par(es)" in history
+
+
+def test_registration_input_hashes_round_trip_through_a_real_file(tmp_path):
+    record = RegistrationRecord(engine=ENGINE_STAR_PAIR_REGISTRATION, reference_title="ref.fits", target_title="tgt.fits", model="similarity")
+    digest = "d" * 64
+    provenance = build_registration_provenance(record, input_hashes=(("target:tgt.fits", digest),))
+    cards = registration_header_cards(record, provenance=provenance)
+    path = tmp_path / "con_hash.fits"
+    save_fits_image(str(path), np.zeros((16, 16), dtype=np.float32), header=cards)
+
+    with fits.open(path) as hdul:
+        history = _history_text(hdul[0].header)
+        assert "target:tgt.fits" in history
+        assert digest in history
