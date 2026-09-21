@@ -107,7 +107,7 @@ def test_build_master_bias_end_to_end(qapp, main_window, tmp_path):
     assert preferences.get("last_master_frame_dir") == str(output_path.parent)
 
 
-def test_apply_calibration_end_to_end_creates_calibrated_window(qapp, main_window, tmp_path):
+def test_apply_calibration_end_to_end_creates_calibrated_window(qapp, main_window, tmp_path, monkeypatch):
     from qt_app.reduction.apply_calibration_dialog import ApplyCalibrationDialog
 
     from services.app_preferences import AppPreferencesStore
@@ -139,17 +139,37 @@ def test_apply_calibration_end_to_end_creates_calibrated_window(qapp, main_windo
     dialog = ApplyCalibrationDialog(main_window.master_frame_library, raw, main_window)
     dialog.bias_combo.setCurrentText("Bias-cal")
     received = {}
-    dialog.calibrated.connect(lambda data, summary: received.update(data=data, summary=summary))
+    dialog.calibrated.connect(lambda outcome: received.update(outcome=outcome))
     dialog._on_apply()
     _wait_worker(qapp, dialog)
 
-    assert "data" in received
-    np.testing.assert_allclose(received["data"], 1300.0 - 300.0, atol=5.0)
-    assert "bias restado" in received["summary"]
+    assert "outcome" in received
+    outcome = received["outcome"]
+    np.testing.assert_allclose(outcome.image.data, 1300.0 - 300.0, atol=5.0)
+    assert "bias restado" in outcome.summary
+    assert outcome.record.steps.bias_subtracted is True
+    assert outcome.master_input_hashes  # Bias-cal se guardó a disco: debe traer su sha256 real
 
-    main_window._on_calibration_applied(sub_window.widget(), received["data"], received["summary"])
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    save_path = tmp_path / "raw_science_calibrada.fits"
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(save_path), "")))
+
+    main_window._on_calibration_applied(sub_window.widget(), outcome)
     qapp.processEvents()
     assert len(main_window.mdi.subWindowList()) == windows_before + 1
+
+    # Hallazgo real cerrado (informe 90): el resultado ya no vive solo en
+    # memoria -- "Aplicar calibración..." ahora ofrece guardarlo, igual
+    # que "Reducir sesión de LIGHTS...".
+    assert save_path.exists()
+    from astropy.io import fits
+
+    with fits.open(save_path) as hdul:
+        assert hdul[0].header["APSRED"] is True
+        assert hdul[0].header["APSBIAS"] is True
+        np.testing.assert_allclose(hdul[0].data, 1300.0 - 300.0, atol=5.0)
 
 
 def test_build_master_dark_records_exposure_and_saves_real_fits(qapp, main_window, tmp_path):
@@ -326,13 +346,130 @@ def test_load_master_frame_dialog_reuses_a_previously_saved_master(qapp, main_wi
         cal_dialog = ApplyCalibrationDialog(fresh_window.master_frame_library, raw, fresh_window)
         cal_dialog.bias_combo.setCurrentText("Bias-recargado")
         received = {}
-        cal_dialog.calibrated.connect(lambda data, summary: received.update(data=data, summary=summary))
+        cal_dialog.calibrated.connect(lambda outcome: received.update(outcome=outcome))
         cal_dialog._on_apply()
         _wait_worker(qapp, cal_dialog)
-        assert "data" in received
-        np.testing.assert_allclose(received["data"], 1600.0 - 600.0, atol=5.0)
+        assert "outcome" in received
+        np.testing.assert_allclose(received["outcome"].image.data, 1600.0 - 600.0, atol=5.0)
+        # el maestro se recargó de un FITS real en disco (Bias-persisted.fits):
+        # su sha256 debe llegar de verdad, no quedar vacío por venir de una
+        # biblioteca "nueva".
+        assert received["outcome"].master_input_hashes
     finally:
         fresh_window.close()
+
+
+def test_offer_to_save_calibrated_fits_records_real_source_hash_when_available(qapp, main_window, tmp_path, monkeypatch):
+    """Hallazgo real cerrado (informe 90): "Aplicar calibración..." nunca
+    ofrecía guardar su resultado a disco -- a diferencia de "Reducir
+    sesión de LIGHTS...", que sí lo hace desde su primera versión. Mismo
+    criterio de procedencia que el guardado de WCS (informes 52/53/54):
+    si `source_path` sigue apuntando a un archivo real, su sha256 real
+    debe llegar a la cabecera guardada, nunca inventado."""
+    import hashlib
+
+    from astropy.io import fits
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    from astrophysics_suite.imtools.arithmetic import UncertainImage
+    from astrophysics_suite.reduction.calibration import CalibrationSteps
+    from astrophysics_suite.reduction.provenance import ReductionRecord
+    from qt_app.reduction.apply_calibration_dialog import CalibrationOutcome
+
+    source_path = tmp_path / "raw_real.fits"
+    raw_data = np.full((20, 20), 1000.0, dtype=np.float32)
+    fits.PrimaryHDU(raw_data).writeto(source_path)
+    expected_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
+
+    sub = main_window.add_image_window(raw_data, "raw_real.fits", source_path=str(source_path))
+    view = sub.widget()
+
+    calibrated_data = raw_data - 100.0
+    outcome = CalibrationOutcome(
+        image=UncertainImage(data=calibrated_data, uncertainty=np.full((20, 20), 5.0), unit="e-"),
+        summary="bias restado",
+        record=ReductionRecord(steps=CalibrationSteps(bias_subtracted=True), gain_e_per_adu=1.0, read_noise_e=5.0),
+        master_input_hashes=(("master_bias", "a" * 64),),
+    )
+
+    out_path = tmp_path / "raw_real_calibrada.fits"
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(out_path), "")))
+
+    main_window._offer_to_save_calibrated_fits(view, outcome)
+
+    assert out_path.exists()
+    with fits.open(out_path) as hdul:
+        history = " ".join(str(line) for line in hdul[0].header.get("HISTORY", []))
+        assert expected_hash in history
+        assert "a" * 64 in history
+        assert hdul[0].header["APSRED"] is True
+        assert hdul[0].header["APSBIAS"] is True
+        np.testing.assert_allclose(hdul[0].data, calibrated_data)
+
+
+def test_offer_to_save_calibrated_fits_degrades_honestly_when_source_missing(qapp, main_window, tmp_path, monkeypatch):
+    """`source_path` puede apuntar a un archivo movido/borrado desde que
+    se cargó -- no debe impedir guardar el calibrado en sí, solo omitir
+    honestamente el hash que no se puede calcular (mismo criterio que
+    `_offer_to_save_wcs_fits_copy`)."""
+    from astropy.io import fits
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    from astrophysics_suite.imtools.arithmetic import UncertainImage
+    from astrophysics_suite.reduction.calibration import CalibrationSteps
+    from astrophysics_suite.reduction.provenance import ReductionRecord
+    from qt_app.reduction.apply_calibration_dialog import CalibrationOutcome
+
+    raw_data = np.full((15, 15), 500.0, dtype=np.float32)
+    sub = main_window.add_image_window(raw_data, "sin_origen.fits", source_path="/tmp/no_existe_nunca_de_verdad.fits")
+    view = sub.widget()
+
+    outcome = CalibrationOutcome(
+        image=UncertainImage(data=raw_data, uncertainty=np.zeros((15, 15)), unit="e-"),
+        summary="sin pasos aplicados",
+        record=ReductionRecord(steps=CalibrationSteps(), gain_e_per_adu=1.0, read_noise_e=5.0),
+        master_input_hashes=(),
+    )
+
+    out_path = tmp_path / "sin_origen_calibrada.fits"
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(out_path), "")))
+
+    main_window._offer_to_save_calibrated_fits(view, outcome)  # no debe lanzar pese a que el origen no existe
+
+    assert out_path.exists()
+    with fits.open(out_path) as hdul:
+        history = " ".join(str(line) for line in hdul[0].header.get("HISTORY", []))
+        assert "entrada" not in history
+
+
+def test_declining_the_calibration_save_question_writes_nothing(qapp, main_window, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    from astrophysics_suite.imtools.arithmetic import UncertainImage
+    from astrophysics_suite.reduction.calibration import CalibrationSteps
+    from astrophysics_suite.reduction.provenance import ReductionRecord
+    from qt_app.reduction.apply_calibration_dialog import CalibrationOutcome
+
+    raw_data = np.full((10, 10), 200.0, dtype=np.float32)
+    sub = main_window.add_image_window(raw_data, "rechazo.fits")
+    view = sub.widget()
+
+    outcome = CalibrationOutcome(
+        image=UncertainImage(data=raw_data, uncertainty=np.zeros((10, 10)), unit="e-"),
+        summary="sin pasos aplicados",
+        record=ReductionRecord(steps=CalibrationSteps(), gain_e_per_adu=1.0, read_noise_e=5.0),
+        master_input_hashes=(),
+    )
+
+    out_path = tmp_path / "no_deberia_existir.fits"
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.No))
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(out_path), "")))
+
+    main_window._offer_to_save_calibrated_fits(view, outcome)
+
+    assert not out_path.exists()
 
 
 def test_master_frame_library_names_for_kind(qapp):

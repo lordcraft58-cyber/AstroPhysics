@@ -49,7 +49,7 @@ from qt_app.io.cube_plane_dialog import CubePlaneDialog
 from qt_app.mdi.image_window import ImageView
 from qt_app.processes.base import ProcessDefinition
 from qt_app.processes.registry import build_process_registry
-from qt_app.reduction.apply_calibration_dialog import ApplyCalibrationDialog
+from qt_app.reduction.apply_calibration_dialog import ApplyCalibrationDialog, CalibrationOutcome
 from qt_app.reduction.build_master_frame_dialog import BuildMasterFrameDialog
 from qt_app.reduction.master_frame_library import MasterFrameLibrary
 from qt_app.reduction.reduce_session_dialog import ReduceSessionDialog, SessionReductionOutcome
@@ -1169,12 +1169,69 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Construye al menos un fotograma maestro antes de calibrar.", 5000)
             return
         dialog = ApplyCalibrationDialog(self.master_frame_library, view.data, self)
-        dialog.calibrated.connect(lambda data, summary, v=view: self._on_calibration_applied(v, data, summary))
+        dialog.calibrated.connect(lambda outcome, v=view: self._on_calibration_applied(v, outcome))
         dialog.exec()
 
-    def _on_calibration_applied(self, view: ImageView, data, summary: str) -> None:
-        logger.info("Calibración aplicada a %s: %s", view.title, summary)
-        self.add_image_window(data, f"{view.title} -> calibrada")
+    def _on_calibration_applied(self, view: ImageView, outcome: CalibrationOutcome) -> None:
+        logger.info("Calibración aplicada a %s: %s", view.title, outcome.summary)
+        self.add_image_window(outcome.image.data, f"{view.title} -> calibrada")
+        self._offer_to_save_calibrated_fits(view, outcome)
+
+    def _offer_to_save_calibrated_fits(self, view: ImageView, outcome: CalibrationOutcome) -> None:
+        """Ofrece guardar a disco el resultado de "Aplicar calibración...".
+
+        Hallazgo real de la auditoría sistemática del motor de Reducción
+        (informe 90): a diferencia de "Reducir sesión de LIGHTS...", que
+        escribe cada calibrado a un FITS real desde su primera versión,
+        este flujo de una sola imagen dejaba el resultado únicamente en
+        una ventana MDI en memoria -- sin ninguna forma de persistirlo,
+        con procedencia o sin ella. Reutiliza exactamente el mismo patrón
+        que `_offer_to_save_wcs_fits_copy`: procedencia real con
+        `reduction_header_cards`/`build_reduction_provenance` (las mismas
+        que ya usa `ReduceSessionDialog`), sha256 real de la imagen de
+        origen solo si `source_path` sigue apuntando a un archivo real, y
+        selector de guardado nativo (nunca una ruta inventada).
+        """
+        from astrophysics_suite.io.fits_reader import sha256_file
+        from astrophysics_suite.io.fits_writer import save_fits_image
+        from astrophysics_suite.reduction.provenance import build_reduction_provenance, reduction_header_cards
+
+        input_hashes = outcome.master_input_hashes
+        if view.source_path:
+            try:
+                input_hashes = ((f"light:{Path(view.source_path).name}", sha256_file(view.source_path)),) + input_hashes
+            except OSError as exc:
+                logger.warning("No se pudo calcular el sha256 real de %s para la procedencia: %s", view.source_path, exc)
+
+        provenance = build_reduction_provenance(outcome.record, input_hashes=input_hashes)
+        question = f"¿Guardar el resultado de la calibración en un FITS real?\n\n{outcome.summary}"
+        if provenance.warnings:
+            question += "\n\n" + "\n".join(f"· {w}" for w in provenance.warnings)
+        reply = QMessageBox.question(
+            self, "Guardar calibración", question,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        default_path = ""
+        if view.source_path:
+            source = Path(view.source_path)
+            default_path = str(source.with_name(f"{source.stem}_calibrada{source.suffix}"))
+        path, _ = QFileDialog.getSaveFileName(self, "Guardar FITS calibrado", default_path, "FITS (*.fits *.fit *.fts)")
+        if not path:
+            return
+
+        header = dict(view.header) if view.header else {}
+        header.update(reduction_header_cards(outcome.record, provenance=provenance))
+        try:
+            save_fits_image(path, outcome.image.data, header=header, uncertainty=outcome.image.uncertainty)
+        except Exception as exc:  # noqa: BLE001 -- error real de escritura, debe ser visible
+            logger.error("No se pudo guardar %s: %s", path, exc)
+            QMessageBox.critical(self, "Guardar FITS calibrado", f"No se pudo guardar «{Path(path).name}»:\n\n{exc}")
+            return
+        logger.info("FITS calibrado guardado en %s", path)
+        self.statusBar().showMessage(f"FITS calibrado guardado en {path}", 6000)
 
     def _open_reduce_session_dialog(self) -> None:
         dialog = ReduceSessionDialog(self.master_frame_library, self)
