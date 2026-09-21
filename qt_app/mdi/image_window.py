@@ -13,6 +13,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QImage, QMouseEvent, QPainterPath, QPen, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsItem, QGraphicsPixmapItem, QGraphicsScene, QGraphicsView
 
+from astrophysics_suite.spectroscopy.trace import SkyWindow, TraceResult
 from qt_app.mdi.stf import STFParams, compute_stf_params, stf_to_uint8
 from qt_app.spectroscopy.trace_overlay_data import TraceOverlay
 
@@ -24,6 +25,10 @@ _TRACE_OVERLAY_PALETTE = ("#4a9edb", "#4fc9b0", "#d9a441", "#d9707a", "#8f8fe0")
 directamente aquí, para no acoplar el visor genérico de imagen (usable
 también fuera de espectroscopía) a esa decisión de paleta."""
 _SKY_OVERLAY_COLOR = "#58a6ff"
+_CALIBRATION_OVERLAY_COLOR = "#c77dff"
+"""Color distinto de OBJETO (`_TRACE_OVERLAY_PALETTE`) y CIELO
+(`_SKY_OVERLAY_COLOR`) para el canal de calibración lateral/simultánea
+(§14) -- las tres regiones deben distinguirse a simple vista."""
 _APERTURE_EDGE_HIT_TOLERANCE_PX = 3.0
 """Distancia real, en píxeles de DATOS (no de pantalla -- igual que el
 propio overlay, independiente del zoom), dentro de la cual un clic
@@ -230,6 +235,19 @@ class ImageView(QGraphicsView):
             self._scene.removeItem(item)
         self._trace_overlay_items.clear()
 
+    def set_calibration_windows(self, trace: TraceResult, windows: tuple[SkyWindow, ...]) -> None:
+        """Añade/reemplaza las regiones reales del canal de calibración
+        lateral/simultánea (§14, `lateral_calibration.py`) sobre el
+        overlay ya dibujado -- si todavía no había ninguno, crea uno
+        mínimo con la traza real ya conocida (`trace`, nunca inventada;
+        `aperture_half_width=0.0` porque en ese caso no hay ninguna
+        apertura de objeto real que mostrar todavía)."""
+        base = self._trace_overlay_single or TraceOverlay(
+            trace_columns=trace.columns.astype(np.float64), trace_center_px=trace.center_px,
+            aperture_half_width=0.0, label="Calibración lateral",
+        )
+        self.set_trace_overlay(replace(base, calibration_windows=windows))
+
     def _draw_trace_overlay_item(self, overlay: TraceOverlay, color: QColor) -> None:
         self._add_overlay_polyline(overlay.trace_columns, overlay.trace_center_px, color, width=2.0)
         self._add_overlay_polyline(
@@ -244,6 +262,12 @@ class ImageView(QGraphicsView):
             hi = overlay.trace_center_px + window.offset_px + window.half_width_px
             self._add_overlay_polyline(overlay.trace_columns, lo, sky_color, width=1.0, dashed=True)
             self._add_overlay_polyline(overlay.trace_columns, hi, sky_color, width=1.0, dashed=True)
+        calibration_color = QColor(_CALIBRATION_OVERLAY_COLOR)
+        for window in overlay.calibration_windows:
+            lo = overlay.trace_center_px + window.offset_px - window.half_width_px
+            hi = overlay.trace_center_px + window.offset_px + window.half_width_px
+            self._add_overlay_polyline(overlay.trace_columns, lo, calibration_color, width=1.0, dashed=True)
+            self._add_overlay_polyline(overlay.trace_columns, hi, calibration_color, width=1.0, dashed=True)
 
     # ---------------------------------------------------------------- edición interactiva de la apertura (§2)
     def _nearest_trace_column_index(self, scene_x: float) -> int | None:

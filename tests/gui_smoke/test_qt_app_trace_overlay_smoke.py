@@ -87,6 +87,49 @@ def test_image_view_set_and_clear_trace_overlay_adds_and_removes_scene_items():
     assert view._trace_overlay_items == []
 
 
+def test_image_view_set_calibration_windows_adds_a_third_distinct_region():
+    # §14: el canal de calibración lateral/simultánea se dibuja en su
+    # propio color, distinto de OBJETO/CIELO -- sobre un overlay ya
+    # existente (traza + apertura + cielo real ya dibujados).
+    from qt_app.mdi.image_window import ImageView
+    from qt_app.spectroscopy.trace_overlay_data import TraceOverlay
+    from astrophysics_suite.spectroscopy.trace import SkyWindow, TraceResult
+
+    data = np.full((40, 100), 100.0)
+    view = ImageView(data, "calibration_overlay_test.fits")
+    overlay = TraceOverlay(
+        trace_columns=np.arange(100, dtype=np.float64), trace_center_px=np.full(100, 20.0),
+        aperture_half_width=4.0, sky_windows=(SkyWindow(offset_px=-10.0, half_width_px=4.0),), label="Traza",
+    )
+    view.set_trace_overlay(overlay)
+    items_with_sky_only = len(view._trace_overlay_items)  # traza + 2 apertura + 2 cielo = 5
+
+    trace = TraceResult(columns=overlay.trace_columns, center_px=overlay.trace_center_px, fit_degree=1, rms_residual_px=0.1)
+    view.set_calibration_windows(trace, (SkyWindow(offset_px=15.0, half_width_px=3.0),))
+
+    # +2 líneas de la ventana de calibración, y el resto del overlay (traza/apertura/cielo) se conserva
+    assert len(view._trace_overlay_items) == items_with_sky_only + 2
+    assert view._trace_overlay_single.calibration_windows == (SkyWindow(offset_px=15.0, half_width_px=3.0),)
+    assert view._trace_overlay_single.sky_windows == overlay.sky_windows  # el cielo real no se pierde al añadir calibración
+
+
+def test_image_view_set_calibration_windows_creates_a_minimal_overlay_without_one_yet():
+    from qt_app.mdi.image_window import ImageView
+    from astrophysics_suite.spectroscopy.trace import SkyWindow, TraceResult
+
+    data = np.full((40, 100), 100.0)
+    view = ImageView(data, "calibration_overlay_no_prior.fits")
+    assert view._trace_overlay_items == []
+
+    trace = TraceResult(columns=np.arange(100, dtype=np.float64), center_px=np.full(100, 20.0), fit_degree=1, rms_residual_px=0.1)
+    view.set_calibration_windows(trace, (SkyWindow(offset_px=15.0, half_width_px=3.0),))
+
+    # traza (1) + 2 límites de apertura degenerados (semiancho 0.0, sin apertura real que mostrar
+    # todavía) + 2 líneas de la ventana de calibración = 5
+    assert len(view._trace_overlay_items) == 5
+    assert view._trace_overlay_single.aperture_half_width == 0.0
+
+
 def test_image_view_set_trace_overlay_accepts_a_tuple_of_overlays():
     from qt_app.mdi.image_window import ImageView
     from qt_app.spectroscopy.trace_overlay_data import TraceOverlay

@@ -17,6 +17,7 @@ from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import QDockWidget, QFileDialog, QInputDialog, QLabel, QMainWindow, QMdiArea, QMdiSubWindow, QMessageBox, QProgressBar
 
 from astrophysics_suite.astrometry.provenance import SOURCE_MANUAL_FIT, SOURCE_OPTICS, WCSRecord
+from astrophysics_suite.spectroscopy.calibration_provenance import build_wavelength_provenance
 from astrophysics_suite.astrometry.registration import apply_affine_transform, fit_affine_transform
 from astrophysics_suite.detection.point_sources import detect_point_sources_in_array, detect_psf_candidates
 from astrophysics_suite.discovery.pipeline import (
@@ -928,7 +929,19 @@ class MainWindow(QMainWindow):
             "Longitud de onda calibrada para %s: RMS=%.4f (grado %d, %d línea(s)). Tabla disponible -- Herramientas -> Exportar última tabla a CSV...",
             view.title, solution.rms_residual, solution.degree, len(table.rows),
         )
-        self.statusBar().showMessage(f"Longitud de onda calibrada para {view.title} (RMS={solution.rms_residual:.4f}).", 6000)
+        status_text = f"Longitud de onda calibrada para {view.title} (RMS={solution.rms_residual:.4f})."
+        # §11: los avisos honestos reales que ya calcula `build_wavelength_
+        # provenance` (SIMULADA, estrella de referencia, pocas líneas para
+        # el grado...) se enviaban al FITS de salida pero nunca se
+        # mostraban aquí -- un usuario que calibra desde la GUI y nunca
+        # guarda el archivo no llegaba a verlos.
+        if record is not None:
+            provenance = build_wavelength_provenance(record)
+            for warning in provenance.warnings:
+                logger.warning("[Calibrar longitud de onda] AVISO: %s", warning)
+            if provenance.warnings:
+                status_text += f" -- {len(provenance.warnings)} aviso(s), ver registro de operaciones."
+        self.statusBar().showMessage(status_text, 6000)
 
     def _save_calibrated_spectrum_fits(self) -> None:
         view = self._active_image_view()

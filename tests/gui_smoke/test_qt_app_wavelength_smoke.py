@@ -96,6 +96,56 @@ def test_wavelength_fit_flow_detects_lines_and_fits_known_solution(qapp, main_wi
     assert predicted == pytest.approx(4358.3, abs=1.0)
 
 
+def test_wavelength_fitted_surfaces_real_provenance_warnings(qapp, main_window, caplog):
+    """§11: los avisos honestos reales de `build_wavelength_provenance`
+    (aquí, "sin grados de libertad de sobra" con solo 2 líneas para un
+    ajuste de grado 1) ya se escribían en el FITS de salida, pero nunca
+    se mostraban en la GUI para quien calibra y no llega a guardar."""
+    from astrophysics_suite.spectroscopy.calibration_provenance import CalibrationSource, WavelengthCalibrationRecord
+    from astrophysics_suite.spectroscopy.wavelength import fit_wavelength_solution
+    from astrophysics_suite.tables.table import Table
+
+    data = _synthetic_arc_row()
+    sub_window = main_window.add_image_window(data, "arc_warning_test.fits")
+    main_window.mdi.setActiveSubWindow(sub_window)
+    qapp.processEvents()
+    view = sub_window.widget()
+
+    solution = fit_wavelength_solution([40.0, 260.0], [4046.6, 5769.6], degree=1)
+    record = WavelengthCalibrationRecord(solution=solution, source=CalibrationSource.LAMP_REAL, n_lines_used=2, lamp_name="Hg")
+    table = Table(columns=("pixel", "wavelength"), units=("px", "Å"), rows=((40.0, 4046.6), (260.0, 5769.6)))
+
+    with caplog.at_level("WARNING"):
+        main_window._on_wavelength_fitted(view, solution, table, record, None)
+
+    assert any("AVISO" in message for message in caplog.messages)
+    assert "aviso" in main_window.statusBar().currentMessage().lower()
+
+
+def test_wavelength_fitted_without_real_warnings_stays_silent_about_them(qapp, main_window, caplog):
+    from astrophysics_suite.spectroscopy.calibration_provenance import CalibrationSource, WavelengthCalibrationRecord
+    from astrophysics_suite.spectroscopy.wavelength import fit_wavelength_solution
+    from astrophysics_suite.tables.table import Table
+
+    data = _synthetic_arc_row()
+    sub_window = main_window.add_image_window(data, "arc_no_warning_test.fits")
+    main_window.mdi.setActiveSubWindow(sub_window)
+    qapp.processEvents()
+    view = sub_window.widget()
+
+    pixels = [40.0, 110.0, 190.0, 260.0, 150.0, 220.0]
+    wavelengths = [4046.6, 4358.3, 5460.7, 5769.6, 4900.0, 5200.0]
+    solution = fit_wavelength_solution(pixels, wavelengths, degree=1)
+    record = WavelengthCalibrationRecord(solution=solution, source=CalibrationSource.LAMP_REAL, n_lines_used=6, lamp_name="Hg")
+    table = Table(columns=("pixel", "wavelength"), units=("px", "Å"), rows=tuple(zip(pixels, wavelengths)))
+
+    with caplog.at_level("WARNING"):
+        main_window._on_wavelength_fitted(view, solution, table, record, None)
+
+    assert not any("AVISO" in message for message in caplog.messages)
+    assert "aviso" not in main_window.statusBar().currentMessage().lower()
+
+
 def test_wavelength_fit_flow_reports_too_few_lines(qapp, main_window):
     data = np.full((21, 300), 100.0)  # sin líneas de arco -- espectro plano
     sub_window = main_window.add_image_window(data, "flat_no_lines.fits")

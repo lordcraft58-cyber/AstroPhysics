@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from astrophysics_suite.io.fits_loader import AmbiguousCubeError, build_observation, load_image, probe_fits_shape
+from astrophysics_suite.io.fits_loader import AmbiguousCubeError, build_observation, load_fits, load_image, probe_fits_shape
 from legacy.AstroPhysicsSuite_v57_3_COMMERCIAL import _write_minimal_fits_2d
 
 
@@ -153,6 +153,28 @@ def test_load_image_with_explicit_plane_tuple_selects_correct_slice_for_4d_cube(
 
     assert loaded.legacy_image.data.shape == (16, 16)
     np.testing.assert_array_equal(loaded.legacy_image.data, data[1, 2])
+
+
+def test_load_fits_skips_a_non_image_extension_to_find_the_real_2d_frame(tmp_path):
+    """§1: un fotograma 2D real (de espectroscopía o de cualquier otro
+    origen) puede llegar con una HDU primaria vacía y/o una extensión de
+    tabla real por delante (p. ej. un registro de órdenes de un echelle,
+    o un log de adquisición) -- `_first_image_hdu_index` debe saltarlas y
+    encontrar la imagen real, nunca fallar ni coger la tabla por error."""
+    from astropy.io import fits
+
+    data = np.full((41, 300), 1234.5, dtype=np.float32)
+    path = tmp_path / "frame_with_table_extension.fits"
+    primary = fits.PrimaryHDU()  # HDU primaria vacía, real en muchos productos de espectrógrafo
+    table = fits.BinTableHDU.from_columns([fits.Column(name="ORDER", format="J", array=np.arange(5))])
+    image = fits.ImageHDU(data=data, name="SCI")
+    fits.HDUList([primary, table, image]).writeto(path)
+
+    loaded = load_fits(str(path))
+
+    assert loaded.hdu_index == 2  # la imagen real, no la HDU primaria vacía ni la extensión de tabla
+    assert loaded.data.shape == (41, 300)
+    np.testing.assert_allclose(loaded.data, data)
 
 
 def test_probe_fits_shape_reads_shape_without_loading_pixels(tmp_path):

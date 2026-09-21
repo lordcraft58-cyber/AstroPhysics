@@ -30,6 +30,12 @@ class TraceOverlay:
     (`extended_extraction`), nunca una fila supuesta."""
     aperture_half_width: float
     sky_windows: tuple[SkyWindow, ...] = ()
+    calibration_windows: tuple[SkyWindow, ...] = ()
+    """Región(es) reales del canal de calibración lateral/simultánea
+    (§14, `lateral_calibration.LateralCalibrationWindow`), si se usó
+    alguna -- misma geometría que `SkyWindow` (offset/semiancho
+    respecto al centro de la traza), dibujada en un color distinto para
+    distinguirla de OBJETO/CIELO."""
     label: str = ""
 
 
