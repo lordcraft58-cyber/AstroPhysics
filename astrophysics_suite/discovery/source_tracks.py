@@ -31,6 +31,7 @@ from datetime import datetime
 
 import numpy as np
 
+from astrophysics_suite.astrometry.wcs_fit import angular_separation_deg
 from astrophysics_suite.models.detection import Detection
 
 ENGINE_NAME = "discovery.source_tracks"
@@ -95,17 +96,6 @@ class SourceTrack:
         dx = (ra - np.mean(ra)) * math.cos(math.radians(mean_dec)) * 3600.0
         dy = (dec - np.mean(dec)) * 3600.0
         return float(np.sqrt(np.mean(dx**2 + dy**2)))
-
-
-def _separation_arcsec(ra1: float, dec1: float, ra2: float, dec2: float) -> float:
-    r1, d1, r2, d2 = map(math.radians, (ra1, dec1, ra2, dec2))
-    delta = r2 - r1
-    numerator = math.hypot(
-        math.cos(d2) * math.sin(delta),
-        math.cos(d1) * math.sin(d2) - math.sin(d1) * math.cos(d2) * math.cos(delta),
-    )
-    denominator = math.sin(d1) * math.sin(d2) + math.cos(d1) * math.cos(d2) * math.cos(delta)
-    return math.degrees(math.atan2(numerator, denominator)) * 3600.0
 
 
 @dataclass(frozen=True)
@@ -179,7 +169,7 @@ def group_detections_into_tracks(
             # serían dos fuentes distintas, no la misma vista dos veces.
             if any(o.epoch_index == obs.epoch_index for o in tracks[index].observations):
                 continue
-            separation = _separation_arcsec(ra, dec, track_ra, track_dec)
+            separation = angular_separation_deg(ra, dec, track_ra, track_dec) * 3600.0
             if separation < best_separation:
                 best_index, best_separation = index, separation
 

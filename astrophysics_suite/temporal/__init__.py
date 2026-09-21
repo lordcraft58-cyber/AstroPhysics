@@ -1,11 +1,9 @@
-"""Temporal Engine, primer corte (Fase 6, continuación).
+"""Temporal Engine.
 
-Envuelve `legacy...TemporalChangeEngine` (variabilidad/deriva en medidas
-multiepoch con errores explícitos, vía chi² constante vs. ajuste lineal
-ponderado). No cubre movimiento propio (`measure_proper_motion`, ya
-probado desde la Fase 3 -- ver `tests/regression/test_historical_
-contracts.py`) ni aparición/desaparición (que requieren comparar
-detecciones presentes/ausentes entre épocas, no una serie de valores
-continua) -- quedan para un slice posterior. Ver
-docs/audit/08-FASE6-MOTORES-RESTANTES.md, seccion 6.
+Variabilidad/deriva en medidas multiépoca con errores explícitos, vía
+chi² constante vs. ajuste lineal ponderado (nativo desde el cierre
+sistemático del motor 9/16, informe 97 -- antes delegaba en
+`legacy...TemporalChangeEngine`). Movimiento propio real vía
+`temporal/motion.py`. Ver docs/audit/08-FASE6-MOTORES-RESTANTES.md,
+seccion 6, y docs/audit/97-AUDITORIA-SISTEMATICA-MOTOR-09-TEMPORAL.md.
 """
