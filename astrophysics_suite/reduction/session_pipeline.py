@@ -18,6 +18,7 @@ descubrimiento (instrucción explícita del encargo).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 
@@ -62,6 +63,10 @@ def reduce_light_frames(
     light_frames: list[np.ndarray],
     *,
     light_paths: list[str] | None = None,
+    light_hashes: list[str] | None = None,
+    master_bias_hash: str | None = None,
+    master_dark_hash: str | None = None,
+    master_flat_hash: str | None = None,
     overscan_region: tuple[slice, slice] | None = None,
     trim_region: tuple[slice, slice] | None = None,
     overscan_function: str = "median",
@@ -111,6 +116,15 @@ def reduce_light_frames(
     `light_paths`, si se da, debe tener la misma longitud que
     `light_frames` y solo etiqueta cada `LightFrameReduction` para
     trazabilidad -- la capa de ciencia nunca toca el sistema de archivos.
+    `light_hashes` (mismo criterio: sha256 reales calculados por el
+    llamador, p. ej. `io.fits_reader.sha256_file` o el `ImageRef.sha256`
+    que ya trae cualquier imagen cargada con `io.fits_loader`, nunca
+    releídos aquí) alimenta `Provenance.input_hashes` en cada
+    `LightFrameReduction.provenance`, junto con `master_bias_hash`/
+    `master_dark_hash`/`master_flat_hash` si los maestros usados vienen
+    de un FITS real en disco -- un maestro construido en memoria en esta
+    misma sesión y nunca guardado no tiene un hash de archivo real que
+    dar, y no se inventa uno.
     `science_exposures_s` permite un tiempo de exposición distinto por
     LIGHT (una sesión real puede variarlo entre tomas); si se omite y hay
     `master_dark`, `calibrate_frame` lanzará el mismo error que ya lanza
@@ -120,6 +134,8 @@ def reduce_light_frames(
         raise ValueError("reduce_light_frames requiere al menos un LIGHT")
     if light_paths is not None and len(light_paths) != len(light_frames):
         raise ValueError("light_paths debe tener la misma longitud que light_frames")
+    if light_hashes is not None and len(light_hashes) != len(light_frames):
+        raise ValueError("light_hashes debe tener la misma longitud que light_frames")
     if science_exposures_s is not None and len(science_exposures_s) != len(light_frames):
         raise ValueError("science_exposures_s debe tener la misma longitud que light_frames")
 
@@ -184,6 +200,22 @@ def reduce_light_frames(
             gain_e_per_adu=gain_e_per_adu,
             read_noise_e=read_noise_e,
         )
+        input_hashes: list[tuple[str, str]] = []
+        light_hash = light_hashes[index] if light_hashes is not None else None
+        if light_hash:
+            # solo el nombre del archivo, no la ruta completa -- una ruta
+            # real puede ser más larga que el ancho de una tarjeta HISTORY
+            # (~72 caracteres), y lo que identifica la entrada sin
+            # ambigüedad de todos modos es el hash, no dónde vivía cuando
+            # se redujo.
+            input_hashes.append((f"light:{Path(path).name}" if path else "light", light_hash))
+        if master_bias is not None and master_bias_hash:
+            input_hashes.append(("master_bias", master_bias_hash))
+        if master_dark is not None and master_dark_hash:
+            input_hashes.append(("master_dark", master_dark_hash))
+        if master_flat is not None and master_flat_hash:
+            input_hashes.append(("master_flat", master_flat_hash))
+
         results.append(
             LightFrameReduction(
                 source_path=path,
@@ -193,7 +225,9 @@ def reduce_light_frames(
                 fringe_scale_factor=fringe_scale,
                 sky_background=sky_fit,
                 record=record,
-                provenance=build_reduction_provenance(record, pipeline_version=pipeline_version),
+                provenance=build_reduction_provenance(
+                    record, pipeline_version=pipeline_version, input_hashes=tuple(input_hashes),
+                ),
             )
         )
 

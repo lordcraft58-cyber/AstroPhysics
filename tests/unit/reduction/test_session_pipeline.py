@@ -65,6 +65,55 @@ def test_reduce_light_frames_requires_matching_lengths_for_paths_and_exposures()
         reduce_light_frames(lights, light_paths=["only_one.fits"])
     with pytest.raises(ValueError):
         reduce_light_frames(lights, science_exposures_s=[30.0])
+    with pytest.raises(ValueError):
+        reduce_light_frames(lights, light_hashes=["only_one_hash"])
+
+
+def test_reduce_light_frames_records_real_input_hashes_in_provenance():
+    # Cierra el hueco anotado en los informes 52/53/54: `input_hashes`
+    # existía en `Provenance` desde el principio, pero ningún llamador
+    # lo rellenaba -- aquí se pasan sha256 reales (del LIGHT y de los
+    # maestros usados, si vienen de un FITS real en disco) y deben
+    # llegar tal cual a `LightFrameReduction.provenance.input_hashes`.
+    shape = (5, 5)
+    bias = _bias_frame(shape, 100.0)
+    dark = _dark_frame(shape, level=10.0, exposure_s=30.0)
+    flat = _flat_frame(shape, level=1.0)
+    lights = [np.full(shape, 500.0), np.full(shape, 600.0)]
+
+    result = reduce_light_frames(
+        lights,
+        light_paths=["light_001.fits", "light_002.fits"],
+        light_hashes=["hash-light-1", "hash-light-2"],
+        science_exposures_s=[30.0, 30.0],
+        master_bias=bias,
+        master_dark=dark,
+        master_flat=flat,
+        master_bias_hash="hash-bias",
+        master_dark_hash="hash-dark",
+        master_flat_hash="hash-flat",
+    )
+
+    for index, frame in enumerate(result.frames):
+        hashes = dict(frame.provenance.input_hashes)
+        assert hashes[f"light:light_00{index + 1}.fits"] == f"hash-light-{index + 1}"
+        assert hashes["master_bias"] == "hash-bias"
+        assert hashes["master_dark"] == "hash-dark"
+        assert hashes["master_flat"] == "hash-flat"
+
+
+def test_reduce_light_frames_never_invents_a_hash_for_an_unsaved_master():
+    # Un maestro construido en memoria en esta misma sesión, nunca
+    # guardado a disco, no tiene un hash de archivo real que dar --
+    # debe quedar honestamente ausente, nunca inventado.
+    shape = (5, 5)
+    bias = _bias_frame(shape, 100.0)
+    lights = [np.full(shape, 500.0)]
+
+    result = reduce_light_frames(lights, light_paths=["light.fits"], master_bias=bias)
+
+    hashes = dict(result.frames[0].provenance.input_hashes)
+    assert "master_bias" not in hashes
 
 
 def test_reduce_light_frames_applies_overscan_and_trim_per_light():

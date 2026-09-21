@@ -176,6 +176,25 @@ def test_the_cards_round_trip_as_a_real_wcs_through_a_real_file(tmp_path):
         assert "Gaia DR3" in history
 
 
+def test_input_hashes_round_trip_through_a_real_fits_file(tmp_path):
+    """`input_hashes` (informes 52/53/54: existía en `Provenance` desde
+    el principio, pero ningún llamador lo rellenaba) debe quedar legible
+    en el FITS de salida -- el sha256 real de la imagen que se resolvió."""
+    solution = _measured_solution(10)
+    record = WCSRecord(solution=solution, source=SOURCE_PLATE_SOLVE, catalog="Gaia DR3", n_matched_stars=10)
+    digest = "c" * 64
+    provenance = build_wcs_provenance(record, pipeline_version="test", input_hashes=(("image:m31.fits", digest),))
+    path = tmp_path / "con_wcs_hash.fits"
+
+    save_fits_image(str(path), np.zeros((64, 64), dtype=np.float32),
+                    header=wcs_header_cards(record, provenance=provenance))
+
+    with fits.open(path) as hdul:
+        history = _history_text(hdul[0].header)
+        assert "image:m31.fits" in history
+        assert digest in history
+
+
 # Cabecera REAL de un LIGHT de M 31 del usuario: el ASIAIR Mini ya había
 # resuelto la placa y dejó una solución TAN-SIP completa dentro.
 _REAL_ASIAIR_SOLVED_HEADER = {

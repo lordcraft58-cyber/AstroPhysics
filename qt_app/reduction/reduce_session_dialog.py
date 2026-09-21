@@ -376,6 +376,13 @@ class ReduceSessionDialog(QDialog):
         master_bias = self.library.get(bias_name) if bias_name != NONE_OPTION else None
         master_dark = self.library.get(dark_name) if dark_name != NONE_OPTION else None
         master_flat = self.library.get(flat_name) if flat_name != NONE_OPTION else None
+        # Procedencia real (§ input_hashes, informes 52/53/54): solo hay un
+        # sha256 real que dar si el maestro viene de un FITS ya guardado en
+        # disco (`NamedMasterFrame.path`) -- uno recién combinado en esta
+        # sesión y nunca guardado no tiene archivo que hashear.
+        master_bias_path = self.library.entry(bias_name).path if bias_name != NONE_OPTION else None
+        master_dark_path = self.library.entry(dark_name).path if dark_name != NONE_OPTION else None
+        master_flat_path = self.library.entry(flat_name).path if flat_name != NONE_OPTION else None
 
         overscan_region = None
         trim_region = None
@@ -406,11 +413,16 @@ class ReduceSessionDialog(QDialog):
 
         def run() -> SessionReductionOutcome:
             from astrophysics_suite.io.fits_loader import load_image
+            from astrophysics_suite.io.fits_reader import sha256_file
             from astrophysics_suite.io.fits_writer import save_fits_image
 
             loaded = [load_image(p, band="", role="science") for p in light_paths]
             light_frames = [li.legacy_image.data for li in loaded]
+            light_hashes = [li.image_ref.sha256 for li in loaded]
             headers = [li.legacy_image.header for li in loaded]
+            master_bias_hash = sha256_file(master_bias_path) if master_bias_path else None
+            master_dark_hash = sha256_file(master_dark_path) if master_dark_path else None
+            master_flat_hash = sha256_file(master_flat_path) if master_flat_path else None
 
             science_exposures_s = None
             if master_dark is not None:
@@ -429,6 +441,10 @@ class ReduceSessionDialog(QDialog):
             result = reduce_light_frames(
                 light_frames,
                 light_paths=light_paths,
+                light_hashes=light_hashes,
+                master_bias_hash=master_bias_hash,
+                master_dark_hash=master_dark_hash,
+                master_flat_hash=master_flat_hash,
                 overscan_region=overscan_region,
                 trim_region=trim_region,
                 gain_e_per_adu=gain,

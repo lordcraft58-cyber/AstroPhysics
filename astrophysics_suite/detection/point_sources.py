@@ -95,6 +95,11 @@ def detect_point_sources(
         engine=ENGINE_NAME,
         engine_version=ENGINE_VERSION,
         model_id=DETECTION_METHOD,
+        # sha256 real del FITS de origen -- ya calculado por
+        # `io.fits_loader` al cargar la imagen, nunca releído aquí
+        # (informes 52/53/54: el mismo hueco de `input_hashes` sin
+        # rellenar, cerrado aquí porque el dato ya estaba disponible).
+        input_hashes=((f"image:{loaded_image.image_ref.path}", loaded_image.image_ref.sha256),),
     )
 
     detections: list[Detection] = []

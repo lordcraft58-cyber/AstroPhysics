@@ -54,6 +54,30 @@ def test_detect_point_sources_finds_injected_stars(tmp_path):
         assert d.position.dec_deg is None
 
 
+def test_detect_point_sources_records_the_real_sha256_of_its_source_fits_in_provenance(tmp_path):
+    # Cierra el hueco anotado en los informes 52/53/54: `input_hashes`
+    # existía en `Provenance` desde el principio, pero ningún llamador
+    # lo rellenaba -- el sha256 real ya lo calcula `io.fits_loader` al
+    # cargar la imagen (`ImageRef.sha256`), así que no hace falta
+    # releer el archivo aquí para obtenerlo.
+    import hashlib
+
+    positions = [(30, 30)]
+    field = _synthetic_star_field((64, 64), positions)
+    path = tmp_path / "field_hash.fits"
+    _write_minimal_fits_2d(path, field, pixel_scale_arcsec=1.0)
+    expected_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+
+    loaded = load_image(str(path), band="OIII")
+    assert loaded.image_ref.sha256 == expected_hash
+    detections = detect_point_sources(loaded, observation_id="OBS-HASH", band="OIII", threshold_sigma=4.0)
+
+    assert detections
+    for d in detections:
+        hashes = dict(d.provenance.input_hashes)
+        assert hashes[f"image:{loaded.image_ref.path}"] == expected_hash
+
+
 def test_detect_point_sources_ids_collide_across_images_of_the_same_observation_without_image_index(tmp_path):
     # Regresión documentada: `det_id` es una etiqueta de componente conexa
     # LOCAL a cada imagen (reinicia en cada llamada), así que sin

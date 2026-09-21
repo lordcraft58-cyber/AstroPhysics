@@ -131,6 +131,31 @@ def test_header_cards_round_trip_through_a_real_fits_file(tmp_path):
         np.testing.assert_allclose(hdul[UNCERTAINTY_EXTENSION_NAME].data, 1.5)
 
 
+def test_input_hashes_round_trip_through_a_real_fits_file_as_history_lines(tmp_path):
+    """`input_hashes` (informes 52/53/54: existía en `Provenance` desde
+    el principio, pero nunca llegaba a un archivo real) debe quedar
+    legible en el FITS de salida -- como líneas HISTORY, no tarjetas
+    nuevas, para no pelear con el límite de longitud de un valor de
+    tarjeta FITS frente a un sha256 de 64 caracteres."""
+    record = ReductionRecord(steps=CalibrationSteps(bias_subtracted=True))
+    provenance = build_reduction_provenance(
+        record, pipeline_version="test",
+        input_hashes=(("light:vega.fits", "a" * 64), ("master_bias", "b" * 64)),
+    )
+    path = tmp_path / "calibrada_con_hashes.fits"
+
+    save_fits_image(
+        str(path), np.full((6, 6), 1.0), header=reduction_header_cards(record, provenance=provenance),
+    )
+
+    with fits.open(path) as hdul:
+        lines = [str(line) for line in hdul[0].header["HISTORY"]]
+        assert "  # entrada: light:vega.fits" in lines
+        assert f"  {'a' * 64}" in lines
+        assert "  # entrada: master_bias" in lines
+        assert f"  {'b' * 64}" in lines
+
+
 def test_saving_uncertainty_of_the_wrong_shape_is_rejected(tmp_path):
     with pytest.raises(ValueError, match="misma forma"):
         save_fits_image(str(tmp_path / "bad.fits"), np.zeros((4, 4)), uncertainty=np.zeros((5, 5)))

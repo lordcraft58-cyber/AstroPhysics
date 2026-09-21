@@ -168,6 +168,70 @@ def test_reduce_session_dialog_end_to_end_writes_calibrated_products(qapp, main_
     assert len(main_window.mdi.subWindowList()) == windows_before + 1  # el combinado se abrió como ventana MDI
 
 
+def test_reduce_session_dialog_writes_real_input_hashes_when_available(qapp, main_window, tmp_path):
+    # Cierra el hueco anotado en los informes 52/53/54: el sha256 real
+    # de cada LIGHT (ya calculado por `io.fits_loader.load_image` al
+    # cargarlo, nunca releído aparte) y del maestro usado -- pero SOLO
+    # si ese maestro viene de un FITS real ya guardado en disco, nunca
+    # inventado para uno que solo existe en memoria en esta sesión.
+    import hashlib
+
+    from astrophysics_suite.io.fits_loader import load_image
+    from astrophysics_suite.io.fits_writer import save_fits_image
+    from astrophysics_suite.reduction.master_frames import build_master_bias
+    from qt_app.reduction.reduce_session_dialog import ReduceSessionDialog
+
+    bias_paths, _, _ = _write_calibration_frames(tmp_path)
+    bias_frames = [load_image(p, band="", role="calibration").legacy_image.data for p in bias_paths]
+    bias_master = build_master_bias(bias_frames)
+
+    saved_bias_path = tmp_path / "master_bias_saved.fits"
+    save_fits_image(str(saved_bias_path), bias_master.data, header={})
+    expected_bias_hash = hashlib.sha256(saved_bias_path.read_bytes()).hexdigest()
+    main_window.master_frame_library.add("Bias-saved", bias_master, path=str(saved_bias_path))
+    # Un segundo maestro equivalente pero NUNCA guardado -- no debe
+    # aparecer ningún hash de maestro inventado para este.
+    main_window.master_frame_library.add("Bias-unsaved", bias_master)
+
+    light_paths = _write_light_frames(tmp_path, n=1, exptime_s=60.0)
+    expected_light_hash = hashlib.sha256(Path(light_paths[0]).read_bytes()).hexdigest()
+
+    output_dir = tmp_path / "out_hashes"
+    dialog = ReduceSessionDialog(main_window.master_frame_library, main_window)
+    _inject_paths(dialog.file_list, light_paths)
+    dialog.bias_combo.setCurrentText("Bias-saved")
+    dialog.combine_group.setChecked(False)
+    dialog._output_dir = str(output_dir)
+
+    dialog._on_run()
+    _wait_worker(qapp, dialog)
+    assert dialog.status_label.text() == ""
+
+    with fits.open(output_dir / f"{Path(light_paths[0]).stem}_calibrada.fits") as hdul:
+        lines = [str(line) for line in hdul[0].header["HISTORY"]]
+    assert f"  # entrada: light:{Path(light_paths[0]).name}" in lines
+    assert f"  {expected_light_hash}" in lines
+    assert "  # entrada: master_bias" in lines
+    assert f"  {expected_bias_hash}" in lines
+
+    # ahora con el maestro NUNCA guardado -- ningún hash inventado
+    output_dir_unsaved = tmp_path / "out_hashes_unsaved"
+    dialog_unsaved = ReduceSessionDialog(main_window.master_frame_library, main_window)
+    _inject_paths(dialog_unsaved.file_list, light_paths)
+    dialog_unsaved.bias_combo.setCurrentText("Bias-unsaved")
+    dialog_unsaved.combine_group.setChecked(False)
+    dialog_unsaved._output_dir = str(output_dir_unsaved)
+
+    dialog_unsaved._on_run()
+    _wait_worker(qapp, dialog_unsaved)
+    assert dialog_unsaved.status_label.text() == ""
+
+    with fits.open(output_dir_unsaved / f"{Path(light_paths[0]).stem}_calibrada.fits") as hdul:
+        lines_unsaved = [str(line) for line in hdul[0].header["HISTORY"]]
+    assert not any("master_bias" in line for line in lines_unsaved)
+    assert f"  {expected_light_hash}" in lines_unsaved  # el LIGHT sí sigue teniendo su hash real
+
+
 def test_reduce_session_dialog_reports_missing_exptime_without_crashing(qapp, main_window, tmp_path, monkeypatch):
     from legacy.AstroPhysicsSuite_v57_3_COMMERCIAL import _write_minimal_fits_2d
     from astrophysics_suite.reduction.master_frames import build_master_dark

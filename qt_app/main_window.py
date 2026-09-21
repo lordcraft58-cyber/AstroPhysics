@@ -658,9 +658,24 @@ class MainWindow(QMainWindow):
             strip_wcs_keywords,
             wcs_header_cards,
         )
+        from astrophysics_suite.io.fits_reader import sha256_file
         from astrophysics_suite.io.fits_writer import save_fits_image
 
-        provenance = build_wcs_provenance(record)
+        # sha256 real de la imagen que se resolvió, si se conoce su
+        # archivo de origen (informes 52/53/54: input_hashes sin
+        # rellenar) -- una imagen derivada sin `source_path` real (p. ej.
+        # combinada en memoria) no tiene un archivo que hashear, y no se
+        # inventa uno. `source_path` puede apuntar a un archivo que ya no
+        # existe (movido/borrado desde que se cargó, o solo un nombre
+        # nominal sin fichero real detrás) -- un fallo al releerlo aquí
+        # nunca debe impedir guardar la copia con WCS en sí.
+        input_hashes: tuple[tuple[str, str], ...] = ()
+        if view.source_path:
+            try:
+                input_hashes = ((f"image:{Path(view.source_path).name}", sha256_file(view.source_path)),)
+            except OSError as exc:
+                logger.warning("No se pudo calcular el sha256 real de %s para la procedencia: %s", view.source_path, exc)
+        provenance = build_wcs_provenance(record, input_hashes=input_hashes)
         detail = (
             f"RMS={record.solution.rms_residual_arcsec:.4f}\" con {record.solution.n_stars} estrella(s)"
             if record.is_measured

@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from astrophysics_suite.core.provenance import Provenance
+from astrophysics_suite.io.fits_writer import wrap_history_lines
 from astrophysics_suite.reduction.calibration import CalibrationSteps
 
 ENGINE_NAME = "reduction.session_pipeline"
@@ -135,12 +136,21 @@ def reduction_header_cards(record: ReductionRecord, *, provenance: Provenance | 
         cards["APSDATE"] = provenance.produced_at.isoformat()
 
     applied = record.describe()
-    history = [f"{_HISTORY_PREFIX} reducción aplicada"]
+    lines = ["reducción aplicada"]
     if applied:
-        history.extend(f"  - {step}" for step in applied)
+        lines.extend(f"- {step}" for step in applied)
     else:
-        history.append("  - ningún paso de calibración aplicado")
+        lines.append("- ningún paso de calibración aplicado")
     if provenance is not None:
-        history.extend(f"  ! {w}" for w in provenance.warnings)
-    cards["HISTORY"] = history
+        lines.extend(f"! {w}" for w in provenance.warnings)
+        # sha256 reales de las entradas que intervinieron (el propio LIGHT
+        # y los maestros usados, cuando vienen de un FITS real en disco) --
+        # `wrap_history_lines` (mismo criterio que `astrometry.provenance.
+        # wcs_header_cards`) parte por palabras lo que no quepa en una
+        # tarjeta HISTORY (~72 caracteres) sin cortar nunca un hash de 64
+        # caracteres a mitad.
+        for label, digest in provenance.input_hashes:
+            lines.append(f"# entrada: {label}")
+            lines.append(digest)
+    cards["HISTORY"] = wrap_history_lines(lines, prefix=_HISTORY_PREFIX)
     return cards

@@ -195,6 +195,49 @@ def test_a_three_star_fit_warns_the_user_before_writing_the_file(main_window, vi
         assert "no mide el error real" in history  # el aviso viaja con el archivo
 
 
+def test_the_saved_copy_records_the_real_sha256_of_a_source_that_still_exists(main_window, tmp_path, monkeypatch):
+    # Cierra el hueco anotado en los informes 52/53/54: input_hashes
+    # existía en Provenance pero ningún llamador lo rellenaba. Aquí el
+    # archivo de origen SÍ existe de verdad en disco (a diferencia del
+    # resto de pruebas de este archivo, que usan un `source_path`
+    # nominal para aislar la mecánica del guardado).
+    import hashlib
+
+    source_path = tmp_path / "m31_real.fits"
+    fits.PrimaryHDU(np.full(SHAPE, 1234.0, dtype=np.float32)).writeto(source_path)
+    expected_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
+
+    sub = main_window.add_image_window(
+        np.full(SHAPE, 1234.0, dtype=np.float32), "M 31 real", header=dict(REAL_HEADER), source_path=str(source_path),
+    )
+    real_view = sub.widget()
+
+    out = tmp_path / "con_hash_real.fits"
+    _accept_and_save_to(monkeypatch, out)
+    main_window._offer_to_save_wcs_fits_copy(real_view, WCSRecord(solution=_measured_solution(), source=SOURCE_MANUAL_FIT))
+
+    with fits.open(out) as hdul:
+        history = _history_text(hdul[0].header)
+        assert f"image:{source_path.name}" in history
+        assert expected_hash in history
+
+
+def test_the_saved_copy_degrades_honestly_when_the_source_file_no_longer_exists(main_window, view, tmp_path, monkeypatch):
+    # `view` (la fixture compartida) usa un `source_path` nominal
+    # ("/tmp/m31.fit") que nunca se escribió -- exactamente el caso
+    # real de una imagen cuyo archivo de origen se movió o se borró
+    # después de cargarla. No debe impedir guardar la copia con WCS.
+    out = tmp_path / "sin_hash.fits"
+    _accept_and_save_to(monkeypatch, out)
+
+    main_window._offer_to_save_wcs_fits_copy(view, WCSRecord(solution=_measured_solution(), source=SOURCE_MANUAL_FIT))
+
+    assert out.exists()
+    with fits.open(out) as hdul:
+        history = _history_text(hdul[0].header)
+        assert "entrada" not in history
+
+
 def test_declining_the_question_writes_nothing(main_window, view, tmp_path, monkeypatch):
     out = tmp_path / "no_deberia_existir.fits"
     monkeypatch.setattr(

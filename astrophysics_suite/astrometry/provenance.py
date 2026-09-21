@@ -161,9 +161,15 @@ class WCSRecord:
         return tuple(lines)
 
 
-def build_wcs_provenance(record: WCSRecord, *, pipeline_version: str = "") -> Provenance:
+def build_wcs_provenance(
+    record: WCSRecord, *, pipeline_version: str = "", input_hashes: tuple[tuple[str, str], ...] = (),
+) -> Provenance:
     """`Provenance` real de una solución astrométrica, con los avisos que
-    el propio dato obliga a dar."""
+    el propio dato obliga a dar.
+
+    `input_hashes`, si se da, debe traer el sha256 real de la imagen que
+    se resolvió (p. ej. `io.fits_reader.sha256_file` sobre `ImageView.
+    source_path`) -- este módulo no lo calcula ni lo inventa."""
     warnings: list[str] = []
     if not record.is_measured:
         warnings.append(
@@ -182,6 +188,7 @@ def build_wcs_provenance(record: WCSRecord, *, pipeline_version: str = "") -> Pr
         engine=record.source,
         engine_version=record.engine_version,
         warnings=tuple(warnings),
+        input_hashes=input_hashes,
     )
 
 
@@ -216,5 +223,10 @@ def wcs_header_cards(record: WCSRecord, *, provenance: Provenance | None = None)
     lines = list(record.describe())
     if provenance is not None:
         lines.extend(f"! {w}" for w in provenance.warnings)
+        # sha256 real de la imagen resuelta (informes 52/53/54: mismo
+        # hueco de `input_hashes` sin rellenar en Provenance).
+        for label, digest in provenance.input_hashes:
+            lines.append(f"# entrada: {label}")
+            lines.append(digest)
     cards["HISTORY"] = wrap_history_lines(lines, prefix=_HISTORY_PREFIX)
     return cards
