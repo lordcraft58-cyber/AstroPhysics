@@ -66,6 +66,69 @@ def test_render_series_bar_with_categories_produces_a_real_png():
     _assert_real_png(png)
 
 
+def test_render_series_line_in_magnitudes_inverts_the_y_axis():
+    # Convención astronómica real: magnitud menor = más brillo. Una curva
+    # de luz en magnitudes (p. ej. Estrellas Variables -> Curva de luz
+    # multiépoca) debe verse con el eje invertido, o una estrella que se
+    # apaga parece "subir" en la gráfica.
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from astrophysics_suite.visualization.charts import _draw_series
+
+    series_mag = DataSeries(
+        name="Curva de luz", x=(0.0, 1.0, 2.0), y=(12.0, 12.5, 13.0),
+        x_label="t", y_label="Magnitud diferencial", y_unit="mag", kind="line",
+    )
+    fig, ax = plt.subplots()
+    _draw_series(ax, series_mag)
+    assert ax.yaxis_inverted()
+    plt.close(fig)
+
+
+def test_render_series_line_in_adu_does_not_invert_the_y_axis():
+    # La curva de luz en ADU de pico que ya usa el informe de
+    # Descubrimiento (informe 81) no debe cambiar: más ADU ya significa
+    # más brillo, sin necesitar invertir nada.
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from astrophysics_suite.visualization.charts import _draw_series
+
+    series_adu = DataSeries(
+        name="Curva de luz", x=(0.0, 1.0, 2.0), y=(1000.0, 1050.0, 1100.0),
+        x_label="t", y_label="Brillo instrumental", y_unit="ADU (pico)", kind="line",
+    )
+    fig, ax = plt.subplots()
+    _draw_series(ax, series_adu)
+    assert not ax.yaxis_inverted()
+    plt.close(fig)
+
+
+def test_render_series_residual_in_magnitudes_does_not_invert_the_y_axis():
+    # Un residual en magnitudes (p. ej. el ajuste de punto cero) es una
+    # desviación alrededor de cero, no una medida de brillo -- invertirlo
+    # no tiene el mismo sentido que en una curva de luz, y este
+    # comportamiento ya existía antes de la corrección de la curva de
+    # luz multiépoca: se fija aquí para que no cambie por accidente.
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from astrophysics_suite.visualization.charts import _draw_series
+
+    series_residual = DataSeries(
+        name="Residuales del punto cero", x=(0.0, 1.0, 2.0), y=(0.02, -0.01, 0.015),
+        x_label="Índice", y_label="Residual", y_unit="mag", kind="residual",
+    )
+    fig, ax = plt.subplots()
+    _draw_series(ax, series_residual)
+    assert not ax.yaxis_inverted()
+    plt.close(fig)
+
+
 def test_render_series_two_different_series_produce_different_images():
     a = DataSeries(name="a", x=(0.0, 1.0), y=(1.0, 2.0), x_label="t", y_label="v", kind="line")
     b = DataSeries(name="b", x=(0.0, 1.0), y=(10.0, 20.0), x_label="t", y_label="v", kind="line")

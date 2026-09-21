@@ -70,6 +70,18 @@ def _draw_series(ax, series: DataSeries) -> None:
             ax.errorbar(series.x, series.y, yerr=series.y_error, fmt="o-", color="#4c78a8", markersize=4, linewidth=1, capsize=2)
         else:
             ax.plot(series.x, series.y, "o-", color="#4c78a8", markersize=4, linewidth=1)
+        if series.y_unit == "mag":
+            # Convención astronómica real: magnitud menor = más brillo.
+            # Sin esto, una curva de luz en magnitudes se lee al revés
+            # (una estrella que se apaga parece "subir" en vez de
+            # "bajar"). Solo se aplica aquí (la línea/curva por defecto,
+            # p. ej. la curva de luz multiépoca de Estrellas Variables):
+            # un residual en magnitudes (p. ej. el ajuste de punto cero)
+            # no es una medida de brillo, es una desviación alrededor de
+            # cero, así que invertirlo no tiene el mismo sentido y no se
+            # toca -- ver test_render_series_residual_without_outliers_
+            # produces_a_real_png, que fija ese comportamiento existente.
+            ax.invert_yaxis()
 
     ax.set_xlabel(x_label, fontsize=9)
     ax.set_ylabel(y_label, fontsize=9)

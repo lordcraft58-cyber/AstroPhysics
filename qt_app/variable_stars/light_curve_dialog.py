@@ -207,7 +207,7 @@ class LightCurveDialog(QDialog):
         if evidence.epochs:
             series = DataSeries(
                 name="Curva de luz", x=tuple(e.time for e in evidence.epochs), y=tuple(e.value for e in evidence.epochs),
-                x_label="Horas desde el primer fotograma", y_label="Magnitud diferencial",
+                x_label="Horas desde el primer fotograma", y_label="Magnitud diferencial", y_unit="mag",
                 y_error=tuple(e.error if e.error is not None else 0.0 for e in evidence.epochs), kind="line",
             )
             self._chart_png = render_series(series, title="Curva de luz -- estrella variable")
