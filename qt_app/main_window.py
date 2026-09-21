@@ -55,6 +55,7 @@ from qt_app.reduction.build_master_frame_dialog import BuildMasterFrameDialog
 from qt_app.reduction.master_frame_library import MasterFrameLibrary
 from qt_app.reduction.reduce_session_dialog import ReduceSessionDialog, SessionReductionOutcome
 from qt_app.spectroscopy.combine_spectra_dialog import CombineSpectraDialog
+from qt_app.spectroscopy.spectral_classification_dialog import SpectralClassificationDialog
 from qt_app.spectroscopy.template_comparison_dialog import TemplateComparisonDialog
 from qt_app.spectroscopy.trace_overlay_data import recalculate_extraction
 from qt_app.spectroscopy.flexure_correction_dialog import FlexureCorrectionDialog
@@ -288,6 +289,9 @@ class MainWindow(QMainWindow):
         template_comparison_action = QAction("Comparar con &plantilla de referencia...", self)
         template_comparison_action.triggered.connect(self._open_template_comparison_dialog)
         self.spectroscopy_menu.addAction(template_comparison_action)
+        spectral_classification_action = QAction("&Clasificación espectral (atlas, estilo Vireo)...", self)
+        spectral_classification_action.triggered.connect(self._open_spectral_classification_dialog)
+        self.spectroscopy_menu.addAction(spectral_classification_action)
 
         self.view_menu = self.menuBar().addMenu("&Vista")
         self.stf_action = QAction("Alternar STF en la imagen activa", self)
@@ -1251,6 +1255,14 @@ class MainWindow(QMainWindow):
         table = dialog.result_table()
         if table is not None:
             self._last_result_table = table
+
+    def _open_spectral_classification_dialog(self) -> None:
+        views = self._image_views_by_title()
+        if not views:
+            self.statusBar().showMessage("Abre una imagen ya calibrada en longitud de onda antes de clasificar contra el atlas.", 5000)
+            return
+        dialog = SpectralClassificationDialog(views, self)
+        dialog.exec()
 
     def _open_combine_spectra_dialog(self) -> None:
         views = self._image_views_by_title()

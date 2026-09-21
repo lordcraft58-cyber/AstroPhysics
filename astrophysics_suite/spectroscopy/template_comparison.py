@@ -18,6 +18,7 @@ from dataclasses import dataclass
 import numpy as np
 
 _VALID_NORMALIZATIONS = ("median", "none")
+_VALID_OPERATIONS = ("subtract", "divide")
 
 
 @dataclass(frozen=True)
@@ -32,8 +33,13 @@ class TemplateComparisonResult:
     `NaN` fuera del rango real cubierto por la plantilla (nunca
     extrapolado más allá de los datos reales de la plantilla)."""
     residual: np.ndarray
-    """`observed_flux - template_flux`, `NaN` donde `template_flux` es
-    `NaN` (fuera del rango real de la plantilla)."""
+    """Según `operation`: `observed_flux - template_flux` (resta, por
+    defecto) o `observed_flux / template_flux` (cociente) -- `NaN` donde
+    `template_flux` es `NaN` (fuera del rango real de la plantilla) o,
+    en el cociente, donde `template_flux` es cero (división real por
+    cero, nunca infinito silencioso)."""
+    operation: str
+    """`"subtract"` o `"divide"` -- qué operación real produjo `residual`."""
     observed_scale: float
     template_scale: float
     overlap_fraction: float
@@ -50,6 +56,7 @@ def compare_to_template(
     template_flux: np.ndarray,
     *,
     normalize: str = "median",
+    operation: str = "subtract",
 ) -> TemplateComparisonResult:
     """`normalize`: `"median"` (por defecto) reescala cada espectro por
     su propia mediana real sobre la región de solape real -- para poder
@@ -60,10 +67,16 @@ def compare_to_template(
     (p. ej. dos espectros calibrados en flujo con `fluxcal.calibrate_
     flux`).
 
+    `operation`: `"subtract"` (por defecto, `observado - plantilla`) o
+    `"divide"` (`observado / plantilla`, real división real por real --
+    NaN donde la plantilla vale cero, nunca infinito silencioso).
+
     Lanza `ValueError` (nunca un resultado silenciosamente vacío) si la
     plantilla no solapa en absoluto con el espectro observado."""
     if normalize not in _VALID_NORMALIZATIONS:
         raise ValueError(f"normalize debe ser uno de {_VALID_NORMALIZATIONS}, recibido {normalize!r}")
+    if operation not in _VALID_OPERATIONS:
+        raise ValueError(f"operation debe ser una de {_VALID_OPERATIONS}, recibida {operation!r}")
 
     observed_wavelength = np.asarray(observed_wavelength, dtype=np.float64)
     observed_flux = np.asarray(observed_flux, dtype=np.float64)
@@ -102,11 +115,18 @@ def compare_to_template(
     observed_normalized = observed_flux / observed_scale
     template_normalized = template_on_observed_grid / template_scale
 
+    if operation == "subtract":
+        result_value = observed_normalized - template_normalized
+    else:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            result_value = np.where(template_normalized != 0.0, observed_normalized / template_normalized, np.nan)
+
     return TemplateComparisonResult(
         wavelength=observed_wavelength,
         observed_flux=observed_normalized,
         template_flux=template_normalized,
-        residual=observed_normalized - template_normalized,
+        residual=result_value,
+        operation=operation,
         observed_scale=observed_scale,
         template_scale=template_scale,
         overlap_fraction=overlap_fraction,

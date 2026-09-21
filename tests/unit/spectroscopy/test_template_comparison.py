@@ -72,6 +72,42 @@ def test_compare_to_template_rejects_an_unknown_normalization():
         compare_to_template(wavelength, flux, wavelength, flux, normalize="bogus")
 
 
+def test_compare_to_template_divide_recovers_a_ratio_of_one_for_an_identical_spectrum():
+    wavelength, flux = _synthetic_spectrum(seed=9)
+    result = compare_to_template(wavelength, flux, wavelength, flux, normalize="none", operation="divide")
+    assert result.operation == "divide"
+    np.testing.assert_allclose(result.residual, 1.0, atol=1e-9)
+
+
+def test_compare_to_template_divide_recovers_a_known_real_ratio():
+    wavelength, flux = _synthetic_spectrum(seed=10)
+    template_flux = flux * 2.0  # factor real conocido
+    result = compare_to_template(wavelength, flux, wavelength, template_flux, normalize="none", operation="divide")
+    np.testing.assert_allclose(result.residual, 0.5, atol=1e-9)
+
+
+def test_compare_to_template_divide_reports_nan_where_the_template_is_exactly_zero():
+    wavelength = np.array([4000.0, 4001.0, 4002.0])
+    flux = np.array([10.0, 20.0, 30.0])
+    template_flux = np.array([5.0, 0.0, 15.0])
+    result = compare_to_template(wavelength, flux, wavelength, template_flux, normalize="none", operation="divide")
+    assert np.isfinite(result.residual[0])
+    assert np.isnan(result.residual[1])
+    assert np.isfinite(result.residual[2])
+
+
+def test_compare_to_template_default_operation_is_subtract():
+    wavelength, flux = _synthetic_spectrum(seed=11)
+    result = compare_to_template(wavelength, flux, wavelength, flux, normalize="none")
+    assert result.operation == "subtract"
+
+
+def test_compare_to_template_rejects_an_unknown_operation():
+    wavelength, flux = _synthetic_spectrum(seed=12)
+    with pytest.raises(ValueError, match="operation"):
+        compare_to_template(wavelength, flux, wavelength, flux, normalize="none", operation="bogus")
+
+
 def test_compare_to_template_rejects_a_template_with_fewer_than_two_points():
     wavelength, flux = _synthetic_spectrum(seed=8)
     with pytest.raises(ValueError, match="dos puntos"):
