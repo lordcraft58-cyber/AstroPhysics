@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from astrophysics_suite.spectroscopy.calibration_provenance import CalibrationSource, build_wavelength_provenance
+from astrophysics_suite.spectroscopy.continuum import fit_continuum
 from astrophysics_suite.spectroscopy.line_catalog import BALMER_LINES
 from astrophysics_suite.spectroscopy.reference_star_calibration import (
     blind_calibrate_from_reference_star,
@@ -132,13 +133,15 @@ def test_blind_calibrate_from_reference_star_raises_honestly_when_nothing_matche
         )
 
 
-def test_blind_calibrate_from_reference_star_raises_when_only_one_detection():
-    # Una sola desviación real no basta para proponer una dispersión (hacen falta al menos 2 puntos).
+def test_blind_calibrate_from_reference_star_raises_when_too_few_detections_for_real_evidence():
+    # degree + 1 (dos puntos, para grado 1) SIEMPRE encaja exactamente con
+    # cualquier asignación de catálogo -- no es evidencia real sin un
+    # tercer punto que corrobore (degree + 2, tres para grado 1).
     pixel = np.arange(400, dtype=np.float64)
     continuum = np.full(400, 200.0)
     flux = continuum.copy()
     flux -= 60.0 * np.exp(-((pixel - 150.0) ** 2) / (2 * 2.5**2))
-    with pytest.raises(ValueError, match="al menos 2"):
+    with pytest.raises(ValueError, match="al menos 3"):
         blind_calibrate_from_reference_star(
             pixel, flux, continuum, BALMER_LINES,
             tolerance_angstrom=5.0, reference_object="estrella de prueba",
@@ -150,6 +153,54 @@ def test_blind_calibrate_from_reference_star_rejects_an_empty_reference_object()
     with pytest.raises(ValueError, match="reference_object"):
         blind_calibrate_from_reference_star(
             pixel, flux, continuum, BALMER_LINES, tolerance_angstrom=5.0, reference_object="   ",
+        )
+
+
+def test_blind_calibrate_from_reference_star_never_trusts_a_two_point_fit_over_a_real_three_point_one():
+    # Hallazgo real (validado con un espectro real de T-CrB): con
+    # exactamente degree+1 puntos (dos, para grado 1), SIEMPRE existe una
+    # transformación que los hace encajar exactamente, para CUALQUIER
+    # asignación de catálogo -- residuo cero por construcción, no por
+    # evidencia real. Aquí se construyen dos parejas reales de picos: una
+    # débil (pero con una asignación de catálogo EXACTA, residuo 0) y
+    # otra fuerte (con una asignación real pero desplazada 0.4 px, residuo
+    # pequeño pero no nulo). Sin exigir un tercer punto real, la pareja
+    # débil-pero-exacta podía ganar solo por tener menor residuo.
+    width = 1400
+    pixel = np.arange(width, dtype=np.float64)
+    rng = np.random.default_rng(0)
+    continuum = np.full(width, 500.0)
+    flux = continuum + rng.normal(0, 1.0, width)
+
+    def bump(center_px, depth, sigma=1.5):
+        xs = np.arange(max(0, int(center_px) - 8), min(width, int(center_px) + 9))
+        flux[xs] += depth * np.exp(-0.5 * ((xs - center_px) / sigma) ** 2)
+
+    h_alpha = next(line for line in BALMER_LINES if line.label == "H-alpha")
+    h_beta = next(line for line in BALMER_LINES if line.label == "H-beta")
+    h_gamma = next(line for line in BALMER_LINES if line.label == "H-gamma")
+    h_delta = next(line for line in BALMER_LINES if line.label == "H-delta")
+
+    # pareja real fuerte (Ha/Hb), colocada 0.4 px fuera de la predicción exacta
+    px_alpha_true, px_beta_true = 1200.0, 400.0
+    bump(px_alpha_true + 0.4, depth=100.0)
+    bump(px_beta_true + 0.4, depth=100.0)
+
+    # pareja real débil (Hg/Hd), colocada EXACTAMENTE en la predicción (residuo 0)
+    px_gamma_true, px_delta_true = 300.0, 100.0
+    bump(px_gamma_true, depth=15.0)
+    bump(px_delta_true, depth=15.0)
+
+    continuum_fit = fit_continuum(pixel, flux, degree=1, sigma_clip=2.5)
+
+    with pytest.raises(ValueError, match="al menos 3"):
+        # con solo estas 4 detecciones reales, ninguna combinación real
+        # alcanza degree+2=3 coincidencias con el catálogo Balmer --
+        # exactamente el comportamiento honesto que se quiere: ni la
+        # pareja débil-exacta ni la fuerte-desplazada se aceptan solas.
+        blind_calibrate_from_reference_star(
+            pixel, flux, continuum_fit.continuum, BALMER_LINES,
+            tolerance_angstrom=5.0, reference_object="TEST", degree=1,
         )
 
 

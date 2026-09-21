@@ -7,12 +7,16 @@ convención de fila central que el resto de diálogos de espectroscopía)
 se compara contra una plantilla real elegida por el usuario -- cualquier
 otra observación propia, una estrella estándar, o un espectro de
 referencia guardado por otro programa -- ya sea un FITS 1D con WCS de
-longitud de onda real, o un archivo de texto de dos columnas (longitud
-de onda, flujo), el formato en que suelen venir las bibliotecas
-espectrales externas (p. ej. MILES). Nunca clasifica ni sugiere un tipo
-espectral: muestra observado, plantilla y residuo real, y avisa si el
-solape real entre los dos es bajo -- la decisión de qué significa el
-residuo es siempre del usuario.
+longitud de onda real, un archivo de texto de dos columnas (longitud de
+onda, flujo, el formato en que suelen venir las bibliotecas espectrales
+externas), o un estándar real del atlas Jacoby-Hunter-Christian (1984)
+ya incluido (`spectroscopy.jacoby_atlas`, 161 estrellas reales O5V-M7,
+aportado por el propio usuario). Nunca clasifica ni sugiere un tipo
+espectral automáticamente: muestra observado, plantilla y residuo real,
+y avisa si el solape real entre los dos es bajo -- la decisión de qué
+significa el residuo (y de con qué estándar comparar) es siempre del
+usuario, igual que si estuviera repitiendo a mano la comparación contra
+varios estándares que ya hace en otro programa de clasificación.
 """
 from __future__ import annotations
 
@@ -31,6 +35,12 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from astrophysics_suite.spectroscopy.jacoby_atlas import (
+    JacobyAtlasEntry,
+    bundled_atlas_paths,
+    load_jacoby_atlas_index,
+    load_jacoby_atlas_spectrum,
+)
 from astrophysics_suite.spectroscopy.spectrum1d_io import import_ascii_spectrum, load_spectrum1d_fits
 from astrophysics_suite.spectroscopy.template_comparison import TemplateComparisonResult, compare_to_template
 from astrophysics_suite.tables.table import Table
@@ -81,6 +91,30 @@ class TemplateComparisonDialog(QDialog):
         self.template_ascii_button.clicked.connect(self._on_import_ascii_template)
         template_row.addWidget(self.template_ascii_button)
         layout.addLayout(template_row)
+
+        atlas_row = QHBoxLayout()
+        self.atlas_combo = QComboBox()
+        self.atlas_combo.setToolTip(
+            "161 estrellas reales O5V-M7 del atlas Jacoby, Hunter & Christian (1984, ApJS 56, 257) -- "
+            "incluido tal cual, aportado por el usuario."
+        )
+        atlas_row.addWidget(self.atlas_combo, stretch=1)
+        self.atlas_button = QPushButton("Usar este estándar del atlas")
+        self.atlas_button.clicked.connect(self._on_use_atlas_standard)
+        atlas_row.addWidget(self.atlas_button)
+        layout.addLayout(atlas_row)
+
+        self._atlas_entries: tuple[JacobyAtlasEntry, ...] = ()
+        try:
+            atlas_inx_path, self._atlas_spectra_dir = bundled_atlas_paths()
+            self._atlas_entries = load_jacoby_atlas_index(atlas_inx_path)
+        except (ValueError, OSError) as exc:
+            self._atlas_spectra_dir = None
+            self.atlas_combo.addItem(f"Atlas no disponible: {exc}")
+            self.atlas_combo.setEnabled(False)
+            self.atlas_button.setEnabled(False)
+        else:
+            self.atlas_combo.addItems([entry.label for entry in self._atlas_entries])
 
         self.template_label = QLabel("Ninguna plantilla elegida todavía.")
         self.template_label.setWordWrap(True)
@@ -134,6 +168,26 @@ class TemplateComparisonDialog(QDialog):
         self.template_label.setText(
             f"Plantilla (importada de texto): {Path(path).name} ({wavelength.size} punto(s), "
             f"{wavelength.min():.1f}-{wavelength.max():.1f} Å){origin_note}."
+        )
+
+    def _on_use_atlas_standard(self) -> None:
+        if not self._atlas_entries or self._atlas_spectra_dir is None:
+            return
+        index = self.atlas_combo.currentIndex()
+        if index < 0 or index >= len(self._atlas_entries):
+            return
+        entry = self._atlas_entries[index]
+        try:
+            wavelength, flux = load_jacoby_atlas_spectrum(entry, self._atlas_spectra_dir)
+        except ValueError as exc:
+            self.template_label.setText(f"No se pudo cargar el estándar «{entry.label}»: {exc}")
+            return
+        self._template_path = f"jacoby_atlas:{entry.index}"
+        self._template_wavelength = wavelength
+        self._template_flux = flux
+        self.template_label.setText(
+            f"Plantilla (atlas Jacoby-Hunter-Christian 1984): {entry.label} ({wavelength.size} punto(s), "
+            f"{wavelength.min():.1f}-{wavelength.max():.1f} Å)."
         )
 
     def _on_compare(self) -> None:

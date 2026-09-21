@@ -155,6 +155,33 @@ def test_template_comparison_dialog_imports_an_ascii_template_and_can_compare_wi
     assert "Solape real" in dialog.result_label.text()
 
 
+def test_template_comparison_dialog_loads_a_real_standard_from_the_bundled_jacoby_atlas(qapp, main_window):
+    from astrophysics_suite.spectroscopy.wavelength import fit_wavelength_solution
+    from qt_app.spectroscopy.template_comparison_dialog import TemplateComparisonDialog
+
+    data = _synthetic_arc_row()
+    sub_window = main_window.add_image_window(data, "target_for_atlas_template.fits")
+    main_window.mdi.setActiveSubWindow(sub_window)
+    qapp.processEvents()
+    view = sub_window.widget()
+    view.fitted_wavelength_solution = fit_wavelength_solution(list(_TRUE_PIXELS), list(_TRUE_WAVELENGTHS), degree=1)
+
+    dialog = TemplateComparisonDialog(main_window._image_views_by_title(), main_window)
+    assert dialog.atlas_combo.count() == 161  # las 161 estrellas reales del atlas incluido
+    assert dialog.atlas_combo.isEnabled()
+
+    dialog.atlas_combo.setCurrentIndex(0)
+    dialog._on_use_atlas_standard()
+
+    assert dialog._template_wavelength is not None
+    assert dialog._template_wavelength.min() == pytest.approx(3510.0, abs=1.0)
+    assert "atlas Jacoby-Hunter-Christian" in dialog.template_label.text()
+
+    dialog.normalize_combo.setCurrentText("median")
+    dialog._on_compare()
+    assert "Solape real" in dialog.result_label.text()
+
+
 def test_template_comparison_dialog_requires_a_real_template_before_comparing(qapp, main_window):
     from astrophysics_suite.spectroscopy.wavelength import fit_wavelength_solution
     from qt_app.spectroscopy.template_comparison_dialog import TemplateComparisonDialog

@@ -146,28 +146,63 @@ def blind_calibrate_from_reference_star(
     orientación del espectro invertida, real y posible) -- nunca a un
     valor concreto, que es justo lo que no se conoce aquí.
 
+    Exige al menos `degree + 2` detecciones distintas emparejadas --
+    NUNCA solo `degree + 1` (el mínimo que sí basta en `calibrate_from_
+    reference_star`, porque ahí la dispersión/origen los da el llamador,
+    externos a los puntos que se verifican). Aquí la dispersión/origen
+    los define el PROPIO par de puntos usado: con exactamente `degree +
+    1` puntos (dos, para grado 1) SIEMPRE existe una transformación que
+    los hace encajar exactamente, para cualquier asignación a cualquier
+    par de líneas del catálogo -- residuo cero por construcción, no por
+    evidencia real. Sin un tercer punto real e independiente que
+    corrobore la misma transformación, esa "coincidencia" no distingue
+    la asignación correcta de una incorrecta que use los mismos dos
+    puntos. Hallazgo real de esta sesión: con solo `degree + 1`, la
+    búsqueda podía preferir una asignación de catálogo incorrecta que
+    reutilizaba las dos detecciones más fuertes bajo una transformación
+    distinta -- misma amplitud total, mismo residuo (cero), pero física
+    equivocada.
+
     Calibración incluso MÁS provisional que `calibrate_from_reference_
     star` (`WavelengthCalibrationRecord.blind_search=True`, con su
     propio aviso en `build_wavelength_provenance`): con pocas
     detecciones reales, una combinación puede casar por azar. Lanza
     `ValueError` (nunca un resultado silencioso) si ninguna combinación
-    real explica al menos `degree + 1` detecciones distintas."""
+    real explica al menos `degree + 2` detecciones distintas.
+
+    Se prefiere, ante todo, la combinación cuyas detecciones usadas
+    tengan más amplitud real total (más significativas, menos probable
+    que sean ruido) -- el NÚMERO de detecciones que explica y el residuo
+    numérico solo desempatan después. Nunca al revés: maximizar primero
+    cuántas detecciones caen dentro de tolerancia, sin mirar su fuerza
+    real, puede preferir una combinación que casa por azar varias
+    detecciones débiles sobre otra que sí ancla en la línea dominante
+    real del espectro. Hallazgo real que motivó este orden: sobre un
+    espectro real con una línea muchísimo más fuerte que el resto
+    (T CrB, Hα), maximizar solo el número de coincidencias encontraba
+    una combinación que ignoraba esa línea dominante -- maximizar la
+    amplitud total primero la ancla en ella en cuanto participa en la
+    combinación."""
     if not reference_object.strip():
         raise ValueError("reference_object no puede estar vacío -- qué estrella se usó es parte de la trazabilidad obligatoria (§13)")
     if min_dispersion_angstrom_per_px <= 0 or max_dispersion_angstrom_per_px <= min_dispersion_angstrom_per_px:
         raise ValueError("min_dispersion_angstrom_per_px debe ser positivo y menor que max_dispersion_angstrom_per_px")
 
+    min_required_matches = degree + 2
     detections = detect_object_lines(
         pixel, flux, continuum, min_snr=min_snr, min_separation_angstrom=min_separation_px
     )
-    if len(detections) < 2:
+    if len(detections) < min_required_matches:
         raise ValueError(
             f"solo {len(detections)} desviación(es) real(es) del continuo detectada(s) -- la búsqueda ciega "
-            "necesita al menos 2 para proponer una dispersión"
+            f"necesita al menos {min_required_matches} para un ajuste de grado {degree} (degree + 2, no degree + "
+            "1: con solo degree + 1 puntos siempre existe una transformación que los hace encajar exactamente, "
+            "para cualquier asignación de catálogo -- no es evidencia real sin un punto más que corrobore)"
         )
     detected_pixels = [d[0] for d in detections]
+    detected_amplitude = {p: abs(a) for p, a in detections}
 
-    best: tuple[int, float] | None = None
+    best: tuple[int, float, float] | None = None
     best_pixels: list[float] = []
     best_wavelengths: list[float] = []
     for i, p1 in enumerate(detected_pixels):
@@ -196,10 +231,11 @@ def blind_calibrate_from_reference_star(
                         previous = best_per_line.get(match.catalog_line)
                         if previous is None or abs(match.residual_angstrom) < abs(previous[1]):
                             best_per_line[match.catalog_line] = (detected_pixel, match.residual_angstrom)
-                    if len(best_per_line) < degree + 1:
+                    if len(best_per_line) < min_required_matches:
                         continue
                     total_residual = sum(abs(residual) for _p, residual in best_per_line.values())
-                    score = (len(best_per_line), -total_residual)
+                    matched_amplitude = sum(detected_amplitude[p] for p, _r in best_per_line.values())
+                    score = (matched_amplitude, len(best_per_line), -total_residual)
                     if best is None or score > best:
                         best = score
                         best_pixels = [p for p, _r in best_per_line.values()]
@@ -210,9 +246,9 @@ def blind_calibrate_from_reference_star(
     if best is None:
         raise ValueError(
             f"ninguna combinación real de dispersión/origen entre [{min_dispersion_angstrom_per_px:g}, "
-            f"{max_dispersion_angstrom_per_px:g}] Å/px explica al menos {degree + 1} de las {len(detections)} "
-            "desviación(es) real(es) detectada(s) contra el catálogo -- prueba dando tú la dispersión "
-            "aproximada (\"Calibrar por estrella de referencia...\"), o revisa el catálogo elegido"
+            f"{max_dispersion_angstrom_per_px:g}] Å/px explica al menos {min_required_matches} de las "
+            f"{len(detections)} desviación(es) real(es) detectada(s) contra el catálogo -- prueba dando tú la "
+            "dispersión aproximada (\"Calibrar por estrella de referencia...\"), o revisa el catálogo elegido"
         )
 
     solution = fit_wavelength_solution(best_pixels, best_wavelengths, degree=degree)
