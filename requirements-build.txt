@@ -1,0 +1,4 @@
+# Dependencia adicional SOLO para construir el ejecutable/instalador de
+# Windows (ver packaging/) -- se suma a requirements-app.txt, no lo
+# sustituye. No se instala en el entorno de desarrollo/tests normal.
+pyinstaller>=6.10

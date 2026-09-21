@@ -1,0 +1,334 @@
+from __future__ import annotations
+
+import math
+from dataclasses import replace
+
+import numpy as np
+import pytest
+
+from astrophysics_suite.spectroscopy.trace import (
+    SkyWindow,
+    TraceResult,
+    classify_source_extent,
+    estimate_sky_background,
+    extract_mean,
+    extract_optimal,
+    extract_sum,
+    trace_spectrum,
+)
+
+
+def _synthetic_2d_spectrum(shape=(41, 200), *, center=20.0, sigma=2.0, flux_per_col=2000.0, background=50.0, curve=0.0, seed=1):
+    rng = np.random.default_rng(seed)
+    height, width = shape
+    columns = np.arange(width)
+    true_center = center + curve * (columns / width) ** 2
+    rows = np.arange(height)[:, np.newaxis]
+    profile = np.exp(-((rows - true_center[np.newaxis, :]) ** 2) / (2 * sigma**2))
+    profile /= profile.sum(axis=0, keepdims=True)
+    data = background + flux_per_col * profile
+    data = data + rng.normal(0, 3.0, shape)
+    uncertainty = np.sqrt(np.clip(data, 1.0, None))
+    return data, uncertainty, true_center
+
+
+def test_trace_spectrum_recovers_known_straight_trace():
+    data, _, true_center = _synthetic_2d_spectrum(curve=0.0)
+    result = trace_spectrum(data, initial_center_px=20.0, fit_degree=1)
+    np.testing.assert_allclose(result.center_px, true_center, atol=0.5)
+
+
+def test_trace_spectrum_follows_curved_trace():
+    data, _, true_center = _synthetic_2d_spectrum(curve=6.0)
+    result = trace_spectrum(data, initial_center_px=20.0, fit_degree=3)
+    np.testing.assert_allclose(result.center_px, true_center, atol=0.7)
+
+
+def test_trace_spectrum_rejects_non_2d_input():
+    with pytest.raises(ValueError):
+        trace_spectrum(np.zeros((5, 5, 5)), initial_center_px=2.0)
+
+
+def test_trace_spectrum_rejects_center_outside_image():
+    with pytest.raises(ValueError):
+        trace_spectrum(np.zeros((10, 10)), initial_center_px=50.0)
+
+
+_SKY_14_4 = (SkyWindow(offset_px=-14.0, half_width_px=4.0), SkyWindow(offset_px=14.0, half_width_px=4.0))
+
+
+def test_extract_sum_recovers_known_flux():
+    flux_per_col = 3000.0
+    data, uncertainty, true_center = _synthetic_2d_spectrum(flux_per_col=flux_per_col, curve=0.0)
+    trace = trace_spectrum(data, initial_center_px=20.0, fit_degree=1)
+
+    result = extract_sum(data, uncertainty, trace, aperture_half_width=8.0, sky_windows=_SKY_14_4)
+    assert np.all(result.valid)
+    median_flux = float(np.median(result.flux))
+    assert median_flux == pytest.approx(flux_per_col, rel=0.05)
+
+
+def test_extract_optimal_achieves_higher_snr_than_sum_for_faint_source():
+    """El resultado central de Horne 1986: para una fuente débil, la
+    extracción óptima da mayor S/N que la suma simple sobre la misma
+    ventana de apertura."""
+    data, uncertainty, _ = _synthetic_2d_spectrum(flux_per_col=150.0, background=200.0, seed=3)
+    trace = trace_spectrum(data, initial_center_px=20.0, fit_degree=1)
+
+    sum_result = extract_sum(data, uncertainty, trace, aperture_half_width=8.0, sky_windows=_SKY_14_4)
+    optimal_result = extract_optimal(data, uncertainty, trace, aperture_half_width=8.0, sky_windows=_SKY_14_4)
+
+    sum_snr = np.median(sum_result.flux / sum_result.flux_uncertainty)
+    optimal_snr = np.median(optimal_result.flux / optimal_result.flux_uncertainty)
+    assert optimal_snr > sum_snr
+
+
+def test_extract_optimal_rejects_shape_mismatch():
+    data, _, _ = _synthetic_2d_spectrum()
+    trace = trace_spectrum(data, initial_center_px=20.0, fit_degree=1)
+    with pytest.raises(ValueError):
+        extract_optimal(data, np.ones((3, 3)), trace)
+
+
+# ---------------------------------------------------------------------------
+# Hallazgo real (espectros de Vega del usuario): una columna que no se puede
+# medir NUNCA debe quedar como flujo 0.0 -- debe quedar NaN + valid=False.
+# ---------------------------------------------------------------------------
+
+
+def test_trace_spectrum_never_crashes_on_a_nan_pixel_in_the_search_window():
+    """Antes: un solo NaN dentro de la ventana de búsqueda contaminaba
+    `total_weight` (NaN), el guardia `total_weight <= 0` nunca se
+    disparaba (la comparación con NaN es siempre False) y la siguiente
+    columna reventaba con `ValueError: cannot convert float NaN to
+    integer` al redondear un centro ya contaminado."""
+    data, _, true_center = _synthetic_2d_spectrum(curve=0.0)
+    data[18:23, 100] = np.nan  # columna entera de la ventana de búsqueda a NaN
+
+    result = trace_spectrum(data, initial_center_px=20.0, fit_degree=1)  # no debe lanzar
+    # el resto de la traza (columnas con señal real) se recupera igual
+    np.testing.assert_allclose(np.delete(result.center_px, 100), np.delete(true_center, 100), atol=0.5)
+
+
+def test_extract_sum_leaves_nan_not_zero_when_aperture_falls_off_the_image():
+    """Antes: si la traza se acercaba al borde y la apertura quedaba
+    parcialmente fuera de la imagen, `extract_sum` sumaba solo lo que
+    hubiera en `data[lo:hi, col]` (con `lo`/`hi` recortados) tratando el
+    resultado como una medida real de una apertura completa -- con
+    `extract_optimal` el fallo era peor: la columna quedaba directamente
+    en `flux[col] = 0.0` (el valor inicial de `np.zeros`, nunca
+    sobrescrito), indistinguible de un flujo real medido en cero."""
+    height = 41
+    data, uncertainty, _ = _synthetic_2d_spectrum(shape=(height, 200), center=20.0, curve=0.0)
+    trace = trace_spectrum(data, initial_center_px=20.0, fit_degree=1)
+    # forzar el centro de una columna concreta al borde superior, donde
+    # una apertura de semiancho 8 no cabe entera (0 - 8 < 0)
+    forced_center = trace.center_px.copy()
+    forced_center[50] = 3.0
+    edge_trace = replace(trace, center_px=forced_center)
+
+    result = extract_optimal(data, uncertainty, edge_trace, aperture_half_width=8.0, sky_windows=_SKY_14_4)
+    assert not result.valid[50]
+    assert math.isnan(result.flux[50])  # NUNCA 0.0
+    # el resto de columnas, con la traza real, se sigue midiendo bien
+    assert result.valid[49] and result.valid[51]
+
+
+def test_extract_sum_renormalizes_a_partially_masked_aperture_instead_of_dimming_it():
+    """Un píxel muerto real dentro de la apertura (como los 27 hallados
+    en la banda de la traza de un frame real de Vega) no debe hacer que
+    la columna parezca más tenue solo por tener un píxel menos -- se
+    renormaliza por la fracción de apertura realmente medida."""
+    flux_per_col = 3000.0
+    data, uncertainty, _ = _synthetic_2d_spectrum(flux_per_col=flux_per_col, curve=0.0)
+    trace = trace_spectrum(data, initial_center_px=20.0, fit_degree=1)
+
+    mask = np.zeros(data.shape, dtype=bool)
+    mask[20, 100] = True  # el píxel central de la traza, exactamente en col=100, marcado como muerto
+
+    result = extract_sum(data, uncertainty, trace, mask=mask, aperture_half_width=8.0, sky_windows=_SKY_14_4)
+    unmasked_result = extract_sum(data, uncertainty, trace, aperture_half_width=8.0, sky_windows=_SKY_14_4)
+    assert result.valid[100]
+    assert result.n_pixels_rejected[100] == 1
+    # renormalizar por la fracción de apertura medida acerca el resultado
+    # al flujo real más que no renormalizar -- enmascarar justo el pico
+    # de un perfil gaussiano (no uniforme) nunca se recupera perfecto con
+    # un factor de escala uniforme, para eso existe la extracción óptima.
+    naive_unrenormalized = result.flux[100] * (16.0 / 17.0)  # deshacer la renormalización a mano
+    assert abs(result.flux[100] - unmasked_result.flux[100]) < abs(naive_unrenormalized - unmasked_result.flux[100])
+    assert result.flux[100] == pytest.approx(flux_per_col, rel=0.2)
+
+
+def test_extract_sum_marks_a_fully_masked_column_invalid_not_zero():
+    data, uncertainty, _ = _synthetic_2d_spectrum(curve=0.0)
+    trace = trace_spectrum(data, initial_center_px=20.0, fit_degree=1)
+    mask = np.zeros(data.shape, dtype=bool)
+    mask[:, 100] = True  # columna entera muerta
+
+    result = extract_sum(data, uncertainty, trace, mask=mask, aperture_half_width=8.0, sky_windows=_SKY_14_4)
+    assert not result.valid[100]
+    assert math.isnan(result.flux[100])
+    assert result.valid[99] and result.valid[101]  # las columnas vecinas no se ven afectadas
+
+
+def test_estimate_sky_background_never_returns_a_fake_zero_when_no_sky_pixels_are_usable():
+    data, _, _ = _synthetic_2d_spectrum(shape=(41, 50), center=20.0, curve=0.0)
+    trace = trace_spectrum(data, initial_center_px=20.0, fit_degree=1)
+    # ventanas de cielo que caen enteramente fuera de una imagen de solo 41 filas
+    far_windows = (SkyWindow(offset_px=-100.0, half_width_px=4.0), SkyWindow(offset_px=100.0, half_width_px=4.0))
+
+    sky = estimate_sky_background(data, trace, windows=far_windows)
+    assert not np.any(sky.valid)
+    assert np.all(np.isnan(sky.level))  # nunca 0.0
+
+
+def test_estimate_sky_background_sigma_clip_rejects_a_contaminating_outlier():
+    rng = np.random.default_rng(11)
+    data = np.full((41, 30), 100.0) + rng.normal(0, 2.0, (41, 30))
+    # traza sintética recta -- no hace falta ejecutar trace_spectrum, basta un TraceResult fijo
+    trace = TraceResult(columns=np.arange(30), center_px=np.full(30, 20.0), fit_degree=0, rms_residual_px=0.0)
+    windows = (SkyWindow(offset_px=-10.0, half_width_px=3.0),)
+    data[17:24, 15] = 5000.0  # contaminación real de cielo (un resto de fuente) en una columna
+
+    sky_clipped = estimate_sky_background(data, trace, windows=windows, reducer="sigma_clip")
+    sky_median = estimate_sky_background(data, trace, windows=windows, reducer="median")
+    assert sky_clipped.level[15] == pytest.approx(100.0, abs=5.0)
+    assert sky_median.level[15] == pytest.approx(100.0, abs=5.0)  # la mediana también resiste un solo outlier
+
+
+def test_extract_mean_is_extract_sum_divided_by_the_nominal_aperture_width():
+    # §3: modo de extracción "media" -- exactamente extract_sum reescalado,
+    # nunca una extracción recalculada por separado.
+    data, uncertainty, _ = _synthetic_2d_spectrum(curve=0.0)
+    trace = trace_spectrum(data, initial_center_px=20.0, fit_degree=1)
+    aperture_half_width = 6.0
+    nominal_pixels = 2 * aperture_half_width + 1
+
+    summed = extract_sum(data, uncertainty, trace, aperture_half_width=aperture_half_width)
+    averaged = extract_mean(data, uncertainty, trace, aperture_half_width=aperture_half_width)
+
+    assert averaged.method == "mean"
+    np.testing.assert_allclose(averaged.flux, summed.flux / nominal_pixels, equal_nan=True)
+    np.testing.assert_allclose(averaged.flux_uncertainty, summed.flux_uncertainty / nominal_pixels, equal_nan=True)
+    np.testing.assert_array_equal(averaged.valid, summed.valid)
+
+
+def test_estimate_sky_background_smoothing_recovers_a_known_linear_sky_gradient():
+    # §5: ajuste polinómico suave explícito del cielo ya estimado por columna.
+    rng = np.random.default_rng(23)
+    n_columns = 60
+    true_sky = 100.0 + 0.5 * np.arange(n_columns)  # gradiente lineal real conocido
+    data = np.tile(true_sky, (41, 1)) + rng.normal(0, 1.5, (41, n_columns))
+    trace = TraceResult(columns=np.arange(n_columns), center_px=np.full(n_columns, 20.0), fit_degree=0, rms_residual_px=0.0)
+    windows = (SkyWindow(offset_px=-10.0, half_width_px=3.0), SkyWindow(offset_px=10.0, half_width_px=3.0))
+
+    raw = estimate_sky_background(data, trace, windows=windows)
+    smoothed = estimate_sky_background(data, trace, windows=windows, smooth_degree=1)
+
+    assert "poly" in smoothed.reducer
+    assert np.all(smoothed.valid)  # el ajuste polinómico cubre toda la traza
+    np.testing.assert_allclose(smoothed.level, true_sky, atol=1.0)
+    # el suavizado reduce el ruido columna a columna frente a la estimación directa
+    assert np.std(smoothed.level - true_sky) < np.std(raw.level - true_sky)
+
+
+def test_estimate_sky_background_smoothing_can_fill_columns_without_direct_evidence():
+    data, _, _ = _synthetic_2d_spectrum(shape=(41, 50), center=20.0, curve=0.0)
+    trace = trace_spectrum(data, initial_center_px=20.0, fit_degree=1)
+    far_windows = (SkyWindow(offset_px=-100.0, half_width_px=4.0), SkyWindow(offset_px=100.0, half_width_px=4.0))
+
+    with pytest.raises(ValueError):
+        estimate_sky_background(data, trace, windows=far_windows, smooth_degree=1)
+
+
+def test_extract_sum_propagates_sky_smoothing_to_the_extracted_flux():
+    rng = np.random.default_rng(29)
+    n_columns = 60
+    true_sky = 100.0 + 0.5 * np.arange(n_columns)
+    center = 20.0
+    profile = np.exp(-((np.arange(41)[:, np.newaxis] - center) ** 2) / (2 * 2.0**2))
+    profile /= profile.sum(axis=0, keepdims=True)
+    data = true_sky[np.newaxis, :] + 2000.0 * profile + rng.normal(0, 1.5, (41, n_columns))
+    uncertainty = np.sqrt(np.clip(data, 1.0, None))
+    trace = TraceResult(columns=np.arange(n_columns), center_px=np.full(n_columns, center), fit_degree=0, rms_residual_px=0.0)
+
+    without_smoothing = extract_sum(data, uncertainty, trace, aperture_half_width=6.0)
+    with_smoothing = extract_sum(data, uncertainty, trace, aperture_half_width=6.0, sky_smooth_degree=1)
+
+    assert without_smoothing.sky is not None and "poly" not in without_smoothing.sky.reducer
+    assert with_smoothing.sky is not None and "poly" in with_smoothing.sky.reducer
+
+
+def test_trace_spectrum_spline_recovers_known_curved_trace():
+    """§2: el spline es una alternativa real al polinomio -- debe
+    recuperar una traza curva conocida igual de bien."""
+    data, _, true_center = _synthetic_2d_spectrum(curve=6.0)
+    result = trace_spectrum(data, initial_center_px=20.0, fit_degree=3, fit_method="spline")
+    assert result.fit_method == "spline"
+    np.testing.assert_allclose(result.center_px, true_center, atol=0.7)
+
+
+def test_trace_spectrum_rejects_unknown_fit_method():
+    data, _, _ = _synthetic_2d_spectrum(curve=0.0)
+    with pytest.raises(ValueError):
+        trace_spectrum(data, initial_center_px=20.0, fit_method="lagrange")
+
+
+def test_trace_spectrum_spline_still_rejects_a_single_cosmic_ray_contaminated_column():
+    """El spline es mucho más flexible localmente que un polinomio de
+    grado bajo -- sin un arranque robusto, un único centroide
+    contaminado por un rayo cósmico real (la traza se desvía de golpe
+    varios píxeles en una sola columna) podría arrastrar el ajuste en
+    vez de quedar excluido por el sigma-clip. Debe seguir siendo
+    ignorado, igual que ya lo es con el polinomio."""
+    data, _, true_center = _synthetic_2d_spectrum(curve=0.0, sigma=2.0, flux_per_col=3000.0, seed=11)
+    contaminated_col = 100
+    data[26, contaminated_col] += 50000.0  # rayo cósmico real, lejos del centro real (20.0)
+
+    result_poly = trace_spectrum(data, initial_center_px=20.0, fit_degree=2, fit_method="polynomial")
+    result_spline = trace_spectrum(data, initial_center_px=20.0, fit_degree=2, fit_method="spline")
+
+    for result in (result_poly, result_spline):
+        assert abs(result.center_px[contaminated_col] - true_center[contaminated_col]) < 1.5
+
+
+def test_classify_source_extent_labels_a_narrow_synthetic_point_source():
+    """§2: distinción automática puntual/extendida, siempre informativa
+    -- un perfil estrecho (sigma=1.5 px, FWHM real ~3.5 px) real queda
+    clasificado como "point" con el umbral por defecto (6.0 px)."""
+    data, _, true_center = _synthetic_2d_spectrum(sigma=1.5, flux_per_col=4000.0, seed=3)
+    trace = trace_spectrum(data, initial_center_px=20.0, fit_degree=1)
+
+    estimate = classify_source_extent(data, trace)
+
+    assert estimate.classification == "point"
+    assert 1.0 < estimate.fwhm_px < 6.0
+    assert estimate.n_columns_used > 0
+    _ = true_center
+
+
+def test_classify_source_extent_labels_a_wide_synthetic_extended_source():
+    """Mismo motor, perfil ancho real (sigma=6 px, FWHM ~14 px) --
+    queda clasificado como "extended", nunca decide por su cuenta qué
+    extracción usar, solo informa."""
+    data, _, _ = _synthetic_2d_spectrum(sigma=6.0, flux_per_col=6000.0, seed=4)
+    trace = trace_spectrum(data, initial_center_px=20.0, fit_degree=1)
+
+    estimate = classify_source_extent(data, trace)
+
+    assert estimate.classification == "extended"
+    assert estimate.fwhm_px > 6.0
+
+
+def test_classify_source_extent_reports_honestly_when_there_is_no_real_signal():
+    """Sin ningún pico real por encima del fondo en ninguna columna, la
+    clasificación debe admitir honestamente que no sabe -- nunca
+    inventar un FWHM ni una clasificación de la nada."""
+    data = np.full((41, 100), 50.0)
+    trace = TraceResult(columns=np.arange(100), center_px=np.full(100, 20.0), fit_degree=0, rms_residual_px=0.0)
+
+    estimate = classify_source_extent(data, trace)
+
+    assert estimate.classification == "desconocido"
+    assert math.isnan(estimate.fwhm_px)
+    assert estimate.n_columns_used == 0

@@ -1,0 +1,36 @@
+# Recurso de versión de Windows (metadatos que se ven en "Propiedades ->
+# Detalles" del .exe) -- formato que exige PyInstaller para el parámetro
+# `version=` de `EXE()` en AstroPhysicsSuite.spec. Generado a mano
+# siguiendo la estructura documentada de PyInstaller (no un artefacto de
+# build, se versiona junto al resto de packaging/).
+#
+# Mantener FileVersion/ProductVersion en sincronía con APP_VERSION en
+# AstroPhysicsSuite.spec y con PIPELINE_VERSION en qt_app/main_window.py.
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(0, 5, 0, 0),
+    prodvers=(0, 5, 0, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0),
+  ),
+  kids=[
+    StringFileInfo(
+      [
+        StringTable(
+          u'040904B0',
+          [StringStruct(u'CompanyName', u'AstroPhysics Suite'),
+          StringStruct(u'FileDescription', u'AstroPhysics Suite -- Taller de Procesamiento Astrofisico'),
+          StringStruct(u'FileVersion', u'0.5.0.0'),
+          StringStruct(u'InternalName', u'AstroPhysicsSuite'),
+          StringStruct(u'LegalCopyright', u''),
+          StringStruct(u'OriginalFilename', u'AstroPhysicsSuite.exe'),
+          StringStruct(u'ProductName', u'AstroPhysics Suite'),
+          StringStruct(u'ProductVersion', u'0.5.0.0')])
+      ]),
+    VarFileInfo([VarStruct(u'Translation', [1033, 1200])])
+  ]
+)

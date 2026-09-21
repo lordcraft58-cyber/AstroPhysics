@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.venv/
+.ruff_cache/
+
+# Artefactos de empaquetado (Fase 9, ver packaging/README.md) -- nunca se
+# versionan, se regeneran con packaging/build_windows.bat.
+/build/
+/dist/
+.venv-build/
+packaging/output/
