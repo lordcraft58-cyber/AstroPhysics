@@ -4,12 +4,15 @@ comparison`.
 
 La ventana observada (ya calibrada en longitud de onda, misma
 convención de fila central que el resto de diálogos de espectroscopía)
-se compara contra una plantilla cargada de un FITS 1D real elegido por
-el usuario -- cualquier otra observación propia, una estrella estándar,
-o un espectro de referencia guardado por otro programa. Nunca clasifica
-ni sugiere un tipo espectral: muestra observado, plantilla y residuo
-real, y avisa si el solape real entre los dos es bajo -- la decisión de
-qué significa el residuo es siempre del usuario.
+se compara contra una plantilla real elegida por el usuario -- cualquier
+otra observación propia, una estrella estándar, o un espectro de
+referencia guardado por otro programa -- ya sea un FITS 1D con WCS de
+longitud de onda real, o un archivo de texto de dos columnas (longitud
+de onda, flujo), el formato en que suelen venir las bibliotecas
+espectrales externas (p. ej. MILES). Nunca clasifica ni sugiere un tipo
+espectral: muestra observado, plantilla y residuo real, y avisa si el
+solape real entre los dos es bajo -- la decisión de qué significa el
+residuo es siempre del usuario.
 """
 from __future__ import annotations
 
@@ -22,12 +25,13 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QHBoxLayout,
     QLabel,
     QPushButton,
     QVBoxLayout,
 )
 
-from astrophysics_suite.spectroscopy.spectrum1d_io import load_spectrum1d_fits
+from astrophysics_suite.spectroscopy.spectrum1d_io import import_ascii_spectrum, load_spectrum1d_fits
 from astrophysics_suite.spectroscopy.template_comparison import TemplateComparisonResult, compare_to_template
 from astrophysics_suite.tables.table import Table
 from qt_app.spectroscopy.spectrum_plot_data import SpectrumPlotData, SpectrumSeries, series_color
@@ -69,9 +73,14 @@ class TemplateComparisonDialog(QDialog):
         form.addRow("Normalización", self.normalize_combo)
         layout.addLayout(form)
 
+        template_row = QHBoxLayout()
         self.template_button = QPushButton("Elegir plantilla (FITS 1D)...")
         self.template_button.clicked.connect(self._on_choose_template)
-        layout.addWidget(self.template_button)
+        template_row.addWidget(self.template_button)
+        self.template_ascii_button = QPushButton("Importar plantilla desde texto (λ, flujo)...")
+        self.template_ascii_button.clicked.connect(self._on_import_ascii_template)
+        template_row.addWidget(self.template_ascii_button)
+        layout.addLayout(template_row)
 
         self.template_label = QLabel("Ninguna plantilla elegida todavía.")
         self.template_label.setWordWrap(True)
@@ -105,6 +114,26 @@ class TemplateComparisonDialog(QDialog):
         self.template_label.setText(
             f"Plantilla: {Path(path).name} ({wavelength.size} punto(s), "
             f"{wavelength.min():.1f}-{wavelength.max():.1f} Å)."
+        )
+
+    def _on_import_ascii_template(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Importar plantilla desde texto (longitud de onda, flujo)", "", "Texto (*.txt *.dat *.ssp *.asc);;Todos los archivos (*.*)"
+        )
+        if not path:
+            return
+        try:
+            wavelength, flux, header_line = import_ascii_spectrum(path)
+        except (ValueError, OSError) as exc:
+            self.template_label.setText(f"No se pudo importar «{Path(path).name}»: {exc}")
+            return
+        self._template_path = path
+        self._template_wavelength = wavelength
+        self._template_flux = flux
+        origin_note = f" -- cabecera de origen: {header_line}" if header_line else ""
+        self.template_label.setText(
+            f"Plantilla (importada de texto): {Path(path).name} ({wavelength.size} punto(s), "
+            f"{wavelength.min():.1f}-{wavelength.max():.1f} Å){origin_note}."
         )
 
     def _on_compare(self) -> None:

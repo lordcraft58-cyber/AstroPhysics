@@ -113,6 +113,48 @@ def test_template_comparison_dialog_compares_a_real_window_against_a_saved_templ
     np.testing.assert_allclose(result.residual[finite], 0.0, atol=1e-6)
 
 
+def test_template_comparison_dialog_imports_an_ascii_template_and_can_compare_with_it(qapp, main_window, tmp_path):
+    # §25 extendido: una plantilla real puede venir de un archivo de
+    # texto de dos columnas (longitud de onda, flujo) -- formato en el
+    # que suelen venir las bibliotecas espectrales externas -- sin tener
+    # que convertirla a mano a FITS antes.
+    from PySide6.QtWidgets import QFileDialog
+
+    from astrophysics_suite.spectroscopy.wavelength import fit_wavelength_solution
+    from qt_app.spectroscopy.template_comparison_dialog import TemplateComparisonDialog
+
+    ascii_path = tmp_path / "reference.ssp"
+    lines = ["*SpHdr* REF-STAR,1.0,2.0,3.0"]
+    for i in range(50):
+        lines.append(f"{4000.0 + 2.0 * i:.2f} {0.5 + 0.01 * i:.5f}")
+    ascii_path.write_text("\n".join(lines) + "\n")
+
+    data = _synthetic_arc_row()
+    sub_window = main_window.add_image_window(data, "target_for_ascii_template.fits")
+    main_window.mdi.setActiveSubWindow(sub_window)
+    qapp.processEvents()
+    view = sub_window.widget()
+    view.fitted_wavelength_solution = fit_wavelength_solution(list(_TRUE_PIXELS), list(_TRUE_WAVELENGTHS), degree=1)
+
+    dialog = TemplateComparisonDialog(main_window._image_views_by_title(), main_window)
+
+    original_get_open = QFileDialog.getOpenFileName
+    QFileDialog.getOpenFileName = staticmethod(lambda *args, **kwargs: (str(ascii_path), ""))
+    try:
+        dialog._on_import_ascii_template()
+    finally:
+        QFileDialog.getOpenFileName = original_get_open
+
+    assert dialog._template_wavelength is not None
+    assert dialog._template_wavelength.size == 50
+    assert "importada de texto" in dialog.template_label.text()
+    assert "REF-STAR" in dialog.template_label.text()
+
+    dialog.normalize_combo.setCurrentText("median")
+    dialog._on_compare()
+    assert "Solape real" in dialog.result_label.text()
+
+
 def test_template_comparison_dialog_requires_a_real_template_before_comparing(qapp, main_window):
     from astrophysics_suite.spectroscopy.wavelength import fit_wavelength_solution
     from qt_app.spectroscopy.template_comparison_dialog import TemplateComparisonDialog

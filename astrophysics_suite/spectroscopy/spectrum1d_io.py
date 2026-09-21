@@ -249,3 +249,96 @@ def load_spectrum1d_fits(path: str) -> tuple[np.ndarray, np.ndarray, dict[str, A
             raise ValueError(f"sin WCS de longitud de onda reconocible (CTYPE1={ctype!r}) -- pixel != longitud de onda")
 
     return wavelength, flux, header
+
+
+def import_ascii_spectrum(path: str) -> tuple[np.ndarray, np.ndarray, str | None]:
+    """Lee un espectro 1D real de un archivo de texto de dos columnas
+    (longitud de onda en Å, flujo) -- formato genérico de bibliotecas
+    espectrales externas (p. ej. MILES, INDO-US) o de cualquier otro
+    programa, NO un formato propio de este proyecto -- para poder usarlo
+    como plantilla en "Comparación con plantilla de referencia" sin
+    tener que convertirlo a mano.
+
+    Cualquier línea que no empiece por dos números reales se trata como
+    cabecera/comentario y se descarta del array de datos -- pero la
+    PRIMERA de esas líneas (si la hay) se devuelve tal cual, sin tocar,
+    para no perder en silencio el metadato real de origen que traiga
+    (p. ej. el identificador y las coordenadas del objeto en la propia
+    cabecera del archivo). Exige longitud de onda estrictamente
+    creciente -- un archivo desordenado o corrupto debe fallar de forma
+    honesta, nunca reordenarse en silencio."""
+    wavelengths: list[float] = []
+    fluxes: list[float] = []
+    header_line: str | None = None
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line:
+                continue
+            parts = line.split()
+            parsed: tuple[float, float] | None = None
+            if len(parts) >= 2:
+                try:
+                    parsed = (float(parts[0]), float(parts[1]))
+                except ValueError:
+                    parsed = None
+            if parsed is not None:
+                wavelengths.append(parsed[0])
+                fluxes.append(parsed[1])
+            elif header_line is None:
+                header_line = line
+
+    if len(wavelengths) < 2:
+        raise ValueError(f"«{path}» no trae al menos dos filas reales de (longitud de onda, flujo)")
+    wavelength = np.asarray(wavelengths, dtype=np.float64)
+    flux = np.asarray(fluxes, dtype=np.float64)
+    if not np.all(np.diff(wavelength) > 0):
+        raise ValueError(
+            f"«{path}» no tiene la longitud de onda estrictamente creciente de principio a fin -- "
+            "revisa el archivo de origen, no se reordena en silencio"
+        )
+    return wavelength, flux, header_line
+
+
+def save_reference_template_fits(
+    path: str, wavelength: np.ndarray, flux: np.ndarray, *, object_name: str | None = None,
+    source_note: str | None = None, overwrite: bool = True,
+) -> None:
+    """Escribe `wavelength`/`flux` REALES (p. ej. de `import_ascii_
+    spectrum`) como FITS 1D con WCS `WAVE-TAB` EXACTO (§16, misma
+    convención -TAB que ya usa `wavelength_header_cards` para una
+    calibración polinómica -- tabla de búsqueda real, nunca una recta
+    aproximada que introduciría un error que el archivo de origen no
+    tenía) -- releíble después por `load_spectrum1d_fits` como plantilla
+    en "Comparación con plantilla de referencia".
+
+    Deliberadamente SIN ningún `CALTYPE`/`APSWAVSR` (esas tarjetas
+    describen la procedencia de una calibración hecha por ESTE taller,
+    `calibration_provenance.py`): un espectro de referencia importado de
+    fuera no pasó por ninguna de ellas, y etiquetarlo con esas tarjetas
+    sería una procedencia falsa."""
+    wavelength = np.asarray(wavelength, dtype=np.float64)
+    flux = np.asarray(flux, dtype=np.float64)
+    if wavelength.ndim != 1 or wavelength.shape != flux.shape:
+        raise ValueError("wavelength y flux deben ser arrays 1D reales de la misma forma")
+
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    hdu = fits.PrimaryHDU(data=flux.astype(np.float32))
+    hdu.header["CTYPE1"] = "WAVE-TAB"
+    hdu.header["CUNIT1"] = "Angstrom"
+    hdu.header["PS1_0"] = "WCS-TAB"
+    hdu.header["PS1_1"] = "WAVELENGTH"
+    hdu.header["PV1_1"] = 1
+    if object_name:
+        hdu.header["OBJECT"] = ascii_safe(object_name)
+
+    lines = ["plantilla de referencia importada de un archivo de texto externo (longitud de onda, flujo)"]
+    if source_note:
+        lines.append(f"cabecera de origen: {source_note}")
+    lines.append("SIN calibracion propia de este taller -- datos tal cual venian en el archivo de origen")
+    for line in wrap_history_lines(lines, prefix=_HISTORY_PREFIX):
+        hdu.header.add_history(ascii_safe(line))
+
+    column = fits.Column(name="WAVELENGTH", format="1D", unit="Angstrom", array=wavelength.reshape(-1, 1))
+    table_hdu = fits.BinTableHDU.from_columns([column], name="WCS-TAB")
+    fits.HDUList([hdu, table_hdu]).writeto(path, overwrite=overwrite)

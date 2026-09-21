@@ -9,8 +9,10 @@ from astropy.io import fits
 
 from astrophysics_suite.spectroscopy.calibration_provenance import CalibrationSource, WavelengthCalibrationRecord
 from astrophysics_suite.spectroscopy.spectrum1d_io import (
+    import_ascii_spectrum,
     load_spectrum1d_fits,
     processing_history_path_for_product,
+    save_reference_template_fits,
     save_spectrum1d_fits,
     standard_product_name,
     wavelength_header_cards,
@@ -200,3 +202,81 @@ def test_standard_product_name_respects_a_different_product_kind():
 def test_processing_history_path_for_product_sits_alongside_the_fits_file():
     path = processing_history_path_for_product("/tmp/out/Vega_1D.fits")
     assert str(path) == "/tmp/out/Vega_1D.fits.history.json"
+
+
+def _write_ascii_spectrum(path, *, header_line="*SpHdr* TEST-001,1.0,2.0,3.0"):
+    lines = [header_line]
+    for i in range(50):
+        wavelength = 4000.0 + 2.0 * i
+        flux = 0.5 + 0.1 * (i % 5)
+        lines.append(f"{wavelength:.2f} {flux:.6f}")
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
+def test_import_ascii_spectrum_reads_real_two_column_data_and_keeps_the_header_line(tmp_path):
+    path = _write_ascii_spectrum(tmp_path / "template.ssp")
+    wavelength, flux, header_line = import_ascii_spectrum(str(path))
+    assert wavelength.size == 50
+    assert flux.size == 50
+    assert wavelength[0] == pytest.approx(4000.0)
+    assert wavelength[-1] == pytest.approx(4000.0 + 2.0 * 49)
+    assert header_line == "*SpHdr* TEST-001,1.0,2.0,3.0"
+
+
+def test_import_ascii_spectrum_ignores_blank_lines(tmp_path):
+    path = tmp_path / "with_blanks.txt"
+    path.write_text("# comentario\n\n4000.0 0.5\n\n4002.0 0.6\n4004.0 0.7\n")
+    wavelength, flux, header_line = import_ascii_spectrum(str(path))
+    assert wavelength.size == 3
+    assert header_line == "# comentario"
+
+
+def test_import_ascii_spectrum_rejects_a_file_with_fewer_than_two_real_rows(tmp_path):
+    path = tmp_path / "empty.txt"
+    path.write_text("solo cabecera\n")
+    with pytest.raises(ValueError, match="dos filas"):
+        import_ascii_spectrum(str(path))
+
+
+def test_import_ascii_spectrum_rejects_non_monotonic_wavelength_instead_of_silently_sorting(tmp_path):
+    path = tmp_path / "unsorted.txt"
+    path.write_text("4000.0 0.5\n3998.0 0.6\n4004.0 0.7\n")
+    with pytest.raises(ValueError, match="creciente"):
+        import_ascii_spectrum(str(path))
+
+
+def test_save_reference_template_fits_round_trips_exactly(tmp_path):
+    src = _write_ascii_spectrum(tmp_path / "template.ssp")
+    wavelength, flux, header_line = import_ascii_spectrum(str(src))
+
+    out = tmp_path / "template.fits"
+    save_reference_template_fits(str(out), wavelength, flux, object_name="G6 V", source_note=header_line)
+
+    wavelength_read, flux_read, header = load_spectrum1d_fits(str(out))
+    np.testing.assert_allclose(wavelength_read, wavelength)
+    np.testing.assert_allclose(flux_read, flux, atol=1e-5)
+    assert header["OBJECT"] == "G6 V"
+    assert header["CTYPE1"] == "WAVE-TAB"
+
+
+def test_save_reference_template_fits_never_claims_this_workshops_own_calibration_provenance(tmp_path):
+    # Ninguna tarjeta CALTYPE/APSWAVSR: esas describen una calibracion
+    # hecha por ESTE taller, y una plantilla importada de fuera no paso
+    # por ninguna -- etiquetarla asi seria una procedencia falsa.
+    wavelength = np.linspace(4000.0, 4100.0, 20)
+    flux = np.full(20, 0.5)
+    out = tmp_path / "no_fake_provenance.fits"
+    save_reference_template_fits(str(out), wavelength, flux)
+    with fits.open(out) as hdul:
+        header = hdul[0].header
+        assert "CALTYPE" not in header
+        assert "APSWAVSR" not in header
+        history = " ".join(str(line) for line in header["HISTORY"])
+        assert "SIN calibracion propia" in history
+
+
+def test_save_reference_template_fits_rejects_mismatched_shapes(tmp_path):
+    out = tmp_path / "bad.fits"
+    with pytest.raises(ValueError):
+        save_reference_template_fits(str(out), np.array([1.0, 2.0]), np.array([1.0]))
